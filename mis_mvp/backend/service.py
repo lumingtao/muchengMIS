@@ -17,6 +17,7 @@ from .models import (
     OrderStatus,
     PaymentDirection,
     PaymentInput,
+    PriceChangeInput,
     PurchaseInput,
     RecycleOrderInput,
     RecycleQuoteInput,
@@ -142,6 +143,18 @@ class MisService:
         existing = self.repo.get_machine_by_imei(imei) if imei else None
         if existing and int(existing["machine_id"]) != machine_id:
             raise BusinessError("IMEI 已存在，不能重复使用")
+        customer_before = self.repo.get_customer(int(machine["customer_id"])) if machine.get("customer_id") else None
+        customer_id = machine.get("customer_id")
+        if data.customer:
+            if data.customer_id:
+                existing_customer = self.repo.get_customer(data.customer_id)
+                if not existing_customer:
+                    raise BusinessError("客户档案不存在")
+                customer_id = data.customer_id
+                customer_before = existing_customer
+                self.repo.update_customer(customer_id, data.customer)
+            else:
+                customer_id = self.repo.upsert_customer(data.customer)
         payload = {
             "imei": imei,
             "serial": data.serial,
@@ -151,6 +164,7 @@ class MisService:
             "condition": data.condition,
             "source_type": data.source_type.value if data.source_type else "",
             "current_status": data.current_status.value,
+            "customer_id": customer_id,
         }
         changes = []
         labels = {
@@ -162,18 +176,30 @@ class MisService:
             "condition": "机况",
             "source_type": "业务线",
             "current_status": "状态",
+            "customer_id": "客户",
         }
         for key, label in labels.items():
             before = machine.get(key) or ""
             after = payload.get(key) or ""
             if str(before) != str(after):
                 changes.append(f"{label}：{before or '空'} → {after or '空'}")
+        if data.customer:
+            customer_labels = {
+                "name": "客户姓名",
+                "phone": "客户电话",
+                "category": "客户类型",
+            }
+            for key, label in customer_labels.items():
+                before = (customer_before or {}).get(key) or ""
+                after = getattr(data.customer, key) or ""
+                if str(before) != str(after):
+                    changes.append(f"{label}：{before or '空'} → {after or '空'}")
         if not changes:
             return machine
         self.repo.update_machine(machine_id, payload)
         detail = "；".join(changes)
         self.repo.add_machine_event(machine_id, "machine", "编辑订单", detail, user.username, "machine", machine_id)
-        self._log_success(user, "machine:update", "machine", str(machine_id), imei=imei, customer_id=machine.get("customer_id"), request_summary=detail)
+        self._log_success(user, "machine:update", "machine", str(machine_id), imei=imei, customer_id=customer_id, request_summary=detail)
         self.conn.commit()
         return self.repo.get_machine(machine_id) or {}
 
@@ -280,6 +306,21 @@ class MisService:
         self.conn.commit()
         return self._repair_order_response(repair_order_id)
 
+    def change_repair_order_price(self, user: User, repair_order_id: int, data: PriceChangeInput) -> dict[str, Any]:
+        self._allowed(user, "repair_order:update")
+        order = self.repo.get_repair_order(repair_order_id)
+        if not order:
+            raise BusinessError("维修单不存在")
+        old_amount = float(order["quoted_amount"] or 0)
+        self.repo.update_repair_order_price(repair_order_id, data.quoted_amount)
+        detail = f"报价 {old_amount} -> {data.quoted_amount}"
+        if data.remark:
+            detail = f"{detail}；{data.remark}"
+        self.repo.add_machine_event(int(order["machine_id"]), "repair", "维修改价", detail, user.username, "repair", repair_order_id)
+        self._log_success(user, "repair_order:price", "repair_order", str(repair_order_id), customer_id=order["customer_id"], request_summary=str(data.quoted_amount))
+        self.conn.commit()
+        return self._repair_order_response(repair_order_id)
+
     def add_repair_item(self, user: User, repair_order_id: int, data: RepairItemInput) -> dict[str, Any]:
         self._allowed(user, "repair_order:update")
         order = self.repo.get_repair_order(repair_order_id)
@@ -368,6 +409,21 @@ class MisService:
         self.repo.update_machine_status(int(order["machine_id"]), MachineStatus.quoted.value)
         self.repo.add_machine_event(int(order["machine_id"]), "recycle", "验机报价", f"{data.inspection_result}，报价 {data.quoted_amount}", user.username, "recycle", recycle_order_id)
         self._log_success(user, "recycle_order:quote", "recycle_order", str(recycle_order_id), customer_id=order["customer_id"], request_summary=str(data.quoted_amount))
+        self.conn.commit()
+        return self.repo.get_recycle_order(recycle_order_id) or {}
+
+    def change_recycle_order_price(self, user: User, recycle_order_id: int, data: PriceChangeInput) -> dict[str, Any]:
+        self._allowed(user, "recycle_order:update")
+        order = self.repo.get_recycle_order(recycle_order_id)
+        if not order:
+            raise BusinessError("回收单不存在")
+        old_amount = float(order["quoted_amount"] or 0)
+        self.repo.update_recycle_order_price(recycle_order_id, data.quoted_amount)
+        detail = f"报价 {old_amount} -> {data.quoted_amount}"
+        if data.remark:
+            detail = f"{detail}；{data.remark}"
+        self.repo.add_machine_event(int(order["machine_id"]), "recycle", "回收改价", detail, user.username, "recycle", recycle_order_id)
+        self._log_success(user, "recycle_order:price", "recycle_order", str(recycle_order_id), customer_id=order["customer_id"], request_summary=str(data.quoted_amount))
         self.conn.commit()
         return self.repo.get_recycle_order(recycle_order_id) or {}
 

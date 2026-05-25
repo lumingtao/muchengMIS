@@ -15,6 +15,7 @@ from .models import (
     MachineNoteInput,
     MachineUpdateInput,
     PaymentInput,
+    PriceChangeInput,
     PurchaseInput,
     RecycleOrderInput,
     RecycleQuoteInput,
@@ -134,6 +135,11 @@ def quote_repair_order(repair_order_id: int, data: RepairQuoteInput, user: User 
     return endpoint(lambda: service.quote_repair_order(user, repair_order_id, data))
 
 
+@app.post("/api/repair-orders/{repair_order_id}/price")
+def change_repair_order_price(repair_order_id: int, data: PriceChangeInput, user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.change_repair_order_price(user, repair_order_id, data))
+
+
 @app.post("/api/repair-orders/{repair_order_id}/items")
 def add_repair_item(repair_order_id: int, data: RepairItemInput, user: User = Depends(current_user), service: MisService = Depends(get_service)):
     return endpoint(lambda: service.add_repair_item(user, repair_order_id, data))
@@ -157,6 +163,11 @@ def create_recycle_order(data: RecycleOrderInput, user: User = Depends(current_u
 @app.post("/api/recycle-orders/{recycle_order_id}/quote")
 def quote_recycle_order(recycle_order_id: int, data: RecycleQuoteInput, user: User = Depends(current_user), service: MisService = Depends(get_service)):
     return endpoint(lambda: service.quote_recycle_order(user, recycle_order_id, data))
+
+
+@app.post("/api/recycle-orders/{recycle_order_id}/price")
+def change_recycle_order_price(recycle_order_id: int, data: PriceChangeInput, user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.change_recycle_order_price(user, recycle_order_id, data))
 
 
 @app.post("/api/recycle-orders/{recycle_order_id}/stock-in")

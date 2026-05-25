@@ -1,10 +1,15 @@
+const defaultPoolSort = {
+  repair: { key: "machine_id", direction: "desc" },
+  recycle: { key: "machine_id", direction: "desc" },
+};
+
 const state = {
   user: localStorage.getItem("mis_user") || "",
   profile: null,
   currentTimeline: null,
   poolSort: {
-    repair: { key: "machine_id", direction: "desc" },
-    recycle: { key: "machine_id", direction: "desc" },
+    repair: { ...defaultPoolSort.repair },
+    recycle: { ...defaultPoolSort.recycle },
   },
 };
 
@@ -63,7 +68,7 @@ async function api(path, options = {}) {
 function numericKeys() {
   return new Set([
     "machine_id", "repair_order_id", "recycle_order_id", "inventory_item_id",
-    "source_id", "quoted_amount", "quantity", "cost_amount", "charge_amount",
+    "source_id", "customer_id", "quoted_amount", "quantity", "cost_amount", "charge_amount",
     "pay_amount", "sale_price", "amount",
   ]);
 }
@@ -203,19 +208,66 @@ function labeledField(label, control) {
   return `<label class="field"><span>${escapeHtml(label)}</span>${control}</label>`;
 }
 
+function editGroup(title, fields) {
+  return `
+    <section class="info-group">
+      <div class="info-group-title">${escapeHtml(title)}</div>
+      <div class="info-group-grid">
+        ${fields.join("")}
+      </div>
+    </section>
+  `;
+}
+
 function infoItem(label, value) {
   return `<div class="info-item"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value || "未录入")}</strong></div>`;
+}
+
+function infoGroup(title, items) {
+  return `
+    <section class="info-group">
+      <div class="info-group-title">${escapeHtml(title)}</div>
+      <div class="info-group-grid">
+        ${items.map(([label, value]) => infoItem(label, value)).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderPriceChangeForm(kind, order) {
+  if (!order) return "";
+  const idKey = kind === "repair" ? "repair_order_id" : "recycle_order_id";
+  return `
+    <form id="price-change-form" class="machine-edit-form price-change-form" data-kind="${kind}" data-order-id="${escapeHtml(order[idKey])}" hidden>
+      <div class="info-group">
+        <div class="info-group-title">改价</div>
+        <div class="info-group-grid">
+          ${labeledField("新报价", `<input name="quoted_amount" type="number" step="0.01" min="0" value="${escapeHtml(order.quoted_amount || 0)}" required>`)}
+          ${labeledField("改价备注", `<input name="remark" placeholder="填写原因，便于后续追踪">`)}
+        </div>
+      </div>
+      <div class="button-row">
+        <button type="submit">保存改价</button>
+        <button type="button" class="ghost-button" id="cancel-price-change">取消</button>
+      </div>
+    </form>
+  `;
 }
 
 function renderBusinessSections(timeline) {
   const line = timeline.machine.source_type || "";
   const sections = [];
   if (line === "维修") {
+    const order = timeline.repair_orders?.[0];
     sections.push(`
-      <h3>维修记录</h3>
+      <div class="section-title-row">
+        <h3>维修记录</h3>
+      </div>
+      ${renderPriceChangeForm("repair", order)}
       ${detailTable(timeline.repair_orders, [
         ["repair_order_id", "维修单"], ["status", "状态"], ["fault_description", "故障"], ["diagnosis", "检测"], ["quoted_amount", "报价"]
       ])}
+      ${order ? '<div class="section-action-row"><button type="button" id="open-price-change" class="ghost-button">改价</button></div>' : ""}
     `);
     if (timeline.repair_items?.length) {
       sections.push(`
@@ -236,11 +288,16 @@ function renderBusinessSections(timeline) {
     return sections.join("");
   }
   if (line === "回收") {
+    const order = timeline.recycle_orders?.[0];
     sections.push(`
-      <h3>回收记录</h3>
+      <div class="section-title-row">
+        <h3>回收记录</h3>
+      </div>
+      ${renderPriceChangeForm("recycle", order)}
       ${detailTable(timeline.recycle_orders, [
         ["recycle_order_id", "回收单"], ["status", "状态"], ["inspection_note", "验机记录"], ["inspection_result", "验机结论"], ["quoted_amount", "报价"], ["paid_amount", "已付"]
       ])}
+      ${order ? '<div class="section-action-row"><button type="button" id="open-price-change" class="ghost-button">改价</button></div>' : ""}
     `);
     if (timeline.inventory_items?.length) {
       sections.push(`
@@ -277,10 +334,20 @@ function renderBusinessSections(timeline) {
 
 function renderNotes(notes = []) {
   return `
-    <h3>备注</h3>
+    <div class="section-title-row">
+      <h3>备注</h3>
+    </div>
+    <form id="machine-note-form" class="machine-edit-form note-form" hidden>
+      ${labeledField("新增备注", `<textarea name="content" placeholder="输入本次备注，保存后不可修改" required></textarea>`)}
+      <div class="button-row">
+        <button type="submit">保存备注</button>
+        <button type="button" class="ghost-button" id="cancel-note">取消</button>
+      </div>
+    </form>
     ${detailTable(notes, [
       ["created_at", "时间"], ["content", "内容"], ["operator", "备注人"]
     ])}
+    <div class="section-action-row"><button type="button" id="add-note" class="ghost-button">备注</button></div>
   `;
 }
 
@@ -456,13 +523,21 @@ function sortedRows(rows, kind) {
   });
 }
 
+function resetBusinessPoolFilters(kind) {
+  const config = poolConfig(kind);
+  $(config.keyword).value = "";
+  $(config.status).value = "";
+  state.poolSort[kind] = { ...defaultPoolSort[kind] };
+  loadBusinessPool(kind);
+}
+
 async function loadBusinessPool(kind) {
   const config = poolConfig(kind);
   const q = encodeURIComponent($(config.keyword).value || "");
   const rows = await api(`/api/machines?q=${q}`);
   const filtered = sortedRows(applyBusinessPoolFilters(rows, kind), kind);
   const columns = [
-    ["machine_id", "机器ID"], ["machine_no", "机器编号"], ["imei", "IMEI"], ["model", "机型"],
+    ["machine_no", "机器编号"], ["imei", "IMEI"], ["model", "机型"],
     ["customer_name", "客户"], ["current_status", "当前状态"],
     ["updated_at", "更新时间"],
   ];
@@ -502,54 +577,64 @@ async function fetchTimeline(machineId) {
 
 function renderOrderModal(timeline) {
   const machine = timeline.machine;
+  const customer = timeline.customer || {};
+  const customerName = customer.name || machine.customer_name || "";
+  const customerPhone = customer.phone || "";
+  const customerCategory = customer.category || "";
   state.currentTimeline = timeline;
   $("#modal-title").textContent = `${machine.machine_no} / ${machine.model}`;
   $("#modal-subtitle").textContent = `机器ID ${machine.machine_id} · ${machine.current_status}`;
   $("#modal-content").innerHTML = `
     <form id="machine-edit-form" class="machine-edit-form" hidden>
-      <div class="form-grid">
-        ${labeledField("IMEI", `<input name="imei" placeholder="扫描或输入 IMEI" value="${escapeHtml(machine.imei || "")}" inputmode="numeric">`)}
-        ${labeledField("序列号", `<input name="serial" placeholder="输入序列号" value="${escapeHtml(machine.serial || "")}">`)}
-        ${labeledField("机型", `<select name="model" required>${selectOptions(modelOptions, machine.model || "", "选择机型")}</select>`)}
-        ${labeledField("内存", `<select name="memory">${selectOptions(memoryOptions, machine.memory || "", "选择内存")}</select>`)}
-        ${labeledField("颜色", `<select name="color">${selectOptions(colorOptions, machine.color || "", "选择颜色")}</select>`)}
-        ${labeledField("机况", `<select name="condition">${selectOptions(conditionOptions, machine.condition || "", "选择机况")}</select>`)}
-        ${labeledField("业务线", `<select name="source_type" id="machine-source-type">
-          ${option("", "未定业务线", machine.source_type || "")}
-          ${option("维修", "维修", machine.source_type || "")}
-          ${option("回收", "回收", machine.source_type || "")}
-          ${option("销售", "销售", machine.source_type || "")}
-        </select>`)}
-        ${labeledField("当前状态", `<select name="current_status" id="machine-current-status">${statusOptions(machine.source_type || "", machine.current_status)}</select>`)}
+      <div class="info-panel">
+        ${editGroup("设备标识", [
+          labeledField("机器编号", `<input value="${escapeHtml(machine.machine_no || "")}" disabled>`),
+          labeledField("IMEI", `<input name="imei" placeholder="扫描或输入 IMEI" value="${escapeHtml(machine.imei || "")}" inputmode="numeric">`),
+          labeledField("序列号", `<input name="serial" placeholder="输入序列号" value="${escapeHtml(machine.serial || "")}">`),
+        ])}
+        ${editGroup("规格属性", [
+          labeledField("机型", `<select name="model" required>${selectOptions(modelOptions, machine.model || "", "选择机型")}</select>`),
+          labeledField("内存", `<select name="memory">${selectOptions(memoryOptions, machine.memory || "", "选择内存")}</select>`),
+          labeledField("颜色", `<select name="color">${selectOptions(colorOptions, machine.color || "", "选择颜色")}</select>`),
+          labeledField("机况", `<select name="condition">${selectOptions(conditionOptions, machine.condition || "", "选择机况")}</select>`),
+        ])}
+        ${editGroup("客户信息", [
+          `<input type="hidden" name="customer_id" value="${escapeHtml(customer.customer_id || machine.customer_id || "")}">`,
+          labeledField("客户姓名", `<input name="customer_name" value="${escapeHtml(customerName || "")}" placeholder="输入客户姓名">`),
+          labeledField("电话", `<input name="customer_phone" value="${escapeHtml(customerPhone || "")}" placeholder="输入电话号码" inputmode="tel">`),
+          labeledField("客户类型", `<select name="customer_category">${selectOptions(["个人客户", "同行客户", "商家客户"], customerCategory || "", "选择客户类型")}</select>`),
+        ])}
+        ${editGroup("订单状态", [
+          `<input type="hidden" name="source_type" id="machine-source-type" value="${escapeHtml(machine.source_type || "")}">`,
+          labeledField("当前状态", `<select name="current_status" id="machine-current-status">${statusOptions(machine.source_type || "", machine.current_status)}</select>`),
+        ])}
       </div>
-      <div class="button-row">
-        <button type="submit">保存修改</button>
-        <button type="button" class="ghost-button" id="cancel-machine-edit">取消</button>
+      <div class="section-action-row">
+        <button type="submit" id="save-machine-edit" form="machine-edit-form" hidden>保存修改</button>
+        <button type="button" class="ghost-button" id="cancel-machine-edit" hidden>取消</button>
       </div>
     </form>
-    <form id="machine-note-form" class="machine-edit-form note-form" hidden>
-      ${labeledField("新增备注", `<textarea name="content" placeholder="输入本次备注，保存后不可修改" required></textarea>`)}
-      <div class="button-row">
-        <button type="submit">保存备注</button>
-        <button type="button" class="ghost-button" id="cancel-note">取消</button>
-      </div>
-    </form>
-    <div id="machine-info-panel" class="info-grid">
-      ${infoItem("IMEI", machine.imei)}
-      ${infoItem("序列号", machine.serial)}
-      ${infoItem("机型", machine.model)}
-      ${infoItem("内存", machine.memory)}
-      ${infoItem("颜色", machine.color)}
-      ${infoItem("机况", machine.condition)}
-      ${infoItem("业务线", machine.source_type || "未定")}
-      ${infoItem("当前状态", machine.current_status)}
-      ${infoItem("客户ID", machine.customer_id || "无")}
-      ${infoItem("机器编号", machine.machine_no)}
-    </div>
-    <div class="detail-action-bar">
-      <button type="button" id="edit-machine" class="ghost-button">编辑</button>
-      <button type="button" id="add-note" class="ghost-button">备注</button>
-      <button type="button" id="delete-machine" class="danger-button">删除</button>
+    <div id="machine-info-panel" class="info-panel">
+      ${infoGroup("设备标识", [
+        ["机器编号", machine.machine_no],
+        ["IMEI", machine.imei],
+        ["序列号", machine.serial],
+      ])}
+      ${infoGroup("规格属性", [
+        ["机型", machine.model],
+        ["内存", machine.memory],
+        ["颜色", machine.color],
+        ["机况", machine.condition],
+      ])}
+      ${infoGroup("客户信息", [
+        ["客户姓名", customerName || "未关联客户"],
+        ["电话", customerPhone || "未录入"],
+        ["客户类型", customerCategory || "未录入"],
+      ])}
+      ${infoGroup("订单状态", [
+        ["当前状态", machine.current_status],
+      ])}
+      <div class="section-action-row"><button type="button" id="edit-machine" class="ghost-button">编辑</button></div>
     </div>
     ${renderBusinessSections(timeline)}
     ${renderNotes(timeline.notes)}
@@ -559,8 +644,8 @@ function renderOrderModal(timeline) {
     ])}
   `;
   bindMachineEditForm(machine.machine_id);
+  bindPriceChangeForm(machine.machine_id);
   bindMachineNoteForm(machine.machine_id);
-  bindMachineDeleteAction();
 }
 
 function bindMachineEditForm(machineId) {
@@ -576,19 +661,34 @@ function bindMachineEditForm(machineId) {
     form.hidden = false;
     $("#machine-info-panel").hidden = true;
     $("#edit-machine").hidden = true;
+    $("#save-machine-edit").hidden = false;
+    $("#cancel-machine-edit").hidden = false;
     form.querySelector("input, select, textarea")?.focus();
   };
   $("#cancel-machine-edit").onclick = () => {
     form.hidden = true;
     $("#machine-info-panel").hidden = false;
     $("#edit-machine").hidden = !hasPermission("machine:update");
+    $("#save-machine-edit").hidden = true;
+    $("#cancel-machine-edit").hidden = true;
   };
   form.onsubmit = async event => {
     event.preventDefault();
+    const data = formData(form);
+    if (data.customer_name) {
+      data.customer = {
+        name: data.customer_name,
+        phone: data.customer_phone || "",
+        category: data.customer_category || "个人客户",
+      };
+    }
+    delete data.customer_name;
+    delete data.customer_phone;
+    delete data.customer_category;
     try {
       const updated = await api(`/api/machines/${machineId}`, {
         method: "PUT",
-        body: JSON.stringify(formData(form)),
+        body: JSON.stringify(data),
       });
       showToast(`订单已更新：${updated.machine_no}`);
       await openOrderModal(machineId);
@@ -628,19 +728,36 @@ function bindMachineNoteForm(machineId) {
   };
 }
 
-function bindMachineDeleteAction() {
-  const button = $("#delete-machine");
-  if (!button) return;
-  button.hidden = !hasPermission("machine:delete");
-  button.onclick = async () => {
-    const machine = state.currentTimeline?.machine;
-    if (!machine) return;
-    const confirmed = window.confirm(`确认删除 ${machine.machine_no} / ${machine.model}？相关维修、回收、库存、销售与流水记录会一并删除。`);
-    if (!confirmed) return;
+function bindPriceChangeForm(machineId) {
+  const form = $("#price-change-form");
+  const openButton = $("#open-price-change");
+  if (!form || !openButton) return;
+  const kind = form.dataset.kind;
+  const permission = kind === "repair" ? "repair_order:update" : "recycle_order:update";
+  openButton.hidden = !hasPermission(permission);
+  openButton.onclick = () => {
+    form.hidden = false;
+    openButton.hidden = true;
+    form.querySelector("input")?.focus();
+  };
+  $("#cancel-price-change").onclick = () => {
+    form.reset();
+    form.hidden = true;
+    openButton.hidden = !hasPermission(permission);
+  };
+  form.onsubmit = async event => {
+    event.preventDefault();
+    const data = formData(form);
+    const endpoint = kind === "repair"
+      ? `/api/repair-orders/${form.dataset.orderId}/price`
+      : `/api/recycle-orders/${form.dataset.orderId}/price`;
     try {
-      await api(`/api/machines/${machine.machine_id}`, { method: "DELETE" });
-      showToast("订单已删除");
-      closeOrderModal();
+      await api(endpoint, {
+        method: "POST",
+        body: JSON.stringify({ quoted_amount: data.quoted_amount || 0, remark: data.remark || "" }),
+      });
+      showToast("改价已保存");
+      await openOrderModal(machineId);
       await refreshActiveBusinessPool();
     } catch (error) {
       showToast(error.message, true);
@@ -752,6 +869,7 @@ $("#repair-keyword").addEventListener("keydown", event => {
   if (event.key === "Enter") loadBusinessPool("repair");
 });
 $("#repair-status").addEventListener("change", () => loadBusinessPool("repair"));
+$("#reset-repair-filters").addEventListener("click", () => resetBusinessPoolFilters("repair"));
 $("#open-repair-tab").addEventListener("click", () => openOrderFormPage("repair"));
 
 $("#search-recycle-orders").addEventListener("click", () => loadBusinessPool("recycle"));
@@ -759,6 +877,7 @@ $("#recycle-keyword").addEventListener("keydown", event => {
   if (event.key === "Enter") loadBusinessPool("recycle");
 });
 $("#recycle-status").addEventListener("change", () => loadBusinessPool("recycle"));
+$("#reset-recycle-filters").addEventListener("click", () => resetBusinessPoolFilters("recycle"));
 $("#open-recycle-tab").addEventListener("click", () => openOrderFormPage("recycle"));
 $("#search-customers").addEventListener("click", loadCustomers);
 

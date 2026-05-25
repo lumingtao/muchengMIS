@@ -106,6 +106,8 @@ class MachineUpdateInput(BaseModel):
     condition: str = ""
     source_type: BusinessLine | None = None
     current_status: MachineStatus
+    customer_id: int | None = None
+    customer: CustomerInput | None = None
 
 
 class MachineNoteInput(BaseModel):
@@ -139,6 +141,11 @@ class RepairOrderInput(BaseModel):
 class RepairQuoteInput(BaseModel):
     diagnosis: str = Field(min_length=1)
     quoted_amount: float = Field(ge=0)
+
+
+class PriceChangeInput(BaseModel):
+    quoted_amount: float = Field(ge=0)
+    remark: str = ""
 
 
 class RepairItemInput(BaseModel):

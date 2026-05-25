@@ -73,6 +73,29 @@ class Repository:
     def get_customer(self, customer_id: int) -> dict[str, Any] | None:
         return row_to_dict(self.conn.execute("SELECT * FROM customers WHERE customer_id = ?", (customer_id,)).fetchone())
 
+    def update_customer(self, customer_id: int, data: CustomerInput) -> None:
+        self.conn.execute(
+            """
+            UPDATE customers
+            SET name=?, phone=?, wechat=?, category=?, shop_name=?, address=?, tags=?,
+                vip_level=?, discount_policy=?, remark=?, updated_at=CURRENT_TIMESTAMP
+            WHERE customer_id=?
+            """,
+            (
+                data.name,
+                data.phone,
+                data.wechat,
+                data.category,
+                data.shop_name,
+                data.address,
+                data.tags,
+                data.vip_level,
+                data.discount_policy,
+                data.remark,
+                customer_id,
+            ),
+        )
+
     def search_customers(self, keyword: str = "") -> list[dict[str, Any]]:
         like = f"%{keyword}%"
         rows = self.conn.execute(
@@ -299,7 +322,7 @@ class Repository:
             """
             UPDATE machines
             SET imei=?, serial=?, model=?, memory=?, color=?, condition=?,
-                source_type=?, current_status=?, updated_at=CURRENT_TIMESTAMP
+                source_type=?, current_status=?, customer_id=?, updated_at=CURRENT_TIMESTAMP
             WHERE machine_id=?
             """,
             (
@@ -311,6 +334,7 @@ class Repository:
                 data.get("condition", ""),
                 data.get("source_type", ""),
                 data["current_status"],
+                data.get("customer_id"),
                 machine_id,
             ),
         )
@@ -411,6 +435,12 @@ class Repository:
             (diagnosis, quoted_amount, status, repair_order_id),
         )
 
+    def update_repair_order_price(self, repair_order_id: int, quoted_amount: float) -> None:
+        self.conn.execute(
+            "UPDATE repair_orders SET quoted_amount=?, updated_at=CURRENT_TIMESTAMP WHERE repair_order_id=?",
+            (quoted_amount, repair_order_id),
+        )
+
     def add_repair_item(self, repair_order_id: int, item_name: str, quantity: int, cost_amount: float, charge_amount: float, remark: str) -> int:
         cur = self.conn.execute(
             """
@@ -462,6 +492,12 @@ class Repository:
             WHERE recycle_order_id=?
             """,
             (inspection_result, quoted_amount, status, recycle_order_id),
+        )
+
+    def update_recycle_order_price(self, recycle_order_id: int, quoted_amount: float) -> None:
+        self.conn.execute(
+            "UPDATE recycle_orders SET quoted_amount=?, updated_at=CURRENT_TIMESTAMP WHERE recycle_order_id=?",
+            (quoted_amount, recycle_order_id),
         )
 
     def stock_in_recycle_order(self, recycle_order_id: int, paid_amount: float, status: str) -> None:
@@ -665,8 +701,16 @@ class Repository:
         inventory = self.conn.execute("SELECT * FROM inventory_items WHERE machine_id=? ORDER BY inventory_item_id", (machine_id,)).fetchall()
         sales = self.conn.execute("SELECT * FROM sales_orders WHERE machine_id=? ORDER BY sales_order_id", (machine_id,)).fetchall()
         notes = self.conn.execute("SELECT * FROM machine_notes WHERE machine_id=? ORDER BY note_id", (machine_id,)).fetchall()
+        customer_id = machine.get("customer_id") if machine else None
+        if not customer_id:
+            for rows in (repairs, recycle, sales):
+                customer_id = next((row["customer_id"] for row in rows if row["customer_id"]), None)
+                if customer_id:
+                    break
+        customer = self.get_customer(int(customer_id)) if customer_id else None
         return {
             "machine": machine,
+            "customer": customer,
             "events": [dict(row) for row in events],
             "notes": [dict(row) for row in notes],
             "repair_orders": [dict(row) for row in repairs],
