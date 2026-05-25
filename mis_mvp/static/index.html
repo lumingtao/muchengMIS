@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>沐辰 MIS MVP</title>
+  <link rel="stylesheet" href="/static/styles.css?v=classic-soft-buttons">
+</head>
+<body>
+  <section id="auth-screen" class="auth-screen" hidden>
+    <div class="auth-card">
+      <div class="brand auth-brand">
+        <div class="brand-mark">M</div>
+        <div>
+          <strong>沐辰 MIS</strong>
+          <span>机器生命周期工作台</span>
+        </div>
+      </div>
+      <div class="auth-copy">
+        <h1>登录工作台</h1>
+        <p>登录后进入维修、回收、库存、销售与财务的一体化操作界面。</p>
+      </div>
+      <form id="auth-login-form" class="auth-form">
+        <label>
+          <span>账号</span>
+          <input name="username" placeholder="请输入账号" value="admin" autocomplete="username">
+        </label>
+        <label>
+          <span>密码</span>
+          <input name="password" type="password" placeholder="请输入密码" value="admin" autocomplete="current-password">
+        </label>
+        <button type="submit">登录</button>
+      </form>
+      <p class="auth-hint">默认演示账号：admin / admin、staff / staff、finance / finance</p>
+    </div>
+  </section>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <div id="app-shell" class="app-shell" hidden>
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">M</div>
+        <div>
+          <strong>沐辰 MIS</strong>
+          <span>机器生命周期工作台</span>
+        </div>
+      </div>
+      <nav>
+        <span class="nav-section">业务处理</span>
+        <button data-view="repairPool" data-icon="修" class="active">维修订单池</button>
+        <button data-view="recyclePool" data-icon="收">回收订单池</button>
+        <button data-view="inventory" data-icon="库">回收库存</button>
+        <button data-view="sales" data-icon="售">销售开单</button>
+        <span class="nav-section">经营管理</span>
+        <button data-view="customers" data-icon="客">客户</button>
+        <button data-view="payments" data-icon="财">财务流水</button>
+        <button data-view="reports" data-icon="报">报表</button>
+        <button data-view="audit" data-icon="审">日志</button>
+      </nav>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <div class="page-head">
+          <h1 id="view-title">维修订单池</h1>
+          <p id="view-subtitle">集中查看维修机器、状态和待处理动作。</p>
+          <div id="page-path" class="page-path">当前位置 / 机器生命周期工作台 / 维修订单池</div>
+        </div>
+        <div class="account-area">
+          <div id="account-menu" class="account-menu" hidden>
+            <button type="button" id="account-button" class="account-button">admin</button>
+            <div id="account-dropdown" class="account-dropdown" aria-hidden="true">
+              <div class="account-card">
+                <strong id="account-name">admin</strong>
+                <span id="account-role">admin</span>
+              </div>
+              <button type="button" id="show-permissions" class="menu-button">查看权限</button>
+              <button type="button" id="show-profile" class="menu-button">用户信息</button>
+              <button type="button" id="logout-button" class="menu-button danger-text">退出登录</button>
+              <pre id="account-detail" class="account-detail"></pre>
+            </div>
+          </div>
+        </div>
+      </header>
+
+    <section id="repairPool" class="view active">
+      <div class="panel">
+        <div class="panel-header">
+          <div>
+            <h2>维修订单池</h2>
+            <p>按维修状态筛选机器，点击记录查看完整生命周期。</p>
+          </div>
+          <button type="button" id="open-repair-tab">新建维修单</button>
+        </div>
+        <div class="toolbar filters">
+          <input id="repair-keyword" placeholder="机器编号、IMEI、序列号、机型、客户">
+          <select id="repair-status">
+            <option value="">全部维修状态</option>
+            <option value="检测中">检测中</option>
+            <option value="已报价">已报价</option>
+            <option value="维修中">维修中</option>
+            <option value="待交付">待交付</option>
+            <option value="已交付">已交付</option>
+            <option value="已结单">已结单</option>
+          </select>
+          <button id="search-repair-orders">查询</button>
+        </div>
+        <div id="repair-order-table" class="table-wrap"></div>
+      </div>
+    </section>
+
+    <section id="recyclePool" class="view">
+      <div class="panel">
+        <div class="panel-header">
+          <div>
+            <h2>回收订单池</h2>
+            <p>按回收状态筛选机器，跟进入库、库存和销售流转。</p>
+          </div>
+          <button type="button" id="open-recycle-tab">新建回收单</button>
+        </div>
+        <div class="toolbar filters">
+          <input id="recycle-keyword" placeholder="机器编号、IMEI、序列号、机型、客户">
+          <select id="recycle-status">
+            <option value="">全部回收状态</option>
+            <option value="检测中">检测中</option>
+            <option value="已报价">已报价</option>
+            <option value="回收库存">回收库存</option>
+            <option value="已售出">已售出</option>
+            <option value="已结单">已结单</option>
+          </select>
+          <button id="search-recycle-orders">查询</button>
+        </div>
+        <div id="recycle-order-table" class="table-wrap"></div>
+      </div>
+    </section>
+
+    <section id="repair" class="view">
+      <div class="split">
+        <form id="repair-open-form" class="panel form-grid compact">
+          <div class="panel-header">
+            <div>
+              <h2>维修到店开单</h2>
+              <p>先录入客户与机器信息，生成待检测维修单。</p>
+            </div>
+          </div>
+          <input name="machine_id" type="number" placeholder="已有机器 ID">
+          <input name="customer_name" placeholder="客户姓名">
+          <input name="phone" placeholder="联系电话">
+          <input name="imei" placeholder="IMEI，可为空">
+          <input name="serial" placeholder="序列号">
+          <input name="model" placeholder="机型 *" required list="models">
+          <input name="memory" placeholder="内存">
+          <input name="color" placeholder="颜色">
+          <input name="condition" placeholder="机况">
+          <textarea name="fault_description" placeholder="故障描述"></textarea>
+          <button type="submit">创建维修单</button>
+        </form>
+
+        <form id="repair-step-form" class="panel form-grid compact">
+          <div class="panel-header">
+            <div>
+              <h2>维修流程推进</h2>
+              <p>围绕维修单 ID 完成报价、配件记录和交付。</p>
+            </div>
+          </div>
+          <input name="repair_order_id" type="number" placeholder="维修单 ID *" required>
+          <input name="diagnosis" placeholder="检测结论">
+          <input name="quoted_amount" type="number" step="0.01" placeholder="报价">
+          <input name="item_name" placeholder="维修项目/配件">
+          <input name="quantity" type="number" placeholder="数量" value="1">
+          <input name="cost_amount" type="number" step="0.01" placeholder="成本">
+          <input name="charge_amount" type="number" step="0.01" placeholder="收费">
+          <input name="delivery_check" placeholder="交付检测">
+          <div class="button-row">
+            <button type="button" id="start-repair-diagnosis">开始检测</button>
+            <button type="button" id="quote-repair">检测报价</button>
+            <button type="button" id="add-repair-item">记维修项目</button>
+            <button type="button" id="ready-repair">待交付</button>
+            <button type="button" id="deliver-repair">交付检测</button>
+            <button type="button" id="go-repair-payment">收款结单</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <section id="recycle" class="view">
+      <div class="split">
+        <form id="recycle-open-form" class="panel form-grid compact">
+          <div class="panel-header">
+            <div>
+              <h2>回收到店开单</h2>
+              <p>登记来源客户、机器成色与验机备注。</p>
+            </div>
+          </div>
+          <input name="machine_id" type="number" placeholder="已有机器 ID">
+          <input name="customer_name" placeholder="客户姓名">
+          <input name="phone" placeholder="联系电话">
+          <input name="imei" placeholder="IMEI，可为空">
+          <input name="serial" placeholder="序列号">
+          <input name="model" placeholder="机型 *" required list="models">
+          <input name="memory" placeholder="内存">
+          <input name="color" placeholder="颜色">
+          <input name="condition" placeholder="机况">
+          <textarea name="inspection_note" placeholder="验机记录"></textarea>
+          <button type="submit">创建回收单</button>
+        </form>
+
+        <form id="recycle-step-form" class="panel form-grid compact">
+          <div class="panel-header">
+            <div>
+              <h2>回收流程推进</h2>
+              <p>报价确认后入库，并同步销售定价。</p>
+            </div>
+          </div>
+          <input name="recycle_order_id" type="number" placeholder="回收单 ID *" required>
+          <input name="inspection_result" placeholder="验机结论">
+          <input name="quoted_amount" type="number" step="0.01" placeholder="回收报价">
+          <input name="pay_amount" type="number" step="0.01" placeholder="实际付款">
+          <input name="sale_price" type="number" step="0.01" placeholder="销售定价">
+          <div class="button-row">
+            <button type="button" id="quote-recycle">验机报价</button>
+            <button type="button" id="stock-in-recycle">付款入库</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <section id="inventory" class="view">
+      <div class="panel">
+        <div class="panel-header">
+          <div>
+            <h2>回收机器库存</h2>
+            <p>跟踪已入库机器的成本、定价与销售状态。</p>
+          </div>
+        </div>
+        <div id="inventory-table" class="table-wrap"></div>
+      </div>
+    </section>
+
+    <section id="sales" class="view">
+      <form id="sales-form" class="panel form-grid compact">
+        <div class="panel-header">
+          <div>
+            <h2>销售开单</h2>
+            <p>从回收库存创建销售单，完成出库闭环。</p>
+          </div>
+        </div>
+        <input name="inventory_item_id" type="number" placeholder="库存 ID *" required>
+        <input name="customer_name" placeholder="客户姓名">
+        <input name="phone" placeholder="联系电话">
+        <input name="sale_price" type="number" step="0.01" placeholder="销售价格 *" required>
+        <input name="salesperson" placeholder="销售人 *" required>
+        <textarea name="remark" placeholder="备注"></textarea>
+        <button type="submit">创建销售单</button>
+      </form>
+    </section>
+
+    <section id="customers" class="view">
+      <div class="panel">
+        <div class="panel-header">
+          <div>
+            <h2>客户查询</h2>
+            <p>按姓名、电话、店铺或标签快速定位客户。</p>
+          </div>
+        </div>
+        <div class="toolbar">
+          <input id="customer-keyword" placeholder="姓名、电话、店铺、标签">
+          <button id="search-customers">查询</button>
+        </div>
+        <div id="customer-table" class="table-wrap"></div>
+      </div>
+    </section>
+
+    <section id="payments" class="view">
+      <div class="split">
+        <form id="payment-form" class="panel form-grid compact">
+          <div class="panel-header">
+            <div>
+              <h2>登记收支流水</h2>
+              <p>把维修、销售收入与回收支出关联到业务单据。</p>
+            </div>
+          </div>
+          <select name="source_type">
+            <option value="repair">维修单</option>
+            <option value="sale">销售单</option>
+            <option value="recycle">回收单</option>
+          </select>
+          <input name="source_id" type="number" placeholder="单据 ID *" required>
+          <select name="direction">
+            <option>收入</option>
+            <option>支出</option>
+          </select>
+          <input name="amount" type="number" step="0.01" placeholder="金额 *" required>
+          <input name="method" placeholder="方式">
+          <input name="payer" placeholder="付款方">
+          <input name="payee" placeholder="收款方">
+          <textarea name="remark" placeholder="备注"></textarea>
+          <button type="submit">登记流水</button>
+        </form>
+        <div class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>流水列表</h2>
+              <p>最近登记的收支记录。</p>
+            </div>
+          </div>
+          <div id="payment-table" class="table-wrap"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="reports" class="view">
+      <div class="metric-grid" id="metrics"></div>
+      <div class="panel">
+        <div class="panel-header">
+          <div>
+            <h2>库存明细</h2>
+            <p>结合库存成本和销售定价查看经营概览。</p>
+          </div>
+        </div>
+        <div id="report-details" class="table-wrap"></div>
+      </div>
+    </section>
+
+    <section id="audit" class="view">
+      <div class="panel">
+        <div class="panel-header">
+          <div>
+            <h2>操作日志</h2>
+            <p>保留关键写操作，便于追踪责任与复盘。</p>
+          </div>
+        </div>
+        <div id="audit-table" class="table-wrap"></div>
+      </div>
+    </section>
+    </main>
+  </div>
+
+  <div id="order-modal" class="modal" hidden>
+    <div class="modal-backdrop" data-close-modal></div>
+    <section class="modal-panel">
+      <header class="modal-header">
+        <div>
+          <h2 id="modal-title">订单详情</h2>
+          <p id="modal-subtitle">机器生命周期操作日志</p>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="ghost-button" data-close-modal>关闭</button>
+        </div>
+      </header>
+      <div id="modal-content" class="modal-content"></div>
+    </section>
+  </div>
+
+  <datalist id="models">
+    <option value="iPhone 16">
+    <option value="iPhone 16 Pro">
+    <option value="iPhone 16 Pro Max">
+    <option value="iPhone 15">
+    <option value="iPhone 15 Pro">
+    <option value="iPhone 15 Pro Max">
+    <option value="iPhone 14">
+    <option value="iPhone 14 Pro">
+    <option value="iPhone 14 Pro Max">
+    <option value="iPhone 13">
+    <option value="iPhone 13 Pro">
+    <option value="iPhone 13 Pro Max">
+    <option value="iPhone 12">
+  </datalist>
+  <datalist id="memory-options">
+    <option value="64G">
+    <option value="128G">
+    <option value="256G">
+    <option value="512G">
+    <option value="1TB">
+  </datalist>
+  <datalist id="color-options">
+    <option value="黑色">
+    <option value="白色">
+    <option value="银色">
+    <option value="金色">
+    <option value="蓝色">
+    <option value="绿色">
+    <option value="红色">
+    <option value="原色钛金属">
+    <option value="沙漠色钛金属">
+  </datalist>
+  <datalist id="condition-options">
+    <option value="功能正常">
+    <option value="屏幕划痕">
+    <option value="屏幕损坏">
+    <option value="外观磕碰">
+    <option value="电池老化">
+    <option value="主板故障">
+    <option value="不开机">
+    <option value="进水检测">
+  </datalist>
+  <script src="/static/app.js?v=split-pools-tabs"></script>
+</body>
+</html>

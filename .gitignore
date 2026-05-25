@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local app data and logs
+*.log
+*.sqlite3
+*.sqlite3-*
+mis_mvp/data/*
+!mis_mvp/data/.gitkeep
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Node / frontend tooling
+node_modules/
+dist/
+build/
+
+# .NET / compiled output
+bin/
+obj/
+*.exe
+*.dll
+*.pdb
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+

@@ -1,0 +1,694 @@
+from __future__ import annotations
+
+import sqlite3
+from typing import Any
+
+from .models import CustomerInput, DeviceStatus, PurchaseInput, RepairInput, RepairStatus, SettlementStatus
+
+
+def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    return dict(row) if row else None
+
+
+class Repository:
+    def __init__(self, conn: sqlite3.Connection):
+        self.conn = conn
+
+    def get_user(self, username: str) -> dict[str, Any] | None:
+        return row_to_dict(self.conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone())
+
+    def upsert_customer(self, data: CustomerInput) -> int:
+        existing = self.conn.execute(
+            """
+            SELECT customer_id FROM customers
+            WHERE name = ? AND (phone = ? OR ? = '')
+            ORDER BY customer_id LIMIT 1
+            """,
+            (data.name, data.phone, data.phone),
+        ).fetchone()
+        if existing:
+            cid = int(existing["customer_id"])
+            self.conn.execute(
+                """
+                UPDATE customers
+                SET phone=?, wechat=?, category=?, shop_name=?, address=?, tags=?,
+                    vip_level=?, discount_policy=?, remark=?, updated_at=CURRENT_TIMESTAMP
+                WHERE customer_id=?
+                """,
+                (
+                    data.phone,
+                    data.wechat,
+                    data.category,
+                    data.shop_name,
+                    data.address,
+                    data.tags,
+                    data.vip_level,
+                    data.discount_policy,
+                    data.remark,
+                    cid,
+                ),
+            )
+            return cid
+        cur = self.conn.execute(
+            """
+            INSERT INTO customers
+            (name, phone, wechat, category, shop_name, address, tags, vip_level, discount_policy, remark)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                data.name,
+                data.phone,
+                data.wechat,
+                data.category,
+                data.shop_name,
+                data.address,
+                data.tags,
+                data.vip_level,
+                data.discount_policy,
+                data.remark,
+            ),
+        )
+        return int(cur.lastrowid)
+
+    def get_customer(self, customer_id: int) -> dict[str, Any] | None:
+        return row_to_dict(self.conn.execute("SELECT * FROM customers WHERE customer_id = ?", (customer_id,)).fetchone())
+
+    def search_customers(self, keyword: str = "") -> list[dict[str, Any]]:
+        like = f"%{keyword}%"
+        rows = self.conn.execute(
+            """
+            SELECT * FROM customers
+            WHERE ? = '' OR name LIKE ? OR phone LIKE ? OR shop_name LIKE ? OR tags LIKE ?
+            ORDER BY updated_at DESC, customer_id DESC
+            LIMIT 50
+            """,
+            (keyword, like, like, like, like),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def create_device(self, data: PurchaseInput, customer_id: int | None) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO devices
+            (imei, serial, model, memory, battery, color, country, version, warranty, condition,
+             status, seller, recycler, recycle_price, recycle_time, settlement_status, remark)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                data.imei,
+                data.serial,
+                data.model,
+                data.memory,
+                data.battery,
+                data.color,
+                data.country,
+                data.version,
+                data.warranty,
+                data.condition,
+                DeviceStatus.in_stock.value,
+                data.seller,
+                data.recycler,
+                data.recycle_price,
+                data.recycle_time,
+                data.settlement_status.value,
+                data.remark,
+            ),
+        )
+
+    def get_device(self, imei: str) -> dict[str, Any] | None:
+        return row_to_dict(self.conn.execute("SELECT * FROM devices WHERE imei = ?", (imei,)).fetchone())
+
+    def list_devices(self, status: str | None = None) -> list[dict[str, Any]]:
+        if status:
+            rows = self.conn.execute("SELECT * FROM devices WHERE status = ? ORDER BY rowid DESC", (status,)).fetchall()
+        else:
+            rows = self.conn.execute("SELECT * FROM devices ORDER BY rowid DESC").fetchall()
+        return [dict(row) for row in rows]
+
+    def sell_device(self, imei: str, buyer_customer_id: int | None, buyer: str, salesperson: str, sale_time: str, sale_price: float, settlement_status: SettlementStatus) -> None:
+        self.conn.execute(
+            """
+            UPDATE devices
+            SET status=?, buyer_customer_id=?, buyer_name=?, salesperson=?,
+                sale_time=?, sale_price=?, settlement_status=?
+            WHERE imei=?
+            """,
+            (DeviceStatus.sold.value, buyer_customer_id, buyer, salesperson, sale_time, sale_price, settlement_status.value, imei),
+        )
+
+    def create_repair(self, data: RepairInput, customer_id: int | None) -> int:
+        cur = self.conn.execute(
+            """
+            INSERT INTO repairs
+            (customer_id, customer_name, model, solution, quote, payment_method, status, settlement_status, remark)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                customer_id,
+                data.customer_name,
+                data.model,
+                data.solution,
+                data.quote,
+                data.payment_method,
+                data.status.value,
+                data.settlement_status.value,
+                data.remark,
+            ),
+        )
+        return int(cur.lastrowid)
+
+    def get_repair(self, repair_id: int) -> dict[str, Any] | None:
+        return row_to_dict(self.conn.execute("SELECT * FROM repairs WHERE repair_id = ?", (repair_id,)).fetchone())
+
+    def list_repairs(self) -> list[dict[str, Any]]:
+        rows = self.conn.execute("SELECT * FROM repairs ORDER BY repair_id DESC").fetchall()
+        return [dict(row) for row in rows]
+
+    def update_repair_status(self, repair_id: int, status: RepairStatus) -> None:
+        self.conn.execute("UPDATE repairs SET status = ? WHERE repair_id = ?", (status.value, repair_id))
+
+    def unsettled_sales_for_customer(self, customer_id: int) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT * FROM devices
+            WHERE buyer_customer_id=? AND status=? AND settlement_status=?
+            ORDER BY sale_time DESC, imei
+            """,
+            (customer_id, DeviceStatus.sold.value, SettlementStatus.unsettled.value),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def unsettled_repairs_for_customer(self, customer_id: int) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT * FROM repairs
+            WHERE customer_id=? AND settlement_status=?
+            ORDER BY repair_id DESC
+            """,
+            (customer_id, SettlementStatus.unsettled.value),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def unsettled_repair_orders_for_customer(self, customer_id: int) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT ro.*, ro.repair_order_id AS repair_id, ro.quoted_amount AS quote,
+                   COALESCE(m.model, '') AS model
+            FROM repair_orders ro
+            JOIN machines m ON m.machine_id = ro.machine_id
+            WHERE ro.customer_id=? AND ro.status NOT IN ('已结单', '已作废')
+              AND ro.quoted_amount > 0
+            ORDER BY ro.repair_order_id DESC
+            """,
+            (customer_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def create_settlement(self, customer_id: int, operator: str, total_amount: float, remark: str) -> int:
+        cur = self.conn.execute(
+            "INSERT INTO settlements (customer_id, operator, total_amount, remark) VALUES (?, ?, ?, ?)",
+            (customer_id, operator, total_amount, remark),
+        )
+        return int(cur.lastrowid)
+
+    def add_settlement_item(self, settlement_id: int, source_type: str, source_id: str, amount: float, previous_status: str, new_status: str) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO settlement_items
+            (settlement_id, source_type, source_id, amount, previous_status, new_status)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (settlement_id, source_type, source_id, amount, previous_status, new_status),
+        )
+
+    def mark_sale_settled(self, imei: str) -> None:
+        self.conn.execute("UPDATE devices SET settlement_status=? WHERE imei=?", (SettlementStatus.settled.value, imei))
+
+    def mark_repair_settled(self, repair_id: int) -> None:
+        self.conn.execute(
+            "UPDATE repairs SET settlement_status=?, status=? WHERE repair_id=?",
+            (SettlementStatus.settled.value, RepairStatus.settled.value, repair_id),
+        )
+
+    def mark_repair_order_settled(self, repair_order_id: int) -> None:
+        self.conn.execute(
+            "UPDATE repair_orders SET status='已结单', closed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE repair_order_id=?",
+            (repair_order_id,),
+        )
+
+    def add_log(self, username: str, role: str, action: str, target_type: str, target_id: str, result: str, error: str = "", imei: str = "", customer_id: int | None = None, request_summary: str = "") -> None:
+        self.conn.execute(
+            """
+            INSERT INTO operation_logs
+            (username, role, action, target_type, target_id, imei, customer_id, request_summary, result, error)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (username, role, action, target_type, target_id, imei, customer_id, request_summary, result, error),
+        )
+
+    def logs(self) -> list[dict[str, Any]]:
+        rows = self.conn.execute("SELECT * FROM operation_logs ORDER BY log_id DESC LIMIT 200").fetchall()
+        return [dict(row) for row in rows]
+
+    def get_machine(self, machine_id: int) -> dict[str, Any] | None:
+        return row_to_dict(self.conn.execute("SELECT * FROM machines WHERE machine_id = ?", (machine_id,)).fetchone())
+
+    def get_machine_by_imei(self, imei: str) -> dict[str, Any] | None:
+        return row_to_dict(self.conn.execute("SELECT * FROM machines WHERE imei = ?", (imei,)).fetchone())
+
+    def create_machine(self, data: dict[str, Any]) -> int:
+        cur = self.conn.execute(
+            """
+            INSERT INTO machines
+            (machine_no, imei, serial, model, memory, color, condition, source_type,
+             current_status, customer_id, created_by, assigned_to, remark)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                data["machine_no"],
+                data.get("imei") or None,
+                data.get("serial", ""),
+                data["model"],
+                data.get("memory", ""),
+                data.get("color", ""),
+                data.get("condition", ""),
+                data.get("source_type", ""),
+                data["current_status"],
+                data.get("customer_id"),
+                data.get("created_by", ""),
+                data.get("assigned_to", ""),
+                data.get("remark", ""),
+            ),
+        )
+        return int(cur.lastrowid)
+
+    def update_machine_status(self, machine_id: int, status: str, source_type: str | None = None) -> None:
+        if source_type is None:
+            self.conn.execute(
+                "UPDATE machines SET current_status=?, updated_at=CURRENT_TIMESTAMP WHERE machine_id=?",
+                (status, machine_id),
+            )
+        else:
+            self.conn.execute(
+                "UPDATE machines SET current_status=?, source_type=?, updated_at=CURRENT_TIMESTAMP WHERE machine_id=?",
+                (status, source_type, machine_id),
+            )
+
+    def update_machine(self, machine_id: int, data: dict[str, Any]) -> None:
+        self.conn.execute(
+            """
+            UPDATE machines
+            SET imei=?, serial=?, model=?, memory=?, color=?, condition=?,
+                source_type=?, current_status=?, updated_at=CURRENT_TIMESTAMP
+            WHERE machine_id=?
+            """,
+            (
+                data.get("imei") or None,
+                data.get("serial", ""),
+                data["model"],
+                data.get("memory", ""),
+                data.get("color", ""),
+                data.get("condition", ""),
+                data.get("source_type", ""),
+                data["current_status"],
+                machine_id,
+            ),
+        )
+
+    def add_machine_note(self, machine_id: int, content: str, operator: str) -> int:
+        cur = self.conn.execute(
+            """
+            INSERT INTO machine_notes (machine_id, content, operator)
+            VALUES (?, ?, ?)
+            """,
+            (machine_id, content, operator),
+        )
+        return int(cur.lastrowid)
+
+    def close_machine(self, machine_id: int, status: str) -> None:
+        self.conn.execute(
+            "UPDATE machines SET current_status=?, closed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE machine_id=?",
+            (status, machine_id),
+        )
+
+    def delete_machine(self, machine_id: int) -> None:
+        repair_ids = [
+            int(row["repair_order_id"])
+            for row in self.conn.execute("SELECT repair_order_id FROM repair_orders WHERE machine_id=?", (machine_id,)).fetchall()
+        ]
+        recycle_ids = [
+            int(row["recycle_order_id"])
+            for row in self.conn.execute("SELECT recycle_order_id FROM recycle_orders WHERE machine_id=?", (machine_id,)).fetchall()
+        ]
+        sales_ids = [
+            int(row["sales_order_id"])
+            for row in self.conn.execute("SELECT sales_order_id FROM sales_orders WHERE machine_id=?", (machine_id,)).fetchall()
+        ]
+        for repair_id in repair_ids:
+            self.conn.execute("DELETE FROM payments WHERE source_type='repair' AND source_id=?", (repair_id,))
+            self.conn.execute("DELETE FROM repair_items WHERE repair_order_id=?", (repair_id,))
+        for recycle_id in recycle_ids:
+            self.conn.execute("DELETE FROM payments WHERE source_type='recycle' AND source_id=?", (recycle_id,))
+        for sales_id in sales_ids:
+            self.conn.execute("DELETE FROM payments WHERE source_type='sale' AND source_id=?", (sales_id,))
+        self.conn.execute("DELETE FROM sales_orders WHERE machine_id=?", (machine_id,))
+        self.conn.execute("DELETE FROM inventory_items WHERE machine_id=?", (machine_id,))
+        self.conn.execute("DELETE FROM recycle_orders WHERE machine_id=?", (machine_id,))
+        self.conn.execute("DELETE FROM repair_orders WHERE machine_id=?", (machine_id,))
+        self.conn.execute("DELETE FROM machine_notes WHERE machine_id=?", (machine_id,))
+        self.conn.execute("DELETE FROM machine_events WHERE machine_id=?", (machine_id,))
+        self.conn.execute("DELETE FROM machines WHERE machine_id=?", (machine_id,))
+
+    def search_machines(self, keyword: str = "") -> list[dict[str, Any]]:
+        like = f"%{keyword}%"
+        rows = self.conn.execute(
+            """
+            SELECT m.*, c.name AS customer_name
+            FROM machines m
+            LEFT JOIN customers c ON c.customer_id = m.customer_id
+            WHERE ? = '' OR m.machine_no LIKE ? OR m.imei LIKE ? OR m.serial LIKE ?
+               OR m.model LIKE ? OR c.name LIKE ? OR c.phone LIKE ?
+            ORDER BY m.updated_at DESC, m.machine_id DESC
+            LIMIT 100
+            """,
+            (keyword, like, like, like, like, like, like),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def create_repair_order(self, machine_id: int, customer_id: int | None, status: str, fault_description: str, remark: str, created_by: str) -> int:
+        cur = self.conn.execute(
+            """
+            INSERT INTO repair_orders
+            (machine_id, customer_id, status, fault_description, remark, created_by)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (machine_id, customer_id, status, fault_description, remark, created_by),
+        )
+        return int(cur.lastrowid)
+
+    def get_repair_order(self, repair_order_id: int) -> dict[str, Any] | None:
+        return row_to_dict(self.conn.execute("SELECT * FROM repair_orders WHERE repair_order_id=?", (repair_order_id,)).fetchone())
+
+    def update_repair_order_status(self, repair_order_id: int, status: str, remark: str = "") -> None:
+        self.conn.execute(
+            """
+            UPDATE repair_orders
+            SET status=?, remark=CASE WHEN ? = '' THEN remark ELSE ? END,
+                updated_at=CURRENT_TIMESTAMP,
+                closed_at=CASE WHEN ? = '已结单' THEN CURRENT_TIMESTAMP ELSE closed_at END
+            WHERE repair_order_id=?
+            """,
+            (status, remark, remark, status, repair_order_id),
+        )
+
+    def quote_repair_order(self, repair_order_id: int, diagnosis: str, quoted_amount: float, status: str) -> None:
+        self.conn.execute(
+            """
+            UPDATE repair_orders
+            SET diagnosis=?, quoted_amount=?, status=?, updated_at=CURRENT_TIMESTAMP
+            WHERE repair_order_id=?
+            """,
+            (diagnosis, quoted_amount, status, repair_order_id),
+        )
+
+    def add_repair_item(self, repair_order_id: int, item_name: str, quantity: int, cost_amount: float, charge_amount: float, remark: str) -> int:
+        cur = self.conn.execute(
+            """
+            INSERT INTO repair_items
+            (repair_order_id, item_name, quantity, cost_amount, charge_amount, remark)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (repair_order_id, item_name, quantity, cost_amount, charge_amount, remark),
+        )
+        return int(cur.lastrowid)
+
+    def list_repair_items(self, repair_order_id: int) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            "SELECT * FROM repair_items WHERE repair_order_id=? ORDER BY repair_item_id",
+            (repair_order_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def deliver_repair_order(self, repair_order_id: int, delivery_check: str, remark: str, status: str) -> None:
+        self.conn.execute(
+            """
+            UPDATE repair_orders
+            SET delivery_check=?, remark=CASE WHEN ? = '' THEN remark ELSE ? END,
+                status=?, updated_at=CURRENT_TIMESTAMP
+            WHERE repair_order_id=?
+            """,
+            (delivery_check, remark, remark, status, repair_order_id),
+        )
+
+    def create_recycle_order(self, machine_id: int, customer_id: int | None, status: str, inspection_note: str, remark: str, created_by: str) -> int:
+        cur = self.conn.execute(
+            """
+            INSERT INTO recycle_orders
+            (machine_id, customer_id, status, inspection_note, remark, created_by)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (machine_id, customer_id, status, inspection_note, remark, created_by),
+        )
+        return int(cur.lastrowid)
+
+    def get_recycle_order(self, recycle_order_id: int) -> dict[str, Any] | None:
+        return row_to_dict(self.conn.execute("SELECT * FROM recycle_orders WHERE recycle_order_id=?", (recycle_order_id,)).fetchone())
+
+    def quote_recycle_order(self, recycle_order_id: int, inspection_result: str, quoted_amount: float, status: str) -> None:
+        self.conn.execute(
+            """
+            UPDATE recycle_orders
+            SET inspection_result=?, quoted_amount=?, status=?, updated_at=CURRENT_TIMESTAMP
+            WHERE recycle_order_id=?
+            """,
+            (inspection_result, quoted_amount, status, recycle_order_id),
+        )
+
+    def stock_in_recycle_order(self, recycle_order_id: int, paid_amount: float, status: str) -> None:
+        self.conn.execute(
+            """
+            UPDATE recycle_orders
+            SET paid_amount=?, status=?, updated_at=CURRENT_TIMESTAMP
+            WHERE recycle_order_id=?
+            """,
+            (paid_amount, status, recycle_order_id),
+        )
+
+    def create_inventory_item(self, machine_id: int, recycle_order_id: int, status: str, cost_amount: float, sale_price: float) -> int:
+        cur = self.conn.execute(
+            """
+            INSERT INTO inventory_items
+            (machine_id, recycle_order_id, status, cost_amount, sale_price)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (machine_id, recycle_order_id, status, cost_amount, sale_price),
+        )
+        return int(cur.lastrowid)
+
+    def list_inventory_items(self) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT i.*, m.machine_no, m.imei, m.model, m.color, m.current_status
+            FROM inventory_items i
+            JOIN machines m ON m.machine_id = i.machine_id
+            ORDER BY i.updated_at DESC, i.inventory_item_id DESC
+            """
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_inventory_item(self, inventory_item_id: int) -> dict[str, Any] | None:
+        return row_to_dict(
+            self.conn.execute(
+                """
+                SELECT i.*, m.machine_no, m.imei, m.model
+                FROM inventory_items i
+                JOIN machines m ON m.machine_id = i.machine_id
+                WHERE i.inventory_item_id=?
+                """,
+                (inventory_item_id,),
+            ).fetchone()
+        )
+
+    def mark_inventory_sold(self, inventory_item_id: int) -> None:
+        self.conn.execute(
+            "UPDATE inventory_items SET status='已售出', updated_at=CURRENT_TIMESTAMP WHERE inventory_item_id=?",
+            (inventory_item_id,),
+        )
+
+    def create_sales_order(self, inventory_item_id: int, machine_id: int, customer_id: int | None, status: str, sale_price: float, salesperson: str, remark: str, created_by: str) -> int:
+        cur = self.conn.execute(
+            """
+            INSERT INTO sales_orders
+            (inventory_item_id, machine_id, customer_id, status, sale_price, salesperson, remark, created_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (inventory_item_id, machine_id, customer_id, status, sale_price, salesperson, remark, created_by),
+        )
+        return int(cur.lastrowid)
+
+    def get_sales_order(self, sales_order_id: int) -> dict[str, Any] | None:
+        return row_to_dict(self.conn.execute("SELECT * FROM sales_orders WHERE sales_order_id=?", (sales_order_id,)).fetchone())
+
+    def create_payment(self, data: dict[str, Any]) -> int:
+        cur = self.conn.execute(
+            """
+            INSERT INTO payments
+            (source_type, source_id, direction, amount, method, payer, payee, operator, remark)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                data["source_type"],
+                data["source_id"],
+                data["direction"],
+                data["amount"],
+                data.get("method", ""),
+                data.get("payer", ""),
+                data.get("payee", ""),
+                data.get("operator", ""),
+                data.get("remark", ""),
+            ),
+        )
+        return int(cur.lastrowid)
+
+    def payments_for_source(self, source_type: str, source_id: int) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT * FROM payments
+            WHERE source_type=? AND source_id=?
+            ORDER BY payment_id
+            """,
+            (source_type, source_id),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def payment_total_for_source(self, source_type: str, source_id: int, direction: str | None = None) -> float:
+        if direction is None:
+            row = self.conn.execute(
+                "SELECT COALESCE(SUM(amount), 0) AS total FROM payments WHERE source_type=? AND source_id=?",
+                (source_type, source_id),
+            ).fetchone()
+        else:
+            row = self.conn.execute(
+                "SELECT COALESCE(SUM(amount), 0) AS total FROM payments WHERE source_type=? AND source_id=? AND direction=?",
+                (source_type, source_id, direction),
+            ).fetchone()
+        return float(row["total"] if row else 0)
+
+    def list_payments(self) -> list[dict[str, Any]]:
+        rows = self.conn.execute("SELECT * FROM payments ORDER BY payment_id DESC LIMIT 200").fetchall()
+        return [dict(row) for row in rows]
+
+    def close_source_by_payment(self, source_type: str, source_id: int) -> int | None:
+        if source_type == "repair":
+            order = self.get_repair_order(source_id)
+            if not order:
+                return None
+            if self.payment_total_for_source("repair", source_id, "收入") < float(order["quoted_amount"]):
+                return int(order["machine_id"])
+            self.conn.execute(
+                "UPDATE repair_orders SET status='已结单', closed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE repair_order_id=?",
+                (source_id,),
+            )
+            self.close_machine(int(order["machine_id"]), "已结单")
+            return int(order["machine_id"])
+        if source_type == "sale":
+            order = self.get_sales_order(source_id)
+            if not order:
+                return None
+            self.conn.execute("UPDATE sales_orders SET status='已结单', closed_at=CURRENT_TIMESTAMP WHERE sales_order_id=?", (source_id,))
+            self.close_machine(int(order["machine_id"]), "已结单")
+            return int(order["machine_id"])
+        if source_type == "recycle":
+            order = self.get_recycle_order(source_id)
+            return int(order["machine_id"]) if order else None
+        return None
+
+    def repair_order_events(self, machine_id: int, repair_order_id: int) -> list[dict[str, Any]]:
+        item_ids = [int(item["repair_item_id"]) for item in self.list_repair_items(repair_order_id)]
+        item_filter = ""
+        params: list[Any] = [machine_id, repair_order_id]
+        if item_ids:
+            placeholders = ",".join("?" for _ in item_ids)
+            item_filter = f" OR (related_type='repair_item' AND related_id IN ({placeholders}))"
+            params.extend(item_ids)
+        rows = self.conn.execute(
+            f"""
+            SELECT * FROM machine_events
+            WHERE machine_id=? AND (
+                (related_type='repair' AND related_id=?)
+                {item_filter}
+                OR related_type='payment'
+            )
+            ORDER BY event_id
+            """,
+            params,
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def repair_order_detail(self, repair_order_id: int) -> dict[str, Any] | None:
+        order = self.get_repair_order(repair_order_id)
+        if not order:
+            return None
+        machine_id = int(order["machine_id"])
+        customer_id = order.get("customer_id")
+        order["machine"] = self.get_machine(machine_id)
+        order["customer"] = self.get_customer(int(customer_id)) if customer_id else None
+        order["items"] = self.list_repair_items(repair_order_id)
+        order["payments"] = self.payments_for_source("repair", repair_order_id)
+        order["events"] = self.repair_order_events(machine_id, repair_order_id)
+        return order
+
+    def add_machine_event(self, machine_id: int, event_type: str, title: str, detail: str, operator: str, related_type: str = "", related_id: int | None = None) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO machine_events
+            (machine_id, event_type, title, detail, operator, related_type, related_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (machine_id, event_type, title, detail, operator, related_type, related_id),
+        )
+
+    def machine_timeline(self, machine_id: int) -> dict[str, Any]:
+        machine = self.get_machine(machine_id)
+        events = self.conn.execute(
+            "SELECT * FROM machine_events WHERE machine_id=? ORDER BY event_id",
+            (machine_id,),
+        ).fetchall()
+        repairs = self.conn.execute("SELECT * FROM repair_orders WHERE machine_id=? ORDER BY repair_order_id", (machine_id,)).fetchall()
+        repair_items: list[dict[str, Any]] = []
+        repair_payments: list[dict[str, Any]] = []
+        for row in repairs:
+            repair_id = int(row["repair_order_id"])
+            repair_items.extend(self.list_repair_items(repair_id))
+            repair_payments.extend(self.payments_for_source("repair", repair_id))
+        recycle = self.conn.execute("SELECT * FROM recycle_orders WHERE machine_id=? ORDER BY recycle_order_id", (machine_id,)).fetchall()
+        inventory = self.conn.execute("SELECT * FROM inventory_items WHERE machine_id=? ORDER BY inventory_item_id", (machine_id,)).fetchall()
+        sales = self.conn.execute("SELECT * FROM sales_orders WHERE machine_id=? ORDER BY sales_order_id", (machine_id,)).fetchall()
+        notes = self.conn.execute("SELECT * FROM machine_notes WHERE machine_id=? ORDER BY note_id", (machine_id,)).fetchall()
+        return {
+            "machine": machine,
+            "events": [dict(row) for row in events],
+            "notes": [dict(row) for row in notes],
+            "repair_orders": [dict(row) for row in repairs],
+            "repair_items": repair_items,
+            "repair_payments": repair_payments,
+            "recycle_orders": [dict(row) for row in recycle],
+            "inventory_items": [dict(row) for row in inventory],
+            "sales_orders": [dict(row) for row in sales],
+        }
+
+    def machine_reports(self) -> dict[str, Any]:
+        status_rows = self.conn.execute(
+            "SELECT current_status, COUNT(*) AS count FROM machines GROUP BY current_status ORDER BY current_status"
+        ).fetchall()
+        payment_rows = self.conn.execute(
+            "SELECT direction, COALESCE(SUM(amount), 0) AS amount FROM payments GROUP BY direction"
+        ).fetchall()
+        inventory = self.list_inventory_items()
+        return {
+            "machine_status_counts": [dict(row) for row in status_rows],
+            "payment_totals": [dict(row) for row in payment_rows],
+            "inventory_count": len([item for item in inventory if item["status"] != "已售出"]),
+            "inventory_cost": sum(float(item["cost_amount"]) for item in inventory if item["status"] != "已售出"),
+            "inventory": inventory,
+        }
