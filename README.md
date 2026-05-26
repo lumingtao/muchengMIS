@@ -10,6 +10,10 @@ The Python PWA is currently the main prototype. It starts with mock data and can
 
 ## Run the PWA
 
+Business documentation:
+
+- [当前业务流动说明书（维修业务重点）](BUSINESS_FLOW.md)
+
 Install dependencies:
 
 ```powershell
