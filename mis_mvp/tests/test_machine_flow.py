@@ -11,19 +11,34 @@ from backend.models import (
     MachineNoteInput,
     MachineStatus,
     MachineUpdateInput,
+    MaterialBatchInput,
+    MaterialBatchReturnInput,
+    MaterialCategoryInput,
+    MaterialInput,
+    MaterialIssueReturnInput,
+    MaterialRequestActionInput,
+    MaterialRequestInput,
+    MaterialRequestItemInput,
+    MaterialReturnInspectInput,
     OrderStatus,
     PaymentDirection,
     PaymentInput,
     RecycleOrderInput,
     RecycleQuoteInput,
+    RepairAssignInput,
     RepairDeliverInput,
+    RepairEngineerCloseInput,
     RepairItemInput,
     RepairOrderInput,
     RepairOrderStatusInput,
+    RepairQuoteConfirmInput,
     RepairQuoteInput,
+    RepairFaultMaterialInput,
     Role,
     SalesOrderInput,
     StockInInput,
+    WarehouseAreaInput,
+    WarehouseLocationInput,
     User,
 )
 from backend.service import BusinessError, MisService
@@ -38,6 +53,25 @@ def service(tmp_path: Path) -> MisService:
 
 def user(role: Role = Role.admin) -> User:
     return User(username=role.value, role=role)
+
+
+def warehouse_seed(service: MisService) -> tuple[dict, dict, dict, dict]:
+    area = service.create_warehouse_area(user(), WarehouseAreaInput(area_code="MAIN", name="主库区"))
+    location = service.create_warehouse_location(user(), WarehouseLocationInput(area_id=area["area_id"], location_code="MAIN-A01", name="主库 A01"))
+    category = service.create_material_category(user(), MaterialCategoryInput(category_code="SSD", name="硬盘"))
+    material = service.create_material(
+        user(),
+        MaterialInput(
+            category_id=category["category_id"],
+            default_location_id=location["location_id"],
+            name="iPhone 通用 512G 硬盘",
+            compatible_range="IPH12-15",
+            spec="512G",
+            min_qty=1,
+            avg_cost=375,
+        ),
+    )
+    return area, location, category, material
 
 
 def test_machine_unique_imei_and_temp_no(service: MisService) -> None:
@@ -123,6 +157,83 @@ def test_repair_lifecycle_and_payment_timeline(service: MisService) -> None:
     assert timeline["repair_items"][0]["charge_amount"] == 580
 
 
+def test_frontdesk_engineer_repair_handoff_and_visibility(service: MisService) -> None:
+    order = service.create_repair_order(
+        user(Role.frontdesk),
+        RepairOrderInput(
+            machine=MachineInput(imei="862222222222221", model="iPhone 15"),
+            customer=CustomerInput(name="协作客户", phone="13800000001"),
+            fault_description="屏幕碎裂",
+        ),
+    )
+    repair_id = order["repair_order_id"]
+
+    with pytest.raises(PermissionError):
+        service.machine_timeline(user(Role.engineer), order["machine_id"])
+
+    assigned = service.assign_repair_order(
+        user(Role.frontdesk),
+        repair_id,
+        RepairAssignInput(engineer_user_id="engineer", remark="优先处理"),
+    )
+    assert assigned["assigned_to"] == "engineer"
+    assert assigned["workflow_status"] == "工程师待检测"
+
+    visible = service.search_machines(user(Role.engineer), "862222222222221")
+    assert [row["machine_id"] for row in visible] == [order["machine_id"]]
+
+    service.update_repair_order_status(user(Role.engineer), repair_id, RepairOrderStatusInput(status=OrderStatus.diagnosing))
+    sku = service.list_repair_skus(user(Role.engineer))[0]
+    quoted = service.quote_repair_order(
+        user(Role.engineer),
+        repair_id,
+        RepairQuoteInput(
+            diagnosis="外屏碎裂",
+            fault_detail="屏幕显示正常，玻璃碎裂",
+            repair_solution="更换屏幕总成",
+            sku_ids=[sku["sku_id"]],
+        ),
+    )
+    assert quoted["status"] == "已报价"
+    assert quoted["quoted_amount"] == sku["charge_amount"]
+    assert quoted["workflow_status"] == "待客户确认"
+
+    confirmed = service.confirm_repair_quote(
+        user(Role.frontdesk),
+        repair_id,
+        RepairQuoteConfirmInput(confirm_result="客户同意维修", confirm_method="微信", contact_person="协作客户"),
+    )
+    assert confirmed["status"] == "处理中"
+    assert confirmed["workflow_status"] == "工程师维修中"
+
+    service.add_repair_item(
+        user(Role.engineer),
+        repair_id,
+        RepairItemInput(
+            sku_id=sku["sku_id"],
+            item_name=sku["solution_name"],
+            quantity=1,
+            cost_amount=sku["cost_amount"],
+            charge_amount=sku["charge_amount"],
+        ),
+    )
+    closed = service.engineer_close_repair_order(user(Role.engineer), repair_id, RepairEngineerCloseInput(remark="维修完成"))
+    assert closed["workflow_status"] == "待前台收费/交付"
+    assert closed["status"] == "待交付"
+
+    delivered = service.deliver_repair_order(user(Role.frontdesk), repair_id, RepairDeliverInput(delivery_check="前台交付检测正常"))
+    assert delivered["status"] == "已交付"
+    payment = service.create_payment(
+        user(Role.frontdesk),
+        PaymentInput(source_type="repair", source_id=repair_id, direction=PaymentDirection.income, amount=sku["charge_amount"]),
+    )
+    timeline = service.machine_timeline(user(Role.frontdesk), payment["machine_id"])
+    assert timeline["machine"]["current_status"] == "已结单"
+    assert any(event["title"] == "指派工程师" for event in timeline["events"])
+    assert any(event["title"] == "报价确认" for event in timeline["events"])
+    assert any(event["title"] == "工程师结单" for event in timeline["events"])
+
+
 def test_repair_order_rejects_jump_and_closed_changes(service: MisService) -> None:
     order = service.create_repair_order(
         user(Role.staff),
@@ -190,3 +301,93 @@ def test_recycle_inventory_sale_and_payment(service: MisService) -> None:
     report = service.machine_reports(user(Role.finance))
     assert report["inventory_count"] == 0
     assert any(row["direction"] == "收入" for row in report["payment_totals"])
+
+
+def test_material_batch_creates_units_and_purchase_return(service: MisService) -> None:
+    _, location, _, material = warehouse_seed(service)
+    batch = service.create_material_batch(
+        user(),
+        MaterialBatchInput(
+            material_id=material["material_id"],
+            location_id=location["location_id"],
+            qty=3,
+            unit_cost=375,
+            supplier="真实供应商待确认",
+        ),
+        "purchase",
+    )
+    units = service.material_units(user())
+    assert len([row for row in units if row["batch_id"] == batch["batch_id"]]) == 3
+    assert service.warehouse_overview(user())["materials"][0]["current_qty"] == 3
+
+    first_unit = next(row for row in units if row["batch_id"] == batch["batch_id"])
+    service.return_material_batch(
+        user(),
+        batch["batch_id"],
+        MaterialBatchReturnInput(unit_ids=[first_unit["unit_id"]], refund_status="待确认"),
+    )
+    overview = service.warehouse_overview(user())
+    returned = next(row for row in overview["units"] if row["unit_id"] == first_unit["unit_id"])
+    assert returned["current_status"] == "已退货"
+    assert next(row for row in overview["materials"] if row["material_id"] == material["material_id"])["current_qty"] == 2
+    assert any(row["movement_type"] == "采购退货" for row in overview["movements"])
+
+
+def test_material_request_issue_return_and_cancel_guard(service: MisService) -> None:
+    _, location, _, material = warehouse_seed(service)
+    service.create_material_batch(
+        user(),
+        MaterialBatchInput(material_id=material["material_id"], location_id=location["location_id"], qty=2, unit_cost=375),
+        "purchase",
+    )
+    order = service.create_repair_order(
+        user(Role.staff),
+        RepairOrderInput(machine=MachineInput(imei="868888888888001", model="iPhone 15 Pro"), fault_description="不开机"),
+    )
+    request = service.create_material_request(
+        user(Role.engineer),
+        MaterialRequestInput(
+            repair_order_id=order["repair_order_id"],
+            engineer_user="engineer",
+            items=[MaterialRequestItemInput(material_id=material["material_id"], qty=1)],
+        ),
+    )
+    assert next(row for row in service.warehouse_overview(user())["materials"] if row["material_id"] == material["material_id"])["current_qty"] == 2
+    service.approve_material_request(user(), request["request_id"], MaterialRequestActionInput())
+    assert next(row for row in service.warehouse_overview(user())["materials"] if row["material_id"] == material["material_id"])["current_qty"] == 2
+
+    issued = service.issue_material_request(user(), request["request_id"], MaterialRequestActionInput())
+    unit_id = issued["units"][0]["unit_id"]
+    assert next(row for row in service.warehouse_overview(user())["materials"] if row["material_id"] == material["material_id"])["current_qty"] == 1
+    with pytest.raises(BusinessError):
+        service.update_repair_order_status(user(Role.staff), order["repair_order_id"], RepairOrderStatusInput(status=OrderStatus.cancelled))
+
+    ret = service.request_material_return(user(Role.engineer), unit_id, MaterialIssueReturnInput(remark="工单取消前退料"))
+    service.inspect_material_return(user(), ret["return_id"], MaterialReturnInspectInput(inspect_result="可复用"))
+    overview = service.warehouse_overview(user())
+    assert next(row for row in overview["materials"] if row["material_id"] == material["material_id"])["current_qty"] == 2
+    assert next(row for row in overview["units"] if row["unit_id"] == unit_id)["current_status"] == "在库可用"
+
+
+def test_repair_fault_material_hints_and_engineer_mine(service: MisService) -> None:
+    _, location, _, material = warehouse_seed(service)
+    service.create_material_batch(
+        user(),
+        MaterialBatchInput(material_id=material["material_id"], location_id=location["location_id"], qty=1, unit_cost=375),
+        "purchase",
+    )
+    sku = service.list_repair_skus(user())[0]
+    service.upsert_repair_fault_material(
+        user(),
+        RepairFaultMaterialInput(repair_sku_id=sku["sku_id"], material_id=material["material_id"], qty=1, priority=1),
+    )
+    hint = service.material_hints_for_sku(user(Role.engineer), sku["sku_id"])
+    assert hint["materials"][0]["current_qty"] == 1
+    assert hint["materials"][0]["stock_warning"] == ""
+
+    request = service.create_material_request(
+        user(Role.engineer),
+        MaterialRequestInput(engineer_user="engineer", items=[MaterialRequestItemInput(material_id=material["material_id"], qty=1)]),
+    )
+    mine = service.material_requests(user(Role.engineer), mine=True)
+    assert [row["request_id"] for row in mine] == [request["request_id"]]

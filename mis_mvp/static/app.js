@@ -7,6 +7,9 @@ const state = {
   user: localStorage.getItem("mis_user") || "",
   profile: null,
   currentTimeline: null,
+  repairWorkbench: null,
+  warehouse: null,
+  repairWorkbenchSort: { key: "updated_at", direction: "desc" },
   poolSort: {
     repair: { ...defaultPoolSort.repair },
     recycle: { ...defaultPoolSort.recycle },
@@ -14,10 +17,11 @@ const state = {
 };
 
 const titles = {
-  repairPool: ["维修订单池", "集中查看维修机器、状态和待处理动作。"],
+  repairPool: ["维修闭环中心", "集中查看真实维修工单、待补资料、挂账和财务确认。"],
   recyclePool: ["回收订单池", "集中查看回收机器、入库和销售流转。"],
   repair: ["维修开单", "机器到店、检测报价、维修项目、交付检测。"],
   recycle: ["回收开单", "机器到店、验机报价、付款入库、销售定价。"],
+  warehouse: ["配件仓库", "物料编码、批次、单件码、申领发放、退料退货、盘点调整和维修协同。"],
   inventory: ["回收库存", "查看已回收入库并可销售的机器。"],
   sales: ["销售开单", "从回收库存创建销售单。"],
   customers: ["客户", "查询由机器业务产生的客户主数据。"],
@@ -69,7 +73,9 @@ function numericKeys() {
   return new Set([
     "machine_id", "repair_order_id", "recycle_order_id", "inventory_item_id",
     "source_id", "customer_id", "quoted_amount", "quantity", "cost_amount", "charge_amount",
-    "pay_amount", "sale_price", "amount",
+    "pay_amount", "sale_price", "amount", "sku_id", "category_id", "area_id", "location_id",
+    "default_location_id", "material_id", "batch_id", "unit_id", "request_id", "return_id",
+    "repair_sku_id", "qty", "unit_cost", "min_qty", "priority", "adjust_material_id", "adjust_qty",
   ]);
 }
 
@@ -99,8 +105,8 @@ function customerPayload(data) {
   return { name: data.customer_name, phone: data.phone || "" };
 }
 
-const moneyKeys = new Set(["quoted_amount", "cost_amount", "charge_amount", "paid_amount", "pay_amount", "sale_price", "amount", "inventory_cost"]);
-const idKeys = new Set(["machine_id", "customer_id", "repair_order_id", "recycle_order_id", "inventory_item_id", "sales_order_id", "payment_id", "source_id", "target_id"]);
+const moneyKeys = new Set(["quoted_amount", "cost_amount", "charge_amount", "paid_amount", "pay_amount", "sale_price", "amount", "inventory_cost", "avg_cost", "unit_cost", "total_cost", "refund_amount"]);
+const idKeys = new Set(["machine_id", "customer_id", "repair_order_id", "recycle_order_id", "inventory_item_id", "sales_order_id", "payment_id", "source_id", "target_id", "income_item_id", "cost_item_id", "repair_material_id", "stock_movement_id", "material_id", "batch_id", "unit_id", "request_id", "return_id", "category_id", "location_id", "area_id", "binding_id"]);
 const strongKeys = new Set(["machine_no", "model", "name", "customer_name"]);
 
 function escapeHtml(value) {
@@ -265,15 +271,39 @@ function renderBusinessSections(timeline) {
       </div>
       ${renderPriceChangeForm("repair", order)}
       ${detailTable(timeline.repair_orders, [
-        ["repair_order_id", "维修单"], ["status", "状态"], ["fault_description", "故障"], ["diagnosis", "检测"], ["quoted_amount", "报价"]
+        ["repair_order_id", "维修单"], ["status", "状态"], ["workflow_status", "待办归属"], ["assigned_to", "工程师"],
+        ["fault_description", "前台故障"], ["fault_detail", "检测故障"], ["repair_solution", "维修方案"],
+        ["quote_confirm_status", "客户确认"], ["quoted_amount", "报价"]
       ])}
-      ${order ? '<div class="section-action-row"><button type="button" id="open-price-change" class="ghost-button">改价</button></div>' : ""}
+      ${order ? `
+        <form id="repair-assign-form" class="inline-action-form">
+          <input name="engineer_user_id" placeholder="工程师账号，例如 engineer" required>
+          <input name="remark" placeholder="指派备注">
+          <button type="submit">指派工程师</button>
+        </form>
+        <form id="repair-confirm-form" class="inline-action-form">
+          <select name="confirm_result">
+            <option>客户同意维修</option>
+            <option>客户拒修</option>
+            <option>待考虑</option>
+          </select>
+          <input name="confirm_method" placeholder="确认方式">
+          <input name="contact_person" placeholder="联系人">
+          <input name="remark" placeholder="沟通备注">
+          <button type="submit">客户确认</button>
+        </form>
+        <form id="repair-engineer-close-form" class="inline-action-form">
+          <input name="remark" placeholder="工程师结单备注">
+          <button type="submit">工程师结单</button>
+        </form>
+        <div class="section-action-row"><button type="button" id="open-price-change" class="ghost-button">改价</button></div>
+      ` : ""}
     `);
     if (timeline.repair_items?.length) {
       sections.push(`
         <h3>维修项目</h3>
         ${detailTable(timeline.repair_items, [
-          ["repair_item_id", "项目ID"], ["repair_order_id", "维修单"], ["item_name", "项目"], ["quantity", "数量"], ["cost_amount", "成本"], ["charge_amount", "收费"]
+          ["repair_item_id", "项目ID"], ["repair_order_id", "维修单"], ["sku_id", "SKU"], ["item_name", "项目"], ["quantity", "数量"], ["cost_amount", "成本"], ["charge_amount", "收费"]
         ])}
       `);
     }
@@ -451,6 +481,7 @@ async function refresh(name = "repairPool") {
   try {
     if (name === "repairPool") await loadBusinessPool("repair");
     if (name === "recyclePool") await loadBusinessPool("recycle");
+    if (name === "warehouse") await loadWarehouse();
     if (name === "inventory") await loadInventory();
     if (name === "customers") await loadCustomers();
     if (name === "payments") await loadPayments();
@@ -500,6 +531,15 @@ function applyBusinessPoolFilters(rows, kind) {
 }
 
 function sortValue(row, key) {
+  const sourceKey = {
+    completed_at_display: "completed_at",
+    closed_at_display: "closed_at",
+    workflow_progress: "workflow_status",
+    engineer_name: "assigned_to",
+  }[key] || key;
+  if (sourceKey !== key) {
+    return sortValue(row, sourceKey);
+  }
   const value = row[key];
   if (value === null || value === undefined || value === "") return "";
   if (numericKeys().has(key)) return Number(value);
@@ -511,7 +551,7 @@ function sortValue(row, key) {
 }
 
 function sortedRows(rows, kind) {
-  const sort = state.poolSort[kind];
+  const sort = kind === "repairWorkbench" ? state.repairWorkbenchSort : state.poolSort[kind];
   return [...rows].sort((a, b) => {
     const av = sortValue(a, sort.key);
     const bv = sortValue(b, sort.key);
@@ -523,27 +563,248 @@ function sortedRows(rows, kind) {
   });
 }
 
+function bindRepairWorkbenchSort() {
+  document.querySelectorAll("#repair-order-table [data-sort-key]").forEach(button => {
+    button.addEventListener("click", () => {
+      const key = button.dataset.sortKey;
+      const current = state.repairWorkbenchSort;
+      state.repairWorkbenchSort = {
+        key,
+        direction: current.key === key && current.direction === "asc" ? "desc" : "asc",
+      };
+      if (state.repairWorkbench) renderRepairWorkbench(state.repairWorkbench);
+    });
+  });
+}
+
 function resetBusinessPoolFilters(kind) {
   const config = poolConfig(kind);
   $(config.keyword).value = "";
   $(config.status).value = "";
+  if (kind === "repair") {
+    $("#repair-payment-status").value = "";
+    $("#repair-customer-type").value = "";
+    $("#repair-missing-only").value = "";
+    $("#repair-date-from").value = "";
+    $("#repair-date-to").value = "";
+    state.repairWorkbenchSort = { key: "updated_at", direction: "desc" };
+  }
   state.poolSort[kind] = { ...defaultPoolSort[kind] };
   loadBusinessPool(kind);
 }
 
 async function loadBusinessPool(kind) {
+  if (kind === "repair") {
+    await loadRepairWorkbench();
+    return;
+  }
   const config = poolConfig(kind);
   const q = encodeURIComponent($(config.keyword).value || "");
   const rows = await api(`/api/machines?q=${q}`);
   const filtered = sortedRows(applyBusinessPoolFilters(rows, kind), kind);
   const columns = [
     ["machine_no", "机器编号"], ["imei", "IMEI"], ["model", "机型"],
-    ["customer_name", "客户"], ["current_status", "当前状态"],
+    ["customer_name", "客户"], ["current_status", "当前状态"], ["assigned_to", "工程师"],
     ["updated_at", "更新时间"],
   ];
   $(config.table).innerHTML = table(filtered, columns, config.empty, { sortable: true, sort: state.poolSort[kind] });
   bindPoolSort(kind);
   bindOrderRows(filtered, config.table);
+}
+
+function repairFilterText(order) {
+  return [
+    order.order_no, order.machine_no, order.imei, order.serial, order.model, order.customer_name,
+    order.customer_type, order.counter_no, order.assigned_to, order.service_type, order.remark,
+  ].join(" ").toLowerCase();
+}
+
+function dateBoundary(value, endOfDay = false) {
+  if (!value) return null;
+  const date = new Date(`${value}T${endOfDay ? "23:59:59" : "00:00:00"}`);
+  const time = date.getTime();
+  return Number.isNaN(time) ? null : time;
+}
+
+function repairOrderUpdatedAt(order) {
+  const time = Date.parse(order.updated_at || "");
+  return Number.isNaN(time) ? null : time;
+}
+
+function repairWorkbenchDisplayRow(order) {
+  return {
+    ...order,
+    completed_at_display: order.completed_at || "待完成",
+    closed_at_display: order.closed_at || "未完结",
+    workflow_progress: order.workflow_status || order.status || "待确认",
+    engineer_name: order.assigned_to || "待指派",
+  };
+}
+
+function repairWorkbenchRows(orders) {
+  const keyword = ($("#repair-keyword").value || "").trim().toLowerCase();
+  const status = $("#repair-status").value || "";
+  const payment = $("#repair-payment-status").value || "";
+  const customerType = $("#repair-customer-type").value || "";
+  const missingOnly = $("#repair-missing-only").value === "1";
+  const fromTime = dateBoundary($("#repair-date-from")?.value || "");
+  const toTime = dateBoundary($("#repair-date-to")?.value || "", true);
+  return (orders || []).filter(order => {
+    if (keyword && !repairFilterText(order).includes(keyword)) return false;
+    if (status && order.status !== status) return false;
+    if (payment && order.payment_status !== payment) return false;
+    if (customerType && order.customer_type !== customerType) return false;
+    if (missingOnly && !(order.unknown_fields || []).length && !String(order.remark || "").includes("待补") && !String(order.remark || "").includes("待确认")) return false;
+    if (fromTime !== null || toTime !== null) {
+      const updatedAt = repairOrderUpdatedAt(order);
+      if (updatedAt === null) return false;
+      if (fromTime !== null && updatedAt < fromTime) return false;
+      if (toTime !== null && updatedAt > toTime) return false;
+    }
+    return true;
+  }).map(repairWorkbenchDisplayRow);
+}
+
+function renderRepairMetrics(data) {
+  const orders = data.orders || [];
+  const total = orders.length;
+  const finance = orders.filter(x => x.payment_status === "已付款待财务确认").length;
+  const receivable = orders.filter(x => x.payment_status === "同行挂账").length;
+  const open = orders.filter(x => !["已完结", "已结单"].includes(x.status)).length;
+  const missing = orders.filter(x => (x.unknown_fields || []).length || String(x.remark || "").includes("待补") || String(x.remark || "").includes("待确认")).length;
+  $("#repair-workbench-metrics").innerHTML = [
+    ["真实工单", total],
+    ["未完结", open],
+    ["财务待确认", finance],
+    ["同行挂账", receivable],
+    ["待补资料", missing],
+  ].map(([label, value]) => `<div class="metric"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("");
+}
+
+function renderRepairWorkbench(data) {
+  state.repairWorkbench = data;
+  renderRepairMetrics(data);
+  const rows = sortedRows(repairWorkbenchRows(data.orders), "repairWorkbench");
+  const columns = [
+    ["order_no", "工单号"], ["status", "维修状态"], ["payment_status", "收款状态"],
+    ["customer_name", "客户"], ["customer_type", "类型"], ["counter_no", "柜台/同行"],
+    ["model", "机型"], ["created_at", "建单时间"], ["completed_at_display", "维修完成时间"],
+    ["closed_at_display", "订单完结时间"], ["workflow_progress", "维修进度"],
+    ["engineer_name", "工程师"], ["updated_at", "更新时间"],
+  ];
+  $("#repair-order-table").innerHTML = table(rows, columns, "暂无匹配维修工单", { sortable: true, sort: state.repairWorkbenchSort });
+  bindRepairWorkbenchSort();
+  document.querySelectorAll("#repair-order-table tbody tr").forEach((tr, index) => {
+    tr.addEventListener("click", () => openRepairWorkbenchDetail(rows[index].repair_order_id));
+  });
+  $("#repair-finance-pending").innerHTML = table(data.finance_pending, [
+    ["order_no", "工单"], ["customer_name", "客户"], ["amount", "金额"],
+    ["method", "方式"], ["transaction_no", "流水号"], ["received_by", "收款人"], ["paid_at", "收款时间"],
+  ], "暂无财务待确认流水");
+  $("#repair-receivables").innerHTML = table(data.receivable_summary, [
+    ["customer_name", "客户/柜台"], ["counter_no", "柜台号"], ["receivable_type", "类型"],
+    ["count", "单数"], ["amount", "金额"], ["status", "状态"],
+  ], "暂无未结应收");
+  $("#repair-material-summary").innerHTML = table(data.material_summary, [
+    ["sku", "SKU"], ["name", "物料"], ["compatible_range", "适配范围"],
+    ["current_qty", "库存"], ["avg_cost", "均价"], ["status", "状态"], ["remark", "备注"],
+  ], "暂无维修物料库存");
+}
+
+async function loadRepairWorkbench() {
+  const data = await api("/api/repair-workbench");
+  renderRepairWorkbench(data);
+}
+
+function fieldBlock(label, value) {
+  return `<div class="field-block"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value || "待补")}</strong></div>`;
+}
+
+function repairActionButton(action, label, extra = "") {
+  return `<button type="button" class="repair-action-button" data-action="${escapeHtml(action)}" ${extra}>${escapeHtml(label)}</button>`;
+}
+
+function renderRepairWorkbenchDetail(detail) {
+  const order = detail.order;
+  $("#modal-title").textContent = `${order.order_no} / ${order.model}`;
+  $("#modal-subtitle").textContent = `${order.status} · ${order.payment_status} · ${order.customer_name}`;
+  $("#modal-content").innerHTML = `
+    <div class="repair-detail-grid">
+      ${fieldBlock("客户描述", order.fault_description)}
+      ${fieldBlock("工程师检测结论", order.diagnosis)}
+      ${fieldBlock("维修方案", order.repair_solution)}
+      ${fieldBlock("待补字段", (order.unknown_fields || []).join("、") || "无")}
+    </div>
+    <div class="detail-actions">
+      ${repairActionButton("repair_completed", "维修完成")}
+      ${repairActionButton("delivered", "已交付")}
+      ${repairActionButton("register_payment", "登记收款")}
+      ${repairActionButton("finance_confirm", "财务确认")}
+      ${repairActionButton("mark_receivable", "同行/应收挂账")}
+      ${repairActionButton("settle_receivable", "挂账结清")}
+      ${repairActionButton("close", "订单完结")}
+    </div>
+    <h3>收入项目</h3>
+    ${detailTable(detail.income_items, [["item_type", "类型"], ["item_name", "项目"], ["amount", "金额"], ["status", "状态"], ["remark", "备注"]])}
+    <h3>成本项目</h3>
+    ${detailTable(detail.cost_items, [["item_type", "类型"], ["item_name", "项目"], ["qty", "数量"], ["unit_cost", "单价"], ["total_cost", "成本"], ["status", "状态"]])}
+    <h3>物料消耗</h3>
+    ${detailTable(detail.materials, [["sku", "SKU"], ["name", "物料"], ["qty", "数量"], ["unit_cost", "单价"], ["total_cost", "成本"], ["issued_at", "领料时间"], ["remark", "备注"]])}
+    <h3>付款流水</h3>
+    ${detailTable(detail.payments, [["payment_id", "流水"], ["amount", "金额"], ["method", "方式"], ["transaction_no", "流水号"], ["status", "状态"], ["received_by", "收款人"], ["confirmed_by", "确认人"], ["paid_at", "收款时间"]])}
+    <h3>应收/挂账</h3>
+    ${detailTable(detail.receivables, [["customer_name", "客户"], ["receivable_type", "类型"], ["amount", "金额"], ["status", "状态"], ["settled_at", "结清时间"], ["remark", "备注"]])}
+    <h3>时间线</h3>
+    ${detailTable(detail.events, [["created_at", "时间"], ["title", "动作"], ["detail", "内容"], ["operator", "操作人"]])}
+  `;
+  document.querySelectorAll(".repair-action-button").forEach(button => {
+    button.addEventListener("click", () => runRepairAction(order.repair_order_id, button.dataset.action));
+  });
+}
+
+async function openRepairWorkbenchDetail(repairOrderId) {
+  const detail = await api(`/api/repair-workbench/${repairOrderId}`);
+  renderRepairWorkbenchDetail(detail);
+  $("#order-modal").hidden = false;
+  document.body.classList.add("modal-open");
+}
+
+async function runRepairAction(repairOrderId, action) {
+  const payload = { action };
+  if (action === "delivered") {
+    payload.status = prompt("交付状态：已交付 / 待取机 / 待送机 / 待返寄", "已交付") || "已交付";
+  }
+  if (action === "register_payment") {
+    const amount = Number(prompt("本次收款金额", "0") || 0);
+    if (!amount) return;
+    payload.amount = amount;
+    payload.method = prompt("付款方式", "待确认") || "待确认";
+    payload.transaction_no = prompt("流水号，未知填待补", "待补") || "待补";
+    payload.received_by = state.user || "前台待确认";
+  }
+  if (action === "finance_confirm") {
+    payload.confirmed_by = prompt("财务确认人", state.user || "待确认") || "待确认";
+  }
+  if (action === "mark_receivable") {
+    payload.payment_status = prompt("应收类型：同行挂账 / 未收款", "同行挂账") || "同行挂账";
+    const amountText = prompt("应收金额，未知可填 0", "0");
+    payload.amount = Number(amountText || 0);
+    payload.remark = prompt("挂账备注", "待补") || "待补";
+  }
+  if (action === "settle_receivable") {
+    payload.remark = prompt("结清备注", "财务已确认") || "财务已确认";
+  }
+  try {
+    const detail = await api(`/api/repair-orders/${repairOrderId}/workflow-action`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    showToast("维修闭环动作已保存");
+    renderRepairWorkbenchDetail(detail);
+    await loadRepairWorkbench();
+  } catch (error) {
+    showToast(error.message, true);
+  }
 }
 
 function bindPoolSort(kind) {
@@ -646,6 +907,65 @@ function renderOrderModal(timeline) {
   bindMachineEditForm(machine.machine_id);
   bindPriceChangeForm(machine.machine_id);
   bindMachineNoteForm(machine.machine_id);
+  bindRepairOrderActionForms(machine.machine_id, timeline.repair_orders?.[0]);
+}
+
+function bindRepairOrderActionForms(machineId, order) {
+  if (!order) return;
+  const assignForm = $("#repair-assign-form");
+  if (assignForm) {
+    assignForm.hidden = !hasPermission("repair_order:assign");
+    assignForm.onsubmit = async event => {
+      event.preventDefault();
+      try {
+        await api(`/api/repair-orders/${order.repair_order_id}/assign`, {
+          method: "POST",
+          body: JSON.stringify(formData(assignForm)),
+        });
+        showToast("工程师已指派");
+        await openOrderModal(machineId);
+        await refreshActiveBusinessPool();
+      } catch (error) {
+        showToast(error.message, true);
+      }
+    };
+  }
+  const confirmForm = $("#repair-confirm-form");
+  if (confirmForm) {
+    confirmForm.hidden = !hasPermission("repair_order:confirm");
+    confirmForm.onsubmit = async event => {
+      event.preventDefault();
+      try {
+        await api(`/api/repair-orders/${order.repair_order_id}/confirm-quote`, {
+          method: "POST",
+          body: JSON.stringify(formData(confirmForm)),
+        });
+        showToast("客户确认已记录");
+        await openOrderModal(machineId);
+        await refreshActiveBusinessPool();
+      } catch (error) {
+        showToast(error.message, true);
+      }
+    };
+  }
+  const closeForm = $("#repair-engineer-close-form");
+  if (closeForm) {
+    closeForm.hidden = !hasPermission("repair_order:engineer_close");
+    closeForm.onsubmit = async event => {
+      event.preventDefault();
+      try {
+        await api(`/api/repair-orders/${order.repair_order_id}/engineer-close`, {
+          method: "POST",
+          body: JSON.stringify(formData(closeForm)),
+        });
+        showToast("工程师已结单，订单转前台收费");
+        await openOrderModal(machineId);
+        await refreshActiveBusinessPool();
+      } catch (error) {
+        showToast(error.message, true);
+      }
+    };
+  }
 }
 
 function bindMachineEditForm(machineId) {
@@ -779,11 +1099,119 @@ function closeOrderModal() {
 }
 
 async function loadInventory() {
-  const rows = await api("/api/inventory");
-  $("#inventory-table").innerHTML = table(rows, [
-    ["inventory_item_id", "库存ID"], ["machine_id", "机器ID"], ["imei", "IMEI"], ["model", "机型"],
-    ["status", "库存状态"], ["cost_amount", "成本"], ["sale_price", "销售定价"],
-  ], "暂无回收库存");
+  const repairMaterials = await api("/api/materials");
+  const recycleRows = await api("/api/inventory");
+  $("#inventory-table").innerHTML = `
+    <h3>维修物料库存</h3>
+    ${table(repairMaterials.materials, [
+      ["sku", "SKU"], ["name", "物料"], ["compatible_range", "适配范围"],
+      ["current_qty", "库存"], ["avg_cost", "均价"], ["status", "状态"], ["remark", "备注"],
+    ], "暂无维修物料库存")}
+    <h3>库存流水</h3>
+    ${table(repairMaterials.movements, [
+      ["happened_at", "时间"], ["sku", "SKU"], ["movement_type", "类型"], ["qty", "数量"],
+      ["unit_cost", "单价"], ["order_no", "关联工单"], ["actor", "经手人"], ["note", "备注"],
+    ], "暂无物料流水")}
+    <h3>回收机器库存</h3>
+    ${table(recycleRows, [
+      ["inventory_item_id", "库存ID"], ["machine_id", "机器ID"], ["imei", "IMEI"], ["model", "机型"],
+      ["status", "库存状态"], ["cost_amount", "成本"], ["sale_price", "销售定价"],
+    ], "暂无回收库存")}
+  `;
+}
+
+function parseIds(value) {
+  return String(value || "")
+    .split(",")
+    .map(x => Number(x.trim()))
+    .filter(Boolean);
+}
+
+function requestItemsFromForm(data) {
+  return [{
+    material_id: data.material_id,
+    repair_sku_id: data.repair_sku_id,
+    qty: data.qty || 1,
+    remark: data.remark || "",
+  }];
+}
+
+async function loadWarehouse() {
+  const data = await api("/api/warehouse");
+  state.warehouse = data;
+  const available = (data.units || []).filter(row => row.current_status === "在库可用").length;
+  const issued = (data.units || []).filter(row => row.current_status === "已发放").length;
+  $("#warehouse-metrics").innerHTML = [
+    ["物料档案", data.materials?.length || 0],
+    ["在库可用单件", available],
+    ["已发放单件", issued],
+    ["低库存预警", data.low_stock?.length || 0],
+    ["待验收退料", (data.returns || []).filter(row => row.status === "待验收").length],
+  ].map(([label, value]) => `<div class="metric"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("");
+
+  $("#warehouse-material-table").innerHTML = table(data.materials, [
+    ["material_id", "ID"], ["material_code", "物料代码"], ["sku", "SKU"], ["name", "物料"],
+    ["category_code", "类别"], ["compatible_range", "适配"], ["spec", "规格"],
+    ["current_qty", "可用"], ["min_qty", "低库存"], ["default_location_code", "默认库位"],
+  ], "暂无物料档案");
+  $("#warehouse-unit-table").innerHTML = table(data.units, [
+    ["unit_id", "ID"], ["unit_code", "单件编码"], ["material_code", "物料代码"], ["name", "物料"],
+    ["current_status", "状态"], ["location_code", "库位"], ["engineer_user", "工程师"],
+    ["repair_order_id", "工单"], ["request_id", "申领单"], ["unit_cost", "成本"],
+  ], "暂无单件库存");
+  $("#warehouse-batch-table").innerHTML = table(data.batches, [
+    ["batch_id", "ID"], ["batch_no", "批次"], ["purchase_type", "类型"], ["material_code", "物料代码"],
+    ["name", "物料"], ["supplier", "供应商"], ["qty", "入库"], ["remaining_qty", "批次余量"],
+    ["refund_status", "退款"], ["location_code", "库位"], ["purchased_at", "时间"],
+  ], "暂无入库批次");
+  $("#warehouse-request-table").innerHTML = table(data.requests, [
+    ["request_id", "ID"], ["request_no", "申领单"], ["status", "状态"], ["engineer_user", "工程师"],
+    ["repair_order_id", "工单"], ["requested_by", "申请人"], ["approved_by", "审核人"],
+    ["issued_by", "发放人"], ["created_at", "时间"], ["remark", "备注"],
+  ], "暂无申领单");
+  $("#warehouse-return-table").innerHTML = table(data.returns, [
+    ["return_id", "ID"], ["unit_code", "单件编码"], ["name", "物料"], ["status", "状态"],
+    ["return_type", "类型"], ["inspect_result", "验收"], ["engineer_user", "工程师"],
+    ["repair_order_id", "工单"], ["inspected_by", "验收人"], ["remark", "备注"],
+  ], "暂无退料单");
+  $("#warehouse-movement-table").innerHTML = table(data.movements, [
+    ["happened_at", "时间"], ["movement_type", "类型"], ["direction", "方向"], ["unit_code", "单件编码"],
+    ["material_code", "物料代码"], ["name", "物料"], ["qty", "数量"], ["location_code", "库位"],
+    ["order_no", "工单"], ["actor", "操作人"], ["counterparty", "对象"], ["note", "备注"],
+  ], "暂无库存流水");
+}
+
+async function submitWarehouseForm(formSelector, path, transform = data => data) {
+  const form = $(formSelector);
+  const payload = transform(formData(form));
+  await api(path, { method: "POST", body: JSON.stringify(payload) });
+  form.reset();
+  await loadWarehouse();
+  showToast("仓库单据已保存");
+}
+
+async function showRepairMaterialHints() {
+  const form = $("#repair-step-form");
+  const data = formData(form);
+  const skuId = parseIds(data.sku_ids)[0] || data.sku_id;
+  const orderId = data.repair_order_id;
+  if (!skuId && !orderId) {
+    showToast("请先填写维修 SKU ID 或维修单 ID", true);
+    return;
+  }
+  const result = skuId
+    ? await api(`/api/repair-skus/${skuId}/material-hints`)
+    : await api(`/api/repair-orders/${orderId}/material-hints`);
+  const groups = skuId ? [result] : result.hints;
+  $("#repair-material-hints").innerHTML = groups.map(group => `
+    <div class="hint-group">
+      <strong>${escapeHtml(group.repair_sku?.fault_name || "推荐物料")}</strong>
+      ${table(group.materials || [], [
+        ["material_code", "物料代码"], ["name", "物料"], ["current_qty", "可用库存"],
+        ["locations", "库位"], ["pending_issue_qty", "已发放"], ["stock_warning", "提示"],
+      ], "暂无绑定物料")}
+    </div>
+  `).join("");
 }
 
 async function loadCustomers() {
@@ -798,7 +1226,8 @@ async function loadPayments() {
   const rows = await api("/api/payments");
   $("#payment-table").innerHTML = table(rows, [
     ["payment_id", "ID"], ["source_type", "来源"], ["source_id", "单据"], ["direction", "方向"],
-    ["amount", "金额"], ["method", "方式"], ["operator", "操作人"], ["created_at", "时间"],
+    ["amount", "金额"], ["method", "方式"], ["transaction_no", "流水号"], ["status", "状态"],
+    ["received_by", "收款人"], ["confirmed_by", "确认人"], ["created_at", "时间"],
   ], "暂无流水记录");
 }
 
@@ -869,6 +1298,11 @@ $("#repair-keyword").addEventListener("keydown", event => {
   if (event.key === "Enter") loadBusinessPool("repair");
 });
 $("#repair-status").addEventListener("change", () => loadBusinessPool("repair"));
+$("#repair-payment-status").addEventListener("change", () => loadBusinessPool("repair"));
+$("#repair-customer-type").addEventListener("change", () => loadBusinessPool("repair"));
+$("#repair-missing-only").addEventListener("change", () => loadBusinessPool("repair"));
+$("#repair-date-from").addEventListener("change", () => loadBusinessPool("repair"));
+$("#repair-date-to").addEventListener("change", () => loadBusinessPool("repair"));
 $("#reset-repair-filters").addEventListener("click", () => resetBusinessPoolFilters("repair"));
 $("#open-repair-tab").addEventListener("click", () => openOrderFormPage("repair"));
 
@@ -933,7 +1367,13 @@ $("#quote-repair").addEventListener("click", async () => {
   try {
     await api(`/api/repair-orders/${data.repair_order_id}/quote`, {
       method: "POST",
-      body: JSON.stringify({ diagnosis: data.diagnosis, quoted_amount: data.quoted_amount || 0 }),
+      body: JSON.stringify({
+        diagnosis: data.diagnosis,
+        fault_detail: data.fault_detail || "",
+        repair_solution: data.repair_solution || "",
+        sku_ids: String(data.sku_ids || "").split(",").map(x => Number(x.trim())).filter(Boolean),
+        quoted_amount: data.quoted_amount || 0,
+      }),
     });
     showToast("维修报价已记录");
     await loadBusinessPool("repair");
@@ -948,6 +1388,7 @@ $("#add-repair-item").addEventListener("click", async () => {
     await api(`/api/repair-orders/${data.repair_order_id}/items`, {
       method: "POST",
       body: JSON.stringify({
+        sku_id: data.sku_id || null,
         item_name: data.item_name,
         quantity: data.quantity || 1,
         cost_amount: data.cost_amount || 0,
@@ -965,6 +1406,20 @@ $("#ready-repair").addEventListener("click", async () => {
   try {
     await updateRepairOrderStatus("待交付");
     showToast("维修单已进入待交付");
+    await loadBusinessPool("repair");
+  } catch (error) {
+    showToast(error.message, true);
+  }
+});
+
+$("#engineer-close-repair").addEventListener("click", async () => {
+  const data = formData($("#repair-step-form"));
+  try {
+    await api(`/api/repair-orders/${data.repair_order_id}/engineer-close`, {
+      method: "POST",
+      body: JSON.stringify({ remark: data.delivery_check || "" }),
+    });
+    showToast("工程师已结单");
     await loadBusinessPool("repair");
   } catch (error) {
     showToast(error.message, true);
@@ -1069,6 +1524,187 @@ $("#payment-form").addEventListener("submit", async event => {
     showToast("流水已登记");
     event.currentTarget.reset();
     await loadPayments();
+  } catch (error) {
+    showToast(error.message, true);
+  }
+});
+
+$("#refresh-warehouse").addEventListener("click", loadWarehouse);
+
+$("#warehouse-category-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  try {
+    await submitWarehouseForm("#warehouse-category-form", "/api/material-categories");
+  } catch (error) {
+    showToast(error.message, true);
+  }
+});
+
+$("#warehouse-location-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  try {
+    const data = formData(event.currentTarget);
+    if (!data.area_id) {
+      const area = await api("/api/warehouse/areas", {
+        method: "POST",
+        body: JSON.stringify({ name: "默认库区", area_code: "AREA-DEFAULT" }),
+      });
+      data.area_id = area.area_id;
+    }
+    await api("/api/warehouse/locations", { method: "POST", body: JSON.stringify(data) });
+    event.currentTarget.reset();
+    await loadWarehouse();
+    showToast("库位已保存");
+  } catch (error) {
+    showToast(error.message, true);
+  }
+});
+
+$("#warehouse-material-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  try {
+    await submitWarehouseForm("#warehouse-material-form", "/api/materials");
+  } catch (error) {
+    showToast(error.message, true);
+  }
+});
+
+$("#warehouse-batch-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  try {
+    const data = formData(event.currentTarget);
+    const kind = data.batch_kind || "purchase";
+    delete data.batch_kind;
+    await api(`/api/material-batches/${kind}`, { method: "POST", body: JSON.stringify(data) });
+    event.currentTarget.reset();
+    await loadWarehouse();
+    showToast("入库批次已生成");
+  } catch (error) {
+    showToast(error.message, true);
+  }
+});
+
+$("#warehouse-request-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  try {
+    const data = formData(event.currentTarget);
+    const payload = {
+      repair_order_id: data.repair_order_id || null,
+      engineer_user: data.engineer_user || "",
+      items: requestItemsFromForm(data),
+      remark: data.remark || "",
+    };
+    await api("/api/material-requests", { method: "POST", body: JSON.stringify(payload) });
+    event.currentTarget.reset();
+    await loadWarehouse();
+    showToast("申领单已创建");
+  } catch (error) {
+    showToast(error.message, true);
+  }
+});
+
+$("#approve-material-request").addEventListener("click", async () => {
+  try {
+    const data = formData($("#warehouse-request-form"));
+    await api(`/api/material-requests/${data.request_id}/approve`, { method: "POST", body: JSON.stringify({ remark: data.remark || "" }) });
+    await loadWarehouse();
+    showToast("申领单已审核");
+  } catch (error) {
+    showToast(error.message, true);
+  }
+});
+
+$("#issue-material-request").addEventListener("click", async () => {
+  try {
+    const data = formData($("#warehouse-request-form"));
+    await api(`/api/material-requests/${data.request_id}/issue`, {
+      method: "POST",
+      body: JSON.stringify({ unit_ids: parseIds(data.unit_ids), remark: data.remark || "" }),
+    });
+    await loadWarehouse();
+    showToast("物料已发放");
+  } catch (error) {
+    showToast(error.message, true);
+  }
+});
+
+$("#return-material-batch").addEventListener("click", async () => {
+  try {
+    const data = formData($("#warehouse-return-form"));
+    await api(`/api/material-batches/${data.batch_id}/return`, {
+      method: "POST",
+      body: JSON.stringify({
+        unit_ids: parseIds(data.return_unit_ids),
+        refund_status: data.refund_status || "待确认",
+        remark: data.remark || "",
+      }),
+    });
+    await loadWarehouse();
+    showToast("采购退货已登记");
+  } catch (error) {
+    showToast(error.message, true);
+  }
+});
+
+$("#request-material-return").addEventListener("click", async () => {
+  try {
+    const data = formData($("#warehouse-return-form"));
+    await api(`/api/material-issues/${data.unit_id}/return-request`, {
+      method: "POST",
+      body: JSON.stringify({ remark: data.remark || "" }),
+    });
+    await loadWarehouse();
+    showToast("退料已提交待验收");
+  } catch (error) {
+    showToast(error.message, true);
+  }
+});
+
+$("#inspect-material-return").addEventListener("click", async () => {
+  try {
+    const data = formData($("#warehouse-return-form"));
+    await api(`/api/material-returns/${data.return_id}/inspect`, {
+      method: "POST",
+      body: JSON.stringify({ inspect_result: data.inspect_result, remark: data.remark || "" }),
+    });
+    await loadWarehouse();
+    showToast("退料验收已完成");
+  } catch (error) {
+    showToast(error.message, true);
+  }
+});
+
+$("#create-stock-adjustment").addEventListener("click", async () => {
+  try {
+    const data = formData($("#warehouse-return-form"));
+    await api("/api/stock-adjustments", {
+      method: "POST",
+      body: JSON.stringify({
+        material_id: data.adjust_material_id,
+        qty: data.adjust_qty || 1,
+        adjustment_type: data.adjustment_type,
+        reason: data.remark || "待补",
+      }),
+    });
+    await loadWarehouse();
+    showToast("库存调整已生成");
+  } catch (error) {
+    showToast(error.message, true);
+  }
+});
+
+$("#warehouse-binding-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  try {
+    await submitWarehouseForm("#warehouse-binding-form", "/api/repair-fault-materials");
+  } catch (error) {
+    showToast(error.message, true);
+  }
+});
+
+$("#show-repair-material-hints").addEventListener("click", async () => {
+  try {
+    await showRepairMaterialHints();
   } catch (error) {
     showToast(error.message, true);
   }

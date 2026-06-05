@@ -6,6 +6,9 @@ from pydantic import BaseModel, Field
 
 class Role(str, Enum):
     admin = "admin"
+    boss = "boss"
+    frontdesk = "frontdesk"
+    engineer = "engineer"
     staff = "staff"
     finance = "finance"
 
@@ -140,7 +143,36 @@ class RepairOrderInput(BaseModel):
 
 class RepairQuoteInput(BaseModel):
     diagnosis: str = Field(min_length=1)
-    quoted_amount: float = Field(ge=0)
+    quoted_amount: float = Field(default=0, ge=0)
+    fault_detail: str = ""
+    repair_solution: str = ""
+    sku_ids: list[int] = []
+
+
+class RepairAssignInput(BaseModel):
+    engineer_user_id: str = Field(min_length=1)
+    remark: str = ""
+
+
+class RepairQuoteConfirmInput(BaseModel):
+    confirm_result: str = Field(min_length=1)
+    confirm_method: str = ""
+    contact_person: str = ""
+    remark: str = ""
+
+
+class RepairEngineerCloseInput(BaseModel):
+    remark: str = ""
+
+
+class RepairSkuInput(BaseModel):
+    sku_code: str = Field(min_length=1)
+    fault_name: str = Field(min_length=1)
+    solution_name: str = Field(min_length=1)
+    cost_amount: float = Field(default=0, ge=0)
+    charge_amount: float = Field(default=0, ge=0)
+    enabled: bool = True
+    remark: str = ""
 
 
 class PriceChangeInput(BaseModel):
@@ -149,6 +181,7 @@ class PriceChangeInput(BaseModel):
 
 
 class RepairItemInput(BaseModel):
+    sku_id: int | None = None
     item_name: str = Field(min_length=1)
     quantity: int = Field(default=1, ge=1)
     cost_amount: float = Field(default=0, ge=0)
@@ -203,6 +236,143 @@ class PaymentInput(BaseModel):
     method: str = ""
     payer: str = ""
     payee: str = ""
+    remark: str = ""
+
+
+class RepairWorkflowActionInput(BaseModel):
+    action: str = Field(min_length=1)
+    status: str = ""
+    payment_status: str = ""
+    settlement_status: str = ""
+    amount: float | None = Field(default=None, ge=0)
+    method: str = ""
+    account: str = ""
+    transaction_no: str = ""
+    received_by: str = ""
+    confirmed_by: str = ""
+    confirmed_at: str = ""
+    remark: str = ""
+
+
+class WarehouseAreaInput(BaseModel):
+    area_code: str = ""
+    name: str = Field(min_length=1)
+    status: str = "启用"
+    remark: str = ""
+
+
+class WarehouseLocationInput(BaseModel):
+    area_id: int | None = None
+    location_code: str = ""
+    name: str = Field(min_length=1)
+    status: str = "启用"
+    remark: str = ""
+
+
+class MaterialCategoryInput(BaseModel):
+    category_code: str = ""
+    name: str = Field(min_length=1)
+    parent_id: int | None = None
+    remark: str = ""
+
+
+class MaterialInput(BaseModel):
+    sku: str = ""
+    material_code: str = ""
+    category_id: int | None = None
+    default_location_id: int | None = None
+    name: str = Field(min_length=1)
+    brand: str = ""
+    spec: str = ""
+    compatible_range: str = ""
+    unit: str = "件"
+    min_qty: float = Field(default=0, ge=0)
+    avg_cost: float = Field(default=0, ge=0)
+    remark: str = ""
+
+
+class MaterialBatchInput(BaseModel):
+    material_id: int | None = None
+    material: MaterialInput | None = None
+    batch_no: str = ""
+    supplier: str = "待确认"
+    purchase_no: str = ""
+    location_id: int | None = None
+    qty: int = Field(default=1, ge=1)
+    unit_cost: float = Field(default=0, ge=0)
+    payment_status: str = "待确认"
+    handler: str = ""
+    purchased_at: str = ""
+    remark: str = ""
+
+
+class MaterialBatchReturnInput(BaseModel):
+    unit_ids: list[int] = []
+    qty: int = Field(default=0, ge=0)
+    refund_status: str = "待确认"
+    refund_amount: float = Field(default=0, ge=0)
+    refund_method: str = "待确认"
+    refund_transaction_no: str = "待补"
+    remark: str = ""
+
+
+class MaterialRequestItemInput(BaseModel):
+    material_id: int
+    repair_sku_id: int | None = None
+    qty: int = Field(default=1, ge=1)
+    remark: str = ""
+
+
+class MaterialRequestInput(BaseModel):
+    repair_order_id: int | None = None
+    engineer_user: str = ""
+    items: list[MaterialRequestItemInput] = Field(default_factory=list)
+    remark: str = ""
+
+
+class MaterialRequestActionInput(BaseModel):
+    approved_qty: float | None = Field(default=None, ge=0)
+    unit_ids: list[int] = []
+    remark: str = ""
+
+
+class MaterialIssueReturnInput(BaseModel):
+    return_type: str = "工程师退料"
+    remark: str = ""
+
+
+class MaterialReturnInspectInput(BaseModel):
+    inspect_result: str = Field(min_length=1)
+    remark: str = ""
+
+
+class StockCountItemInput(BaseModel):
+    material_id: int
+    location_id: int | None = None
+    book_qty: float = Field(default=0, ge=0)
+    actual_qty: float = Field(default=0, ge=0)
+    reason: str = ""
+
+
+class StockCountInput(BaseModel):
+    items: list[StockCountItemInput] = Field(default_factory=list)
+    remark: str = ""
+
+
+class StockAdjustmentInput(BaseModel):
+    material_id: int
+    unit_id: int | None = None
+    location_id: int | None = None
+    qty: int = Field(default=1, ge=1)
+    adjustment_type: str = Field(min_length=1)
+    reason: str = ""
+
+
+class RepairFaultMaterialInput(BaseModel):
+    repair_sku_id: int
+    material_id: int
+    qty: float = Field(default=1, ge=0)
+    priority: int = Field(default=1, ge=1)
     remark: str = ""
 
 

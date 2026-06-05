@@ -14,6 +14,14 @@ from .models import (
     MachineNoteInput,
     MachineStatus,
     MachineUpdateInput,
+    MaterialBatchInput,
+    MaterialBatchReturnInput,
+    MaterialCategoryInput,
+    MaterialInput,
+    MaterialIssueReturnInput,
+    MaterialRequestActionInput,
+    MaterialRequestInput,
+    MaterialReturnInspectInput,
     OrderStatus,
     PaymentDirection,
     PaymentInput,
@@ -21,12 +29,18 @@ from .models import (
     PurchaseInput,
     RecycleOrderInput,
     RecycleQuoteInput,
+    RepairAssignInput,
     RepairInput,
     RepairDeliverInput,
+    RepairEngineerCloseInput,
     RepairItemInput,
     RepairOrderInput,
     RepairOrderStatusInput,
+    RepairQuoteConfirmInput,
     RepairQuoteInput,
+    RepairSkuInput,
+    RepairWorkflowActionInput,
+    RepairFaultMaterialInput,
     RepairStatusInput,
     Role,
     SalesOrderInput,
@@ -34,7 +48,11 @@ from .models import (
     SettlementInput,
     SettlementStatus,
     StockInInput,
+    StockAdjustmentInput,
+    StockCountInput,
     User,
+    WarehouseAreaInput,
+    WarehouseLocationInput,
 )
 from .repository import Repository
 
@@ -125,13 +143,19 @@ class MisService:
 
     def search_machines(self, user: User, keyword: str = "") -> list[dict[str, Any]]:
         self._allowed(user, "machine:read")
-        return self.repo.search_machines(keyword)
+        assigned_to = user.username if user.role == Role.engineer else None
+        return self.repo.search_machines(keyword, assigned_to=assigned_to)
 
     def machine_timeline(self, user: User, machine_id: int) -> dict[str, Any]:
         self._allowed(user, "machine:read")
         timeline = self.repo.machine_timeline(machine_id)
         if not timeline["machine"]:
             raise BusinessError("机器档案不存在")
+        if user.role == Role.engineer:
+            assigned = timeline["machine"].get("assigned_to") or ""
+            repair_assigned = any(order.get("assigned_to") == user.username for order in timeline.get("repair_orders", []))
+            if assigned != user.username and not repair_assigned:
+                raise PermissionError("工程师只能查看指派给自己的订单")
         return timeline
 
     def update_machine(self, user: User, machine_id: int, data: MachineUpdateInput) -> dict[str, Any]:
@@ -253,6 +277,14 @@ class MisService:
             allowed = "、".join(status.value for status in allowed_from)
             raise BusinessError(f"维修单当前为 {current.value}，只能从 {allowed} 进入 {target.value}")
 
+    def _ensure_engineer_owns_repair(self, user: User, order: dict[str, Any]) -> None:
+        if user.role == Role.engineer and order.get("assigned_to") != user.username:
+            raise PermissionError("工程师只能处理指派给自己的订单")
+
+    def _ensure_frontdesk_or_admin(self, user: User) -> None:
+        if user.role not in {Role.admin, Role.boss, Role.frontdesk, Role.staff}:
+            raise PermissionError("当前角色不能执行前台协作动作")
+
     def _repair_order_response(self, repair_order_id: int) -> dict[str, Any]:
         detail = self.repo.repair_order_detail(repair_order_id)
         if not detail:
@@ -263,11 +295,11 @@ class MisService:
     def _repair_available_actions(self, order: dict[str, Any]) -> list[str]:
         status = self._repair_order_status(order)
         actions_by_status = {
-            OrderStatus.opened: ["start_diagnosis", "cancel"],
+            OrderStatus.opened: ["assign", "start_diagnosis", "cancel"],
             OrderStatus.diagnosing: ["quote", "cancel"],
-            OrderStatus.quoted: ["add_item", "cancel"],
-            OrderStatus.processing: ["mark_ready", "cancel"],
-            OrderStatus.ready: ["deliver", "cancel"],
+            OrderStatus.quoted: ["confirm_quote", "cancel"],
+            OrderStatus.processing: ["add_item", "engineer_close", "mark_ready", "cancel"],
+            OrderStatus.ready: ["deliver", "engineer_close", "cancel"],
             OrderStatus.delivered: ["payment"],
         }
         return actions_by_status.get(status, [])
@@ -293,16 +325,1295 @@ class MisService:
         self.conn.commit()
         return self._repair_order_response(order_id)
 
+    def list_repair_skus(self, user: User) -> list[dict[str, Any]]:
+        self._allowed(user, "repair_sku:read")
+        return self.repo.list_repair_skus(include_disabled=user.role in {Role.admin, Role.boss, Role.staff})
+
+    def _rows(self, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
+        return [dict(row) for row in self.conn.execute(sql, params).fetchall()]
+
+    def _one(self, sql: str, params: tuple[Any, ...] = ()) -> dict[str, Any] | None:
+        row = self.conn.execute(sql, params).fetchone()
+        return dict(row) if row else None
+
+    def _repair_unknown_fields(self, order: dict[str, Any]) -> list[str]:
+        checks = [
+            ("工程师", order.get("assigned_to")),
+            ("付款方式", order.get("method")),
+            ("流水号", order.get("transaction_no")),
+            ("财务确认人", order.get("confirmed_by")),
+        ]
+        if float(order.get("quoted_amount") or 0) == 0 and "待补" in (order.get("remark") or ""):
+            checks.append(("金额", ""))
+        return [label for label, value in checks if not str(value or "").strip()]
+
+    def repair_workbench(self, user: User) -> dict[str, Any]:
+        self._allowed(user, "repair_order:read")
+        orders = self._rows(
+            """
+            SELECT ro.*, m.machine_no, m.imei, m.serial, m.model, m.memory, m.color,
+                   m.current_status, c.name AS linked_customer_name, c.phone AS customer_phone,
+                   c.category AS linked_customer_type
+            FROM repair_orders ro
+            JOIN machines m ON m.machine_id = ro.machine_id
+            LEFT JOIN customers c ON c.customer_id = ro.customer_id
+            ORDER BY ro.updated_at DESC, ro.repair_order_id DESC
+            """
+        )
+        for order in orders:
+            order["order_no"] = order.get("order_no") or f"RO-{order['repair_order_id']}"
+            order["customer_name"] = order.get("customer_name") or order.get("linked_customer_name") or "待补"
+            order["customer_type"] = order.get("customer_type") or order.get("linked_customer_type") or "待确认"
+            order["payment_status"] = order.get("payment_status") or "未收款"
+            order["settlement_status"] = order.get("settlement_status") or "未结"
+            order["unknown_fields"] = self._repair_unknown_fields(order)
+            order["is_overdue"] = bool(order.get("due_at")) and not order.get("closed_at") and order.get("status") not in {"已完结", "已结单"}
+        return {
+            "orders": orders,
+            "status_cards": self._rows(
+                """
+                SELECT status, payment_status, settlement_status, COUNT(*) AS count,
+                       COALESCE(SUM(quoted_amount), 0) AS quoted_amount
+                FROM repair_orders
+                GROUP BY status, payment_status, settlement_status
+                ORDER BY status, payment_status
+                """
+            ),
+            "finance_pending": self._rows(
+                """
+                SELECT p.*, ro.order_no, ro.customer_name
+                FROM payments p
+                LEFT JOIN repair_orders ro ON ro.repair_order_id = p.source_id AND p.source_type='repair'
+                WHERE p.source_type='repair' AND p.status='已付款待财务确认'
+                ORDER BY p.paid_at DESC, p.payment_id DESC
+                """
+            ),
+            "receivable_summary": self._rows(
+                """
+                SELECT customer_name, counter_no, receivable_type, status, COUNT(*) AS count,
+                       COALESCE(SUM(amount), 0) AS amount
+                FROM receivables
+                WHERE status <> '已结'
+                GROUP BY customer_name, counter_no, receivable_type, status
+                ORDER BY customer_name
+                """
+            ),
+            "material_summary": self._rows(
+                """
+                SELECT sku, name, compatible_range, current_qty, avg_cost, status, remark
+                FROM materials
+                ORDER BY sku
+                """
+            ),
+        }
+
+    def repair_workbench_detail(self, user: User, repair_order_id: int) -> dict[str, Any]:
+        self._allowed(user, "repair_order:read")
+        order = self._one(
+            """
+            SELECT ro.*, m.machine_no, m.imei, m.serial, m.model, m.memory, m.color,
+                   m.condition, m.current_status, c.name AS linked_customer_name,
+                   c.phone AS customer_phone, c.category AS linked_customer_type
+            FROM repair_orders ro
+            JOIN machines m ON m.machine_id = ro.machine_id
+            LEFT JOIN customers c ON c.customer_id = ro.customer_id
+            WHERE ro.repair_order_id=?
+            """,
+            (repair_order_id,),
+        )
+        if not order:
+            raise BusinessError("维修单不存在")
+        order["order_no"] = order.get("order_no") or f"RO-{order['repair_order_id']}"
+        order["customer_name"] = order.get("customer_name") or order.get("linked_customer_name") or "待补"
+        order["customer_type"] = order.get("customer_type") or order.get("linked_customer_type") or "待确认"
+        order["unknown_fields"] = self._repair_unknown_fields(order)
+        return {
+            "order": order,
+            "income_items": self._rows("SELECT * FROM repair_income_items WHERE repair_order_id=? ORDER BY income_item_id", (repair_order_id,)),
+            "cost_items": self._rows("SELECT * FROM repair_cost_items WHERE repair_order_id=? ORDER BY cost_item_id", (repair_order_id,)),
+            "repair_items": self.repo.list_repair_items(repair_order_id),
+            "materials": self._rows(
+                """
+                SELECT rm.*, mt.sku, mt.name, mt.compatible_range
+                FROM repair_materials rm
+                JOIN materials mt ON mt.material_id=rm.material_id
+                WHERE rm.repair_order_id=?
+                ORDER BY rm.repair_material_id
+                """,
+                (repair_order_id,),
+            ),
+            "payments": self.repo.payments_for_source("repair", repair_order_id),
+            "receivables": self._rows("SELECT * FROM receivables WHERE repair_order_id=? ORDER BY receivable_id", (repair_order_id,)),
+            "events": self.repo.repair_order_events(int(order["machine_id"]), repair_order_id),
+        }
+
+    def list_materials(self, user: User) -> dict[str, Any]:
+        self._allowed(user, "inventory:read")
+        return {
+            "materials": self._rows("SELECT * FROM materials ORDER BY sku"),
+            "batches": self._rows(
+                """
+                SELECT b.*, m.sku, m.name
+                FROM material_batches b
+                JOIN materials m ON m.material_id=b.material_id
+                ORDER BY b.purchased_at DESC, b.batch_id DESC
+                """
+            ),
+            "movements": self._rows(
+                """
+                SELECT sm.*, m.sku, m.name, ro.order_no
+                FROM stock_movements sm
+                JOIN materials m ON m.material_id=sm.material_id
+                LEFT JOIN repair_orders ro ON ro.repair_order_id=sm.repair_order_id
+                ORDER BY sm.happened_at DESC, sm.stock_movement_id DESC
+                LIMIT 200
+                """
+            ),
+        }
+
+    def _warehouse_code(self, prefix: str, table: str, column: str) -> str:
+        like = f"{prefix}-%"
+        rows = self._rows(f"SELECT {column} AS code FROM {table} WHERE {column} LIKE ? ORDER BY {column} DESC", (like,))
+        next_no = 1
+        for row in rows:
+            tail = str(row["code"]).rsplit("-", 1)[-1]
+            if tail.isdigit():
+                next_no = int(tail) + 1
+                break
+        return f"{prefix}-{next_no:04d}"
+
+    def _normalize_code_part(self, value: str, fallback: str = "GEN") -> str:
+        cleaned = "".join(ch.upper() for ch in value if ch.isalnum())
+        return (cleaned or fallback)[:16]
+
+    def _update_material_qty(self, material_id: int) -> None:
+        qty = self.conn.execute(
+            "SELECT COUNT(*) AS qty FROM material_units WHERE material_id=? AND current_status='在库可用'",
+            (material_id,),
+        ).fetchone()["qty"]
+        self.conn.execute(
+            "UPDATE materials SET current_qty=?, updated_at=CURRENT_TIMESTAMP WHERE material_id=?",
+            (qty, material_id),
+        )
+
+    def _stock_movement(
+        self,
+        material_id: int,
+        movement_type: str,
+        qty: float,
+        actor: str,
+        *,
+        batch_id: int | None = None,
+        unit_id: int | None = None,
+        request_id: int | None = None,
+        repair_order_id: int | None = None,
+        location_id: int | None = None,
+        unit_cost: float = 0,
+        counterparty: str = "",
+        note: str = "",
+        source_type: str = "",
+        source_id: int | None = None,
+    ) -> None:
+        direction = "入库" if qty > 0 else "出库" if qty < 0 else "记录"
+        self.conn.execute(
+            """
+            INSERT INTO stock_movements
+            (material_id, batch_id, unit_id, request_id, repair_order_id, location_id,
+             movement_type, direction, source_type, source_id, qty, unit_cost, actor, counterparty, note)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                material_id,
+                batch_id,
+                unit_id,
+                request_id,
+                repair_order_id,
+                location_id,
+                movement_type,
+                direction,
+                source_type,
+                source_id,
+                qty,
+                unit_cost,
+                actor,
+                counterparty,
+                note,
+            ),
+        )
+
+    def warehouse_overview(self, user: User) -> dict[str, Any]:
+        self._allowed(user, "warehouse:read")
+        return {
+            "categories": self._rows("SELECT * FROM material_categories ORDER BY category_code"),
+            "areas": self._rows("SELECT * FROM warehouse_areas ORDER BY area_code"),
+            "locations": self._rows(
+                """
+                SELECT l.*, a.area_code, a.name AS area_name
+                FROM warehouse_locations l
+                LEFT JOIN warehouse_areas a ON a.area_id=l.area_id
+                ORDER BY l.location_code
+                """
+            ),
+            "materials": self._rows(
+                """
+                SELECT m.*, c.category_code, c.name AS category_name, l.location_code AS default_location_code
+                FROM materials m
+                LEFT JOIN material_categories c ON c.category_id=m.category_id
+                LEFT JOIN warehouse_locations l ON l.location_id=m.default_location_id
+                ORDER BY COALESCE(NULLIF(m.material_code, ''), m.sku)
+                """
+            ),
+            "units": self.material_units(user),
+            "batches": self.material_batches(user),
+            "requests": self.material_requests(user),
+            "returns": self._rows(
+                """
+                SELECT r.*, u.unit_code, m.sku, m.material_code, m.name
+                FROM material_returns r
+                JOIN material_units u ON u.unit_id=r.unit_id
+                JOIN materials m ON m.material_id=u.material_id
+                ORDER BY r.created_at DESC, r.return_id DESC
+                LIMIT 200
+                """
+            ),
+            "movements": self.stock_movements(user),
+            "low_stock": self._rows(
+                """
+                SELECT material_id, sku, material_code, name, current_qty, min_qty
+                FROM materials
+                WHERE min_qty > 0 AND current_qty <= min_qty
+                ORDER BY current_qty ASC, name
+                """
+            ),
+            "mine": self.material_requests(user, mine=True),
+        }
+
+    def create_warehouse_area(self, user: User, data: WarehouseAreaInput) -> dict[str, Any]:
+        self._allowed(user, "warehouse:write")
+        area_code = data.area_code.strip() or self._warehouse_code("AREA", "warehouse_areas", "area_code")
+        self.conn.execute(
+            """
+            INSERT INTO warehouse_areas (area_code, name, status, remark)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(area_code) DO UPDATE SET name=excluded.name, status=excluded.status,
+                remark=excluded.remark, updated_at=CURRENT_TIMESTAMP
+            """,
+            (area_code, data.name, data.status, data.remark),
+        )
+        self.conn.commit()
+        return self._one("SELECT * FROM warehouse_areas WHERE area_code=?", (area_code,)) or {}
+
+    def create_warehouse_location(self, user: User, data: WarehouseLocationInput) -> dict[str, Any]:
+        self._allowed(user, "warehouse:write")
+        location_code = data.location_code.strip() or self._warehouse_code("LOC", "warehouse_locations", "location_code")
+        self.conn.execute(
+            """
+            INSERT INTO warehouse_locations (area_id, location_code, name, status, remark)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(location_code) DO UPDATE SET area_id=excluded.area_id, name=excluded.name,
+                status=excluded.status, remark=excluded.remark, updated_at=CURRENT_TIMESTAMP
+            """,
+            (data.area_id, location_code, data.name, data.status, data.remark),
+        )
+        self.conn.commit()
+        return self._one("SELECT * FROM warehouse_locations WHERE location_code=?", (location_code,)) or {}
+
+    def create_material_category(self, user: User, data: MaterialCategoryInput) -> dict[str, Any]:
+        self._allowed(user, "warehouse:write")
+        category_code = data.category_code.strip().upper() or self._warehouse_code("CAT", "material_categories", "category_code")
+        self.conn.execute(
+            """
+            INSERT INTO material_categories (category_code, name, parent_id, remark)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(category_code) DO UPDATE SET name=excluded.name, parent_id=excluded.parent_id,
+                remark=excluded.remark, updated_at=CURRENT_TIMESTAMP
+            """,
+            (category_code, data.name, data.parent_id, data.remark),
+        )
+        self.conn.commit()
+        return self._one("SELECT * FROM material_categories WHERE category_code=?", (category_code,)) or {}
+
+    def _material_code(self, data: MaterialInput) -> str:
+        if data.material_code.strip():
+            return data.material_code.strip().upper()
+        cat = "MAT"
+        if data.category_id:
+            row = self._one("SELECT category_code FROM material_categories WHERE category_id=?", (data.category_id,))
+            cat = (row or {}).get("category_code") or cat
+        spec = self._normalize_code_part(data.compatible_range or data.brand or data.name)
+        size = self._normalize_code_part(data.spec, "STD")
+        return self._warehouse_code(f"{cat}-{spec}-{size}", "materials", "material_code")
+
+    def create_material(self, user: User, data: MaterialInput) -> dict[str, Any]:
+        self._allowed(user, "warehouse:write")
+        material_code = self._material_code(data)
+        sku = data.sku.strip() or material_code
+        self.conn.execute(
+            """
+            INSERT INTO materials
+            (sku, material_code, category_id, default_location_id, min_qty, track_unit,
+             name, brand, spec, compatible_range, unit, avg_cost, status, remark)
+            VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, '在库', ?)
+            ON CONFLICT(sku) DO UPDATE SET material_code=excluded.material_code,
+                category_id=excluded.category_id, default_location_id=excluded.default_location_id,
+                min_qty=excluded.min_qty, name=excluded.name, brand=excluded.brand, spec=excluded.spec,
+                compatible_range=excluded.compatible_range, unit=excluded.unit, avg_cost=excluded.avg_cost,
+                remark=excluded.remark, updated_at=CURRENT_TIMESTAMP
+            """,
+            (
+                sku,
+                material_code,
+                data.category_id,
+                data.default_location_id,
+                data.min_qty,
+                data.name,
+                data.brand,
+                data.spec,
+                data.compatible_range,
+                data.unit,
+                data.avg_cost,
+                data.remark,
+            ),
+        )
+        self.conn.commit()
+        return self._one("SELECT * FROM materials WHERE sku=?", (sku,)) or {}
+
+    def _ensure_material(self, user: User, material_id: int | None, material: MaterialInput | None) -> dict[str, Any]:
+        if material_id:
+            row = self._one("SELECT * FROM materials WHERE material_id=?", (material_id,))
+            if not row:
+                raise BusinessError("物料不存在")
+            return row
+        if not material:
+            raise BusinessError("必须选择物料或提供新物料档案")
+        return self.create_material(user, material)
+
+    def create_material_batch(self, user: User, data: MaterialBatchInput, batch_type: str) -> dict[str, Any]:
+        self._allowed(user, "warehouse:write")
+        material = self._ensure_material(user, data.material_id, data.material)
+        material_id = int(material["material_id"])
+        batch_no = data.batch_no.strip() or self._warehouse_code("BATCH", "material_batches", "batch_no")
+        purchase_type = "临采入库" if batch_type == "ad_hoc" else "采购入库"
+        location_id = data.location_id or material.get("default_location_id")
+        cur = self.conn.execute(
+            """
+            INSERT INTO material_batches
+            (material_id, batch_no, supplier, purchase_type, batch_type, location_id, purchase_no,
+             handler, qty, unit_cost, remaining_qty, payment_status, purchased_at, remark)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(NULLIF(?, ''), CURRENT_TIMESTAMP), ?)
+            """,
+            (
+                material_id,
+                batch_no,
+                data.supplier,
+                purchase_type,
+                batch_type,
+                location_id,
+                data.purchase_no,
+                data.handler or user.username,
+                data.qty,
+                data.unit_cost,
+                data.qty,
+                data.payment_status,
+                data.purchased_at,
+                data.remark,
+            ),
+        )
+        batch_id = int(cur.lastrowid)
+        code = material.get("material_code") or material.get("sku")
+        day = (data.purchased_at or "").replace("-", "")[:8] or batch_no[-8:] if batch_no[-8:].isdigit() else "TODAY"
+        for index in range(1, data.qty + 1):
+            unit_code = f"{code}-{day}-{index:04d}"
+            while self._one("SELECT unit_id FROM material_units WHERE unit_code=?", (unit_code,)):
+                unit_code = f"{code}-{day}-{uuid4().hex[:4].upper()}"
+            unit_cur = self.conn.execute(
+                """
+                INSERT INTO material_units
+                (material_id, batch_id, unit_code, current_status, location_id, unit_cost, remark)
+                VALUES (?, ?, ?, '在库可用', ?, ?, ?)
+                """,
+                (material_id, batch_id, unit_code, location_id, data.unit_cost, data.remark),
+            )
+            self._stock_movement(
+                material_id,
+                purchase_type,
+                1,
+                user.username,
+                batch_id=batch_id,
+                unit_id=int(unit_cur.lastrowid),
+                location_id=location_id,
+                unit_cost=data.unit_cost,
+                counterparty=data.supplier,
+                note=data.remark,
+                source_type="material_batch",
+                source_id=batch_id,
+            )
+        self._update_material_qty(material_id)
+        self.conn.commit()
+        return self._one("SELECT * FROM material_batches WHERE batch_id=?", (batch_id,)) or {}
+
+    def return_material_batch(self, user: User, batch_id: int, data: MaterialBatchReturnInput) -> dict[str, Any]:
+        self._allowed(user, "warehouse:write")
+        batch = self._one("SELECT * FROM material_batches WHERE batch_id=?", (batch_id,))
+        if not batch:
+            raise BusinessError("入库批次不存在")
+        units = data.unit_ids
+        if not units and data.qty:
+            units = [
+                int(row["unit_id"])
+                for row in self._rows(
+                    """
+                    SELECT unit_id FROM material_units
+                    WHERE batch_id=? AND current_status IN ('在库可用', '拆回验收可退')
+                    ORDER BY unit_id LIMIT ?
+                    """,
+                    (batch_id, data.qty),
+                )
+            ]
+        if not units:
+            raise BusinessError("请选择要退货的单件码")
+        for unit_id in units:
+            unit = self._one("SELECT * FROM material_units WHERE unit_id=? AND batch_id=?", (unit_id, batch_id))
+            if not unit or unit["current_status"] not in {"在库可用", "拆回验收可退"}:
+                raise BusinessError("只有在库可用或拆回验收可退物料可以采购退货")
+            self.conn.execute(
+                "UPDATE material_units SET current_status='已退货', updated_at=CURRENT_TIMESTAMP WHERE unit_id=?",
+                (unit_id,),
+            )
+            self._stock_movement(
+                int(unit["material_id"]),
+                "采购退货",
+                -1,
+                user.username,
+                batch_id=batch_id,
+                unit_id=unit_id,
+                location_id=unit.get("location_id"),
+                unit_cost=float(unit.get("unit_cost") or 0),
+                counterparty=batch.get("supplier") or "待确认",
+                note=data.remark,
+                source_type="material_batch_return",
+                source_id=batch_id,
+            )
+        self.conn.execute(
+            """
+            UPDATE material_batches SET remaining_qty=remaining_qty-?, refund_status=?, refund_amount=?,
+                refund_method=?, refund_transaction_no=?
+            WHERE batch_id=?
+            """,
+            (len(units), data.refund_status, data.refund_amount, data.refund_method, data.refund_transaction_no, batch_id),
+        )
+        self._update_material_qty(int(batch["material_id"]))
+        self.conn.commit()
+        return {"batch_id": batch_id, "returned_units": units, "refund_status": data.refund_status}
+
+    def material_batches(self, user: User) -> list[dict[str, Any]]:
+        self._allowed(user, "warehouse:read")
+        return self._rows(
+            """
+            SELECT b.*, m.sku, m.material_code, m.name, l.location_code
+            FROM material_batches b
+            JOIN materials m ON m.material_id=b.material_id
+            LEFT JOIN warehouse_locations l ON l.location_id=b.location_id
+            ORDER BY b.purchased_at DESC, b.batch_id DESC
+            """
+        )
+
+    def material_units(self, user: User) -> list[dict[str, Any]]:
+        self._allowed(user, "warehouse:read")
+        return self._rows(
+            """
+            SELECT u.*, m.sku, m.material_code, m.name, l.location_code
+            FROM material_units u
+            JOIN materials m ON m.material_id=u.material_id
+            LEFT JOIN warehouse_locations l ON l.location_id=u.location_id
+            ORDER BY u.updated_at DESC, u.unit_id DESC
+            LIMIT 500
+            """
+        )
+
+    def create_material_request(self, user: User, data: MaterialRequestInput) -> dict[str, Any]:
+        self._allowed(user, "warehouse:request")
+        if not data.items:
+            raise BusinessError("申领单必须至少包含一项物料")
+        engineer_user = data.engineer_user or user.username
+        request_no = self._warehouse_code("MR", "material_requests", "request_no")
+        cur = self.conn.execute(
+            """
+            INSERT INTO material_requests (request_no, repair_order_id, engineer_user, requested_by, remark)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (request_no, data.repair_order_id, engineer_user, user.username, data.remark),
+        )
+        request_id = int(cur.lastrowid)
+        for item in data.items:
+            if not self._one("SELECT material_id FROM materials WHERE material_id=?", (item.material_id,)):
+                raise BusinessError("申领物料不存在")
+            self.conn.execute(
+                """
+                INSERT INTO material_request_items
+                (request_id, material_id, repair_sku_id, qty, approved_qty, remark)
+                VALUES (?, ?, ?, ?, 0, ?)
+                """,
+                (request_id, item.material_id, item.repair_sku_id, item.qty, item.remark),
+            )
+        self.conn.commit()
+        return self.material_request_detail(user, request_id)
+
+    def material_requests(self, user: User, mine: bool = False) -> list[dict[str, Any]]:
+        self._allowed(user, "warehouse:read")
+        params: tuple[Any, ...] = ()
+        where = ""
+        if mine or user.role == Role.engineer:
+            where = "WHERE r.engineer_user=? OR r.requested_by=?"
+            params = (user.username, user.username)
+        requests = self._rows(
+            f"""
+            SELECT r.*, ro.order_no
+            FROM material_requests r
+            LEFT JOIN repair_orders ro ON ro.repair_order_id=r.repair_order_id
+            {where}
+            ORDER BY r.created_at DESC, r.request_id DESC
+            """,
+            params,
+        )
+        for row in requests:
+            row["items"] = self._rows(
+                """
+                SELECT i.*, m.sku, m.material_code, m.name, m.current_qty
+                FROM material_request_items i
+                JOIN materials m ON m.material_id=i.material_id
+                WHERE i.request_id=?
+                ORDER BY i.request_item_id
+                """,
+                (row["request_id"],),
+            )
+        return requests
+
+    def material_request_detail(self, user: User, request_id: int) -> dict[str, Any]:
+        row = self._one("SELECT * FROM material_requests WHERE request_id=?", (request_id,))
+        if not row:
+            raise BusinessError("申领单不存在")
+        if user.role == Role.engineer and row.get("engineer_user") != user.username and row.get("requested_by") != user.username:
+            raise PermissionError("工程师只能查看自己的申领单")
+        row["items"] = self._rows(
+            """
+            SELECT i.*, m.sku, m.material_code, m.name, m.current_qty
+            FROM material_request_items i
+            JOIN materials m ON m.material_id=i.material_id
+            WHERE i.request_id=?
+            ORDER BY i.request_item_id
+            """,
+            (request_id,),
+        )
+        row["units"] = self._rows(
+            "SELECT * FROM material_units WHERE request_id=? ORDER BY unit_id",
+            (request_id,),
+        )
+        return row
+
+    def approve_material_request(self, user: User, request_id: int, data: MaterialRequestActionInput) -> dict[str, Any]:
+        self._allowed(user, "warehouse:approve")
+        req = self._one("SELECT * FROM material_requests WHERE request_id=?", (request_id,))
+        if not req:
+            raise BusinessError("申领单不存在")
+        if req["status"] != "待审核":
+            raise BusinessError("只有待审核申领单可以审核")
+        for item in self._rows("SELECT * FROM material_request_items WHERE request_id=?", (request_id,)):
+            approved = data.approved_qty if data.approved_qty is not None else item["qty"]
+            self.conn.execute(
+                "UPDATE material_request_items SET approved_qty=? WHERE request_item_id=?",
+                (approved, item["request_item_id"]),
+            )
+        self.conn.execute(
+            "UPDATE material_requests SET status='已审核待发放', approved_by=?, approved_at=CURRENT_TIMESTAMP WHERE request_id=?",
+            (user.username, request_id),
+        )
+        self.conn.commit()
+        return self.material_request_detail(user, request_id)
+
+    def reject_material_request(self, user: User, request_id: int, data: MaterialRequestActionInput) -> dict[str, Any]:
+        self._allowed(user, "warehouse:approve")
+        self.conn.execute(
+            "UPDATE material_requests SET status='已拒绝', rejected_by=?, closed_at=CURRENT_TIMESTAMP, remark=? WHERE request_id=? AND status='待审核'",
+            (user.username, data.remark, request_id),
+        )
+        self.conn.commit()
+        return self.material_request_detail(user, request_id)
+
+    def cancel_material_request(self, user: User, request_id: int, data: MaterialRequestActionInput) -> dict[str, Any]:
+        req = self.material_request_detail(user, request_id)
+        if req["status"] not in {"待审核", "已审核待发放"}:
+            raise BusinessError("已发放或已关闭申领单不能取消，只能走退料/冲销")
+        self.conn.execute(
+            "UPDATE material_requests SET status='已取消', cancelled_by=?, closed_at=CURRENT_TIMESTAMP, remark=? WHERE request_id=?",
+            (user.username, data.remark, request_id),
+        )
+        self.conn.commit()
+        return self.material_request_detail(user, request_id)
+
+    def issue_material_request(self, user: User, request_id: int, data: MaterialRequestActionInput) -> dict[str, Any]:
+        self._allowed(user, "warehouse:issue")
+        req = self._one("SELECT * FROM material_requests WHERE request_id=?", (request_id,))
+        if not req:
+            raise BusinessError("申领单不存在")
+        if req["status"] != "已审核待发放":
+            raise BusinessError("申领单必须审核通过后才能发放")
+        units = data.unit_ids
+        if not units:
+            for item in self._rows("SELECT * FROM material_request_items WHERE request_id=?", (request_id,)):
+                rows = self._rows(
+                    """
+                    SELECT unit_id FROM material_units
+                    WHERE material_id=? AND current_status='在库可用'
+                    ORDER BY unit_id LIMIT ?
+                    """,
+                    (item["material_id"], int(item["approved_qty"] or item["qty"])),
+                )
+                units.extend(int(row["unit_id"]) for row in rows)
+        if not units:
+            raise BusinessError("没有选择可发放的单件码")
+        issued_by_material: dict[int, int] = {}
+        for unit_id in units:
+            unit = self._one("SELECT * FROM material_units WHERE unit_id=?", (unit_id,))
+            if not unit or unit["current_status"] != "在库可用":
+                raise BusinessError("发放只能选择在库可用物料")
+            item = self._one(
+                """
+                SELECT * FROM material_request_items
+                WHERE request_id=? AND material_id=?
+                ORDER BY request_item_id LIMIT 1
+                """,
+                (request_id, unit["material_id"]),
+            )
+            if not item:
+                raise BusinessError("单件码不属于本申领单物料")
+            allowed_qty = int(item["approved_qty"] or item["qty"])
+            already = issued_by_material.get(int(unit["material_id"]), 0)
+            if already >= allowed_qty:
+                raise BusinessError("发放数量超过审核数量")
+            issued_by_material[int(unit["material_id"])] = already + 1
+            self.conn.execute(
+                """
+                UPDATE material_units
+                SET current_status='已发放', engineer_user=?, repair_order_id=?, request_id=?,
+                    updated_at=CURRENT_TIMESTAMP
+                WHERE unit_id=?
+                """,
+                (req["engineer_user"], req["repair_order_id"], request_id, unit_id),
+            )
+            self.conn.execute(
+                "UPDATE material_request_items SET issued_qty=issued_qty+1 WHERE request_item_id=?",
+                (item["request_item_id"],),
+            )
+            if req.get("repair_order_id"):
+                self.conn.execute(
+                    """
+                    INSERT INTO repair_materials
+                    (repair_order_id, material_id, qty, unit_cost, total_cost, source_type, issued_by, issued_to, remark, source_key)
+                    VALUES (?, ?, 1, ?, ?, '库存发放', ?, ?, ?, ?)
+                    """,
+                    (
+                        req["repair_order_id"],
+                        unit["material_id"],
+                        unit["unit_cost"],
+                        unit["unit_cost"],
+                        user.username,
+                        req["engineer_user"],
+                        data.remark,
+                        f"material_unit:{unit_id}",
+                    ),
+                )
+                self.conn.execute(
+                    """
+                    INSERT INTO repair_cost_items
+                    (repair_order_id, item_type, item_name, qty, unit_cost, total_cost, status, remark, source_key)
+                    SELECT ?, '库存物料', name, 1, ?, ?, '已确认', ?, ?
+                    FROM materials WHERE material_id=?
+                    """,
+                    (
+                        req["repair_order_id"],
+                        unit["unit_cost"],
+                        unit["unit_cost"],
+                        data.remark,
+                        f"material_unit:{unit_id}",
+                        unit["material_id"],
+                    ),
+                )
+            self._stock_movement(
+                int(unit["material_id"]),
+                "仓库发放",
+                -1,
+                user.username,
+                batch_id=unit.get("batch_id"),
+                unit_id=unit_id,
+                request_id=request_id,
+                repair_order_id=req.get("repair_order_id"),
+                location_id=unit.get("location_id"),
+                unit_cost=float(unit.get("unit_cost") or 0),
+                counterparty=req["engineer_user"],
+                note=data.remark,
+                source_type="material_request",
+                source_id=request_id,
+            )
+            self._update_material_qty(int(unit["material_id"]))
+        self.conn.execute(
+            "UPDATE material_requests SET status='已发放', issued_by=?, issued_at=CURRENT_TIMESTAMP WHERE request_id=?",
+            (user.username, request_id),
+        )
+        self.conn.commit()
+        return self.material_request_detail(user, request_id)
+
+    def request_material_return(self, user: User, unit_id: int, data: MaterialIssueReturnInput) -> dict[str, Any]:
+        self._allowed(user, "warehouse:request")
+        unit = self._one("SELECT * FROM material_units WHERE unit_id=?", (unit_id,))
+        if not unit:
+            raise BusinessError("单件物料不存在")
+        if unit["current_status"] not in {"已发放", "已使用", "拆回待检"}:
+            raise BusinessError("只有已发放、已使用或拆回待检物料可以发起退料")
+        if user.role == Role.engineer and unit.get("engineer_user") != user.username:
+            raise PermissionError("工程师只能退回自己名下物料")
+        cur = self.conn.execute(
+            """
+            INSERT INTO material_returns
+            (unit_id, request_id, repair_order_id, engineer_user, return_type, remark)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (unit_id, unit.get("request_id"), unit.get("repair_order_id"), unit.get("engineer_user"), data.return_type, data.remark),
+        )
+        self.conn.execute(
+            "UPDATE material_units SET current_status='退料待验收', updated_at=CURRENT_TIMESTAMP WHERE unit_id=?",
+            (unit_id,),
+        )
+        self.conn.commit()
+        return self._one("SELECT * FROM material_returns WHERE return_id=?", (int(cur.lastrowid),)) or {}
+
+    def inspect_material_return(self, user: User, return_id: int, data: MaterialReturnInspectInput) -> dict[str, Any]:
+        self._allowed(user, "warehouse:issue")
+        ret = self._one("SELECT * FROM material_returns WHERE return_id=?", (return_id,))
+        if not ret:
+            raise BusinessError("退料单不存在")
+        if ret["status"] != "待验收":
+            raise BusinessError("退料单已验收，不能重复处理")
+        unit = self._one("SELECT * FROM material_units WHERE unit_id=?", (ret["unit_id"],))
+        if not unit:
+            raise BusinessError("退料单件不存在")
+        result = data.inspect_result
+        movement_qty = 0
+        new_status = "已报损"
+        status = "已报损"
+        if result == "可复用":
+            new_status = "在库可用"
+            status = "已重新入库"
+            movement_qty = 1
+        elif result == "已损坏":
+            new_status = "已报损"
+            status = "已报损"
+        elif result == "已使用拆回":
+            new_status = "拆回待检"
+            status = "拆回待检"
+        elif result == "可退供应商":
+            new_status = "拆回验收可退"
+            status = "拆回验收可退"
+        else:
+            raise BusinessError("验收结果只能是 可复用、已损坏、已使用拆回 或 可退供应商")
+        self.conn.execute(
+            """
+            UPDATE material_units
+            SET current_status=?, engineer_user=CASE WHEN ?='在库可用' THEN '' ELSE engineer_user END,
+                updated_at=CURRENT_TIMESTAMP
+            WHERE unit_id=?
+            """,
+            (new_status, new_status, unit["unit_id"]),
+        )
+        self.conn.execute(
+            """
+            UPDATE material_returns
+            SET status=?, inspect_result=?, inspected_by=?, inspected_at=CURRENT_TIMESTAMP, remark=?
+            WHERE return_id=?
+            """,
+            (status, result, user.username, data.remark, return_id),
+        )
+        if movement_qty:
+            self._stock_movement(
+                int(unit["material_id"]),
+                "工程师退料入库",
+                movement_qty,
+                user.username,
+                batch_id=unit.get("batch_id"),
+                unit_id=unit["unit_id"],
+                request_id=unit.get("request_id"),
+                repair_order_id=unit.get("repair_order_id"),
+                location_id=unit.get("location_id"),
+                unit_cost=float(unit.get("unit_cost") or 0),
+                counterparty=ret.get("engineer_user") or "",
+                note=data.remark,
+                source_type="material_return",
+                source_id=return_id,
+            )
+            if ret.get("repair_order_id"):
+                self.conn.execute(
+                    """
+                    INSERT INTO repair_cost_items
+                    (repair_order_id, item_type, item_name, qty, unit_cost, total_cost, status, remark, source_key)
+                    SELECT ?, '退料冲减', name, -1, ?, -?, '已确认', ?, ?
+                    FROM materials WHERE material_id=?
+                    """,
+                    (
+                        ret["repair_order_id"],
+                        unit["unit_cost"],
+                        unit["unit_cost"],
+                        data.remark or "可复用退料冲减成本",
+                        f"material_return:{return_id}",
+                        unit["material_id"],
+                    ),
+                )
+        self._update_material_qty(int(unit["material_id"]))
+        self.conn.commit()
+        return self._one("SELECT * FROM material_returns WHERE return_id=?", (return_id,)) or {}
+
+    def create_stock_count(self, user: User, data: StockCountInput) -> dict[str, Any]:
+        self._allowed(user, "warehouse:count")
+        count_no = self._warehouse_code("COUNT", "stock_counts", "count_no")
+        cur = self.conn.execute(
+            "INSERT INTO stock_counts (count_no, counted_by, remark) VALUES (?, ?, ?)",
+            (count_no, user.username, data.remark),
+        )
+        count_id = int(cur.lastrowid)
+        for item in data.items:
+            book_qty = item.book_qty
+            if book_qty == 0:
+                row = self._one(
+                    "SELECT COUNT(*) AS qty FROM material_units WHERE material_id=? AND current_status='在库可用'",
+                    (item.material_id,),
+                )
+                book_qty = float((row or {}).get("qty") or 0)
+            self.conn.execute(
+                """
+                INSERT INTO stock_count_items
+                (count_id, material_id, location_id, book_qty, actual_qty, diff_qty, reason)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (count_id, item.material_id, item.location_id, book_qty, item.actual_qty, item.actual_qty - book_qty, item.reason),
+            )
+        self.conn.commit()
+        return self._one("SELECT * FROM stock_counts WHERE count_id=?", (count_id,)) or {}
+
+    def confirm_stock_count(self, user: User, count_id: int) -> dict[str, Any]:
+        self._allowed(user, "warehouse:count")
+        count = self._one("SELECT * FROM stock_counts WHERE count_id=?", (count_id,))
+        if not count:
+            raise BusinessError("盘点单不存在")
+        if count["status"] != "草稿":
+            raise BusinessError("盘点确认后不可删除或重复确认，只能做反向调整")
+        for item in self._rows("SELECT * FROM stock_count_items WHERE count_id=?", (count_id,)):
+            diff = int(item["diff_qty"])
+            if diff > 0:
+                self.create_stock_adjustment(
+                    user,
+                    StockAdjustmentInput(
+                        material_id=item["material_id"],
+                        location_id=item.get("location_id"),
+                        qty=diff,
+                        adjustment_type="盘盈入库",
+                        reason=item.get("reason") or "盘点盘盈",
+                    ),
+                )
+            elif diff < 0:
+                self.create_stock_adjustment(
+                    user,
+                    StockAdjustmentInput(
+                        material_id=item["material_id"],
+                        location_id=item.get("location_id"),
+                        qty=abs(diff),
+                        adjustment_type="盘亏出库",
+                        reason=item.get("reason") or "盘点盘亏",
+                    ),
+                )
+        self.conn.execute(
+            "UPDATE stock_counts SET status='已确认', confirmed_by=?, confirmed_at=CURRENT_TIMESTAMP WHERE count_id=?",
+            (user.username, count_id),
+        )
+        self.conn.commit()
+        return self._one("SELECT * FROM stock_counts WHERE count_id=?", (count_id,)) or {}
+
+    def create_stock_adjustment(self, user: User, data: StockAdjustmentInput) -> dict[str, Any]:
+        self._allowed(user, "warehouse:count")
+        material = self._one("SELECT * FROM materials WHERE material_id=?", (data.material_id,))
+        if not material:
+            raise BusinessError("物料不存在")
+        adjustment_no = self._warehouse_code("ADJ", "stock_adjustments", "adjustment_no")
+        movement_qty = data.qty
+        unit_ids: list[int] = []
+        if data.adjustment_type in {"盘盈入库", "反向调整入库"}:
+            for index in range(1, data.qty + 1):
+                unit_code = f"{material.get('material_code') or material.get('sku')}-ADJ-{uuid4().hex[:6].upper()}"
+                cur = self.conn.execute(
+                    """
+                    INSERT INTO material_units
+                    (material_id, unit_code, current_status, location_id, unit_cost, remark)
+                    VALUES (?, ?, '在库可用', ?, ?, ?)
+                    """,
+                    (data.material_id, unit_code, data.location_id, material.get("avg_cost") or 0, data.reason),
+                )
+                unit_ids.append(int(cur.lastrowid))
+        elif data.adjustment_type in {"盘亏出库", "报损出库", "反向调整出库"}:
+            rows = self._rows(
+                """
+                SELECT unit_id FROM material_units
+                WHERE material_id=? AND current_status='在库可用'
+                ORDER BY unit_id LIMIT ?
+                """,
+                (data.material_id, data.qty),
+            )
+            if len(rows) < data.qty:
+                raise BusinessError("可用库存不足，不能盘亏/报损出库")
+            unit_ids = [int(row["unit_id"]) for row in rows]
+            for unit_id in unit_ids:
+                self.conn.execute(
+                    "UPDATE material_units SET current_status=?, updated_at=CURRENT_TIMESTAMP WHERE unit_id=?",
+                    ("已报损" if data.adjustment_type == "报损出库" else "盘亏", unit_id),
+                )
+            movement_qty = -data.qty
+        else:
+            raise BusinessError("调整类型必须是盘盈入库、盘亏出库、报损出库或反向调整")
+        cur = self.conn.execute(
+            """
+            INSERT INTO stock_adjustments
+            (adjustment_no, material_id, unit_id, location_id, qty, adjustment_type, reason, operator)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (adjustment_no, data.material_id, data.unit_id or (unit_ids[0] if unit_ids else None), data.location_id, data.qty, data.adjustment_type, data.reason, user.username),
+        )
+        self._stock_movement(
+            data.material_id,
+            data.adjustment_type,
+            movement_qty,
+            user.username,
+            unit_id=unit_ids[0] if unit_ids else data.unit_id,
+            location_id=data.location_id,
+            unit_cost=float(material.get("avg_cost") or 0),
+            note=data.reason,
+            source_type="stock_adjustment",
+            source_id=int(cur.lastrowid),
+        )
+        self._update_material_qty(data.material_id)
+        self.conn.commit()
+        return self._one("SELECT * FROM stock_adjustments WHERE adjustment_id=?", (int(cur.lastrowid),)) or {}
+
+    def stock_movements(self, user: User) -> list[dict[str, Any]]:
+        self._allowed(user, "warehouse:read")
+        return self._rows(
+            """
+            SELECT sm.*, m.sku, m.material_code, m.name, u.unit_code, ro.order_no, l.location_code
+            FROM stock_movements sm
+            JOIN materials m ON m.material_id=sm.material_id
+            LEFT JOIN material_units u ON u.unit_id=sm.unit_id
+            LEFT JOIN repair_orders ro ON ro.repair_order_id=sm.repair_order_id
+            LEFT JOIN warehouse_locations l ON l.location_id=sm.location_id
+            ORDER BY sm.happened_at DESC, sm.stock_movement_id DESC
+            LIMIT 500
+            """
+        )
+
+    def upsert_repair_fault_material(self, user: User, data: RepairFaultMaterialInput) -> dict[str, Any]:
+        self._allowed(user, "warehouse:write")
+        self.conn.execute(
+            """
+            INSERT INTO repair_fault_materials (repair_sku_id, material_id, qty, priority, remark)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(repair_sku_id, material_id) DO UPDATE SET qty=excluded.qty,
+                priority=excluded.priority, remark=excluded.remark, updated_at=CURRENT_TIMESTAMP
+            """,
+            (data.repair_sku_id, data.material_id, data.qty, data.priority, data.remark),
+        )
+        self.conn.commit()
+        return self._one(
+            "SELECT * FROM repair_fault_materials WHERE repair_sku_id=? AND material_id=?",
+            (data.repair_sku_id, data.material_id),
+        ) or {}
+
+    def repair_fault_materials(self, user: User) -> list[dict[str, Any]]:
+        self._allowed(user, "warehouse:read")
+        return self._rows(
+            """
+            SELECT b.*, rs.sku_code, rs.fault_name, rs.solution_name,
+                   m.sku, m.material_code, m.name, m.current_qty, m.min_qty
+            FROM repair_fault_materials b
+            JOIN repair_skus rs ON rs.sku_id=b.repair_sku_id
+            JOIN materials m ON m.material_id=b.material_id
+            ORDER BY b.priority, rs.sku_code, m.name
+            """
+        )
+
+    def material_hints_for_sku(self, user: User, sku_id: int) -> dict[str, Any]:
+        self._allowed(user, "warehouse:read")
+        sku = self._one("SELECT * FROM repair_skus WHERE sku_id=?", (sku_id,))
+        if not sku:
+            raise BusinessError("维修故障 SKU 不存在")
+        hints = self._rows(
+            """
+            SELECT b.*, m.sku, m.material_code, m.name, m.current_qty, m.min_qty,
+                   GROUP_CONCAT(DISTINCT l.location_code) AS locations,
+                   SUM(CASE WHEN u.current_status='已发放' THEN 1 ELSE 0 END) AS pending_issue_qty
+            FROM repair_fault_materials b
+            JOIN materials m ON m.material_id=b.material_id
+            LEFT JOIN material_units u ON u.material_id=m.material_id
+            LEFT JOIN warehouse_locations l ON l.location_id=u.location_id
+            WHERE b.repair_sku_id=?
+            GROUP BY b.binding_id
+            ORDER BY b.priority, m.name
+            """,
+            (sku_id,),
+        )
+        for hint in hints:
+            hint["low_stock"] = float(hint.get("min_qty") or 0) > 0 and float(hint.get("current_qty") or 0) <= float(hint.get("min_qty") or 0)
+            hint["stock_warning"] = "库存不足，需临采入库" if float(hint.get("current_qty") or 0) < float(hint.get("qty") or 0) else ""
+        return {"repair_sku": sku, "materials": hints}
+
+    def material_hints_for_order(self, user: User, repair_order_id: int) -> dict[str, Any]:
+        self._allowed(user, "warehouse:read")
+        order = self.repo.get_repair_order(repair_order_id)
+        if not order:
+            raise BusinessError("维修单不存在")
+        sku_ids = [int(row["sku_id"]) for row in self._rows("SELECT DISTINCT sku_id FROM repair_items WHERE repair_order_id=? AND sku_id IS NOT NULL", (repair_order_id,))]
+        hints = [self.material_hints_for_sku(user, sku_id) for sku_id in sku_ids]
+        return {"repair_order": order, "hints": hints}
+
+    def apply_repair_workflow_action(self, user: User, repair_order_id: int, data: RepairWorkflowActionInput) -> dict[str, Any]:
+        self._allowed(user, "repair_order:update")
+        order = self.repo.get_repair_order(repair_order_id)
+        if not order:
+            raise BusinessError("维修单不存在")
+        action = data.action.strip()
+        machine_id = int(order["machine_id"])
+        title = "维修流程"
+        detail = data.remark or action
+        if action == "repair_completed":
+            self.conn.execute(
+                "UPDATE repair_orders SET status='维修完成', workflow_status='待交付检测', completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE repair_order_id=?",
+                (repair_order_id,),
+            )
+            self.repo.update_machine_status(machine_id, "维修完成")
+            title = "维修完成"
+        elif action == "delivered":
+            next_status = data.status or "已交付"
+            if next_status not in {"已交付", "待取机", "待送机", "待返寄"}:
+                raise BusinessError("交付动作只能进入 已交付、待取机、待送机 或 待返寄")
+            self.conn.execute(
+                "UPDATE repair_orders SET status=?, workflow_status='待收款/财务确认', delivered_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE repair_order_id=?",
+                (next_status, repair_order_id),
+            )
+            self.repo.update_machine_status(machine_id, next_status)
+            title = "交付流转"
+            detail = next_status if not data.remark else f"{next_status}；{data.remark}"
+        elif action == "register_payment":
+            self._allowed(user, "payment:create")
+            amount = float(data.amount or 0)
+            if amount <= 0:
+                raise BusinessError("登记收款金额必须大于 0")
+            cur = self.conn.execute(
+                """
+                INSERT INTO payments
+                (source_type, source_id, direction, amount, method, account, transaction_no,
+                 payer, payee, operator, received_by, status, paid_at, remark)
+                VALUES ('repair', ?, '收入', ?, ?, ?, ?, '', '', ?, ?, '已付款待财务确认',
+                        CURRENT_TIMESTAMP, ?)
+                """,
+                (
+                    repair_order_id,
+                    amount,
+                    data.method or "待确认",
+                    data.account,
+                    data.transaction_no,
+                    user.username,
+                    data.received_by or user.username,
+                    data.remark or "前台收款，待财务确认",
+                ),
+            )
+            self.conn.execute(
+                "UPDATE repair_orders SET payment_status='已付款待财务确认', settlement_status='未结', status='财务待确认', updated_at=CURRENT_TIMESTAMP WHERE repair_order_id=?",
+                (repair_order_id,),
+            )
+            self.repo.add_machine_event(machine_id, "payment", "登记收款", f"金额 {amount}，待财务确认", user.username, "payment", int(cur.lastrowid))
+            title = "登记收款"
+            detail = f"金额 {amount}，待财务确认"
+        elif action == "finance_confirm":
+            self._allowed(user, "payment:create")
+            confirmed_by = data.confirmed_by or user.username
+            self.conn.execute(
+                """
+                UPDATE payments
+                SET status='财务已确认', confirmed_by=?,
+                    confirmed_at=CASE WHEN ?='' THEN CURRENT_TIMESTAMP ELSE ? END
+                WHERE source_type='repair' AND source_id=? AND status='已付款待财务确认'
+                """,
+                (confirmed_by, data.confirmed_at, data.confirmed_at, repair_order_id),
+            )
+            self.conn.execute(
+                """
+                UPDATE repair_orders
+                SET payment_status='财务已确认', settlement_status='已结', status='已完结',
+                    closed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+                WHERE repair_order_id=?
+                """,
+                (repair_order_id,),
+            )
+            self.repo.close_machine(machine_id, "已结单")
+            title = "财务确认"
+            detail = f"确认人：{confirmed_by}"
+        elif action == "mark_receivable":
+            amount = float(data.amount if data.amount is not None else order.get("quoted_amount") or 0)
+            receivable_type = data.payment_status or "同行挂账"
+            self.conn.execute(
+                """
+                INSERT INTO receivables
+                (repair_order_id, customer_id, customer_name, counter_no, receivable_type,
+                 amount, status, remark, source_key)
+                VALUES (?, ?, ?, ?, ?, ?, '未结', ?, ?)
+                """,
+                (
+                    repair_order_id,
+                    order.get("customer_id"),
+                    order.get("customer_name") or "待补",
+                    order.get("counter_no") or "",
+                    receivable_type,
+                    amount,
+                    data.remark or "同行挂账/未收款",
+                    f"manual-receivable-{repair_order_id}",
+                ),
+            )
+            status = "同行挂账" if receivable_type == "同行挂账" else "已交付"
+            self.conn.execute(
+                "UPDATE repair_orders SET payment_status=?, settlement_status='未结', status=?, updated_at=CURRENT_TIMESTAMP WHERE repair_order_id=?",
+                (receivable_type, status, repair_order_id),
+            )
+            title = "挂账登记"
+            detail = f"{receivable_type}：{amount}"
+        elif action == "settle_receivable":
+            self._allowed(user, "settlement:create")
+            self.conn.execute(
+                "UPDATE receivables SET status='已结', settled_at=CURRENT_TIMESTAMP, remark=CASE WHEN ?='' THEN remark ELSE ? END WHERE repair_order_id=? AND status<>'已结'",
+                (data.remark, data.remark, repair_order_id),
+            )
+            self.conn.execute(
+                "UPDATE repair_orders SET payment_status='财务已确认', settlement_status='已结', status='已完结', closed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE repair_order_id=?",
+                (repair_order_id,),
+            )
+            self.repo.close_machine(machine_id, "已结单")
+            title = "挂账结清"
+        elif action == "close":
+            refreshed = self.repo.get_repair_order(repair_order_id) or order
+            if refreshed.get("status") == "维修完成":
+                raise BusinessError("维修完成后必须先交付、收款/挂账或财务确认，不能直接完结")
+            if refreshed.get("payment_status") not in {"财务已确认", "预付款已收", "无需收款"}:
+                raise BusinessError("只有财务已确认、预付款已收或无需收款的工单可以完结")
+            self.conn.execute(
+                "UPDATE repair_orders SET status='已完结', settlement_status='已结', closed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE repair_order_id=?",
+                (repair_order_id,),
+            )
+            self.repo.close_machine(machine_id, "已结单")
+            title = "订单完结"
+        else:
+            raise BusinessError("未知维修闭环动作")
+        self.repo.add_machine_event(machine_id, "repair", title, detail, user.username, "repair", repair_order_id)
+        self._log_success(user, f"repair_order:{action}", "repair_order", str(repair_order_id), customer_id=order.get("customer_id"), request_summary=detail)
+        self.conn.commit()
+        return self.repair_workbench_detail(user, repair_order_id)
+
+    def upsert_repair_sku(self, user: User, data: RepairSkuInput) -> dict[str, Any]:
+        self._allowed(user, "repair_sku:write")
+        sku_id = self.repo.upsert_repair_sku(data.model_dump())
+        self._log_success(user, "repair_sku:upsert", "repair_sku", str(sku_id), request_summary=data.sku_code)
+        self.conn.commit()
+        return self.repo.get_repair_sku(sku_id) or {}
+
+    def assign_repair_order(self, user: User, repair_order_id: int, data: RepairAssignInput) -> dict[str, Any]:
+        self._allowed(user, "repair_order:assign")
+        self._ensure_frontdesk_or_admin(user)
+        order = self.repo.get_repair_order(repair_order_id)
+        if not order:
+            raise BusinessError("维修单不存在")
+        status = self._repair_order_status(order)
+        if status in {OrderStatus.closed, OrderStatus.cancelled}:
+            raise BusinessError("维修单已结束，不能指派")
+        engineer = self.repo.get_user(data.engineer_user_id)
+        if not engineer or engineer["role"] not in {Role.engineer.value, Role.staff.value, Role.admin.value}:
+            raise BusinessError("被指派账号不存在或不是工程师")
+        before = order.get("assigned_to") or "未指派"
+        workflow = "工程师待检测" if status == OrderStatus.opened else "工程师维修中"
+        self.repo.assign_repair_order(repair_order_id, data.engineer_user_id, workflow)
+        self.repo.assign_machine(int(order["machine_id"]), data.engineer_user_id)
+        detail = f"{before} -> {data.engineer_user_id}"
+        if data.remark:
+            detail = f"{detail}；{data.remark}"
+        self.repo.add_machine_event(int(order["machine_id"]), "repair", "指派工程师", detail, user.username, "repair", repair_order_id)
+        self._log_success(user, "repair_order:assign", "repair_order", str(repair_order_id), customer_id=order["customer_id"], request_summary=detail)
+        self.conn.commit()
+        return self._repair_order_response(repair_order_id)
+
     def quote_repair_order(self, user: User, repair_order_id: int, data: RepairQuoteInput) -> dict[str, Any]:
         self._allowed(user, "repair_order:update")
         order = self.repo.get_repair_order(repair_order_id)
         if not order:
             raise BusinessError("维修单不存在")
+        self._ensure_engineer_owns_repair(user, order)
         self._ensure_repair_transition(order, OrderStatus.quoted, {OrderStatus.diagnosing})
-        self.repo.quote_repair_order(repair_order_id, data.diagnosis, data.quoted_amount, OrderStatus.quoted.value)
+        sku_total = 0.0
+        sku_names: list[str] = []
+        for sku_id in data.sku_ids:
+            sku = self.repo.get_repair_sku(sku_id)
+            if not sku or not int(sku.get("enabled", 1)):
+                raise BusinessError(f"维修 SKU 不存在或已停用：{sku_id}")
+            sku_total += float(sku["charge_amount"] or 0)
+            sku_names.append(f"{sku['fault_name']}/{sku['solution_name']}")
+        quoted_amount = data.quoted_amount or sku_total
+        fault_detail = data.fault_detail or data.diagnosis
+        repair_solution = data.repair_solution or "；".join(sku_names)
+        self.repo.quote_repair_order(repair_order_id, data.diagnosis, quoted_amount, OrderStatus.quoted.value, fault_detail, repair_solution, "待客户确认")
         self.repo.update_machine_status(int(order["machine_id"]), MachineStatus.quoted.value)
-        self.repo.add_machine_event(int(order["machine_id"]), "repair", "检测报价", f"{data.diagnosis}，报价 {data.quoted_amount}", user.username, "repair", repair_order_id)
-        self._log_success(user, "repair_order:quote", "repair_order", str(repair_order_id), customer_id=order["customer_id"], request_summary=str(data.quoted_amount))
+        detail = f"{data.diagnosis}，报价 {quoted_amount}"
+        if repair_solution:
+            detail = f"{detail}；方案：{repair_solution}"
+        self.repo.add_machine_event(int(order["machine_id"]), "repair", "检测报价", detail, user.username, "repair", repair_order_id)
+        if sku_names:
+            self.repo.add_machine_event(int(order["machine_id"]), "repair", "SKU 报价明细", "；".join(sku_names), user.username, "repair", repair_order_id)
+        self._log_success(user, "repair_order:quote", "repair_order", str(repair_order_id), customer_id=order["customer_id"], request_summary=str(quoted_amount))
+        self.conn.commit()
+        return self._repair_order_response(repair_order_id)
+
+    def confirm_repair_quote(self, user: User, repair_order_id: int, data: RepairQuoteConfirmInput) -> dict[str, Any]:
+        self._allowed(user, "repair_order:confirm")
+        self._ensure_frontdesk_or_admin(user)
+        order = self.repo.get_repair_order(repair_order_id)
+        if not order:
+            raise BusinessError("维修单不存在")
+        self._ensure_repair_transition(order, OrderStatus.processing, {OrderStatus.quoted})
+        result = data.confirm_result.strip()
+        if result not in {"客户同意维修", "客户拒修", "待考虑"}:
+            raise BusinessError("确认结果必须是 客户同意维修、客户拒修 或 待考虑")
+        if result == "客户同意维修":
+            status = OrderStatus.processing.value
+            workflow = "工程师维修中"
+            machine_status = MachineStatus.repairing.value
+            title = "报价确认"
+        elif result == "客户拒修":
+            status = OrderStatus.cancelled.value
+            workflow = "待客户取回"
+            machine_status = None
+            title = "客户拒修"
+        else:
+            status = OrderStatus.quoted.value
+            workflow = "待客户确认"
+            machine_status = None
+            title = "客户待考虑"
+        self.repo.confirm_repair_quote(repair_order_id, status, workflow, result, data.confirm_method, data.contact_person, data.remark)
+        if machine_status:
+            self.repo.update_machine_status(int(order["machine_id"]), machine_status)
+        detail = f"{result}；方式：{data.confirm_method or '未填'}；联系人：{data.contact_person or '未填'}"
+        if data.remark:
+            detail = f"{detail}；{data.remark}"
+        self.repo.add_machine_event(int(order["machine_id"]), "repair", title, detail, user.username, "repair", repair_order_id)
+        self._log_success(user, "repair_order:quote_confirm", "repair_order", str(repair_order_id), customer_id=order["customer_id"], request_summary=result)
         self.conn.commit()
         return self._repair_order_response(repair_order_id)
 
@@ -311,6 +1622,7 @@ class MisService:
         order = self.repo.get_repair_order(repair_order_id)
         if not order:
             raise BusinessError("维修单不存在")
+        self._ensure_engineer_owns_repair(user, order)
         old_amount = float(order["quoted_amount"] or 0)
         self.repo.update_repair_order_price(repair_order_id, data.quoted_amount)
         detail = f"报价 {old_amount} -> {data.quoted_amount}"
@@ -326,12 +1638,33 @@ class MisService:
         order = self.repo.get_repair_order(repair_order_id)
         if not order:
             raise BusinessError("维修单不存在")
-        self._ensure_repair_transition(order, OrderStatus.processing, {OrderStatus.quoted})
-        item_id = self.repo.add_repair_item(repair_order_id, data.item_name, data.quantity, data.cost_amount, data.charge_amount, data.remark)
-        self.repo.quote_repair_order(repair_order_id, order["diagnosis"], float(order["quoted_amount"]), OrderStatus.processing.value)
+        self._ensure_engineer_owns_repair(user, order)
+        self._ensure_repair_transition(order, OrderStatus.processing, {OrderStatus.quoted, OrderStatus.processing})
+        if order.get("assigned_to") and not order.get("quote_confirm_status") and self._repair_order_status(order) == OrderStatus.quoted:
+            raise BusinessError("报价需由前台确认后才能开始维修")
+        item_name = data.item_name
+        cost_amount = data.cost_amount
+        charge_amount = data.charge_amount
+        if data.sku_id:
+            sku = self.repo.get_repair_sku(data.sku_id)
+            if not sku or not int(sku.get("enabled", 1)):
+                raise BusinessError("维修 SKU 不存在或已停用")
+            item_name = data.item_name if data.item_name else sku["solution_name"]
+            cost_amount = cost_amount or float(sku["cost_amount"] or 0)
+            charge_amount = charge_amount or float(sku["charge_amount"] or 0)
+        item_id = self.repo.add_repair_item(repair_order_id, item_name, data.quantity, cost_amount, charge_amount, data.remark, data.sku_id)
+        self.repo.quote_repair_order(
+            repair_order_id,
+            order["diagnosis"],
+            float(order["quoted_amount"]),
+            OrderStatus.processing.value,
+            order.get("fault_detail", ""),
+            order.get("repair_solution", ""),
+            "工程师维修中",
+        )
         self.repo.update_machine_status(int(order["machine_id"]), MachineStatus.repairing.value)
-        self.repo.add_machine_event(int(order["machine_id"]), "repair", "维修项目", f"{data.item_name} x{data.quantity}", user.username, "repair_item", item_id)
-        self._log_success(user, "repair_order:item", "repair_item", str(item_id), customer_id=order["customer_id"], request_summary=data.item_name)
+        self.repo.add_machine_event(int(order["machine_id"]), "repair", "维修项目", f"{item_name} x{data.quantity}", user.username, "repair_item", item_id)
+        self._log_success(user, "repair_order:item", "repair_item", str(item_id), customer_id=order["customer_id"], request_summary=item_name)
         self.conn.commit()
         detail = self._repair_order_response(repair_order_id)
         detail["repair_item_id"] = item_id
@@ -342,6 +1675,7 @@ class MisService:
         order = self.repo.get_repair_order(repair_order_id)
         if not order:
             raise BusinessError("维修单不存在")
+        self._ensure_engineer_owns_repair(user, order)
         allowed = {
             OrderStatus.diagnosing: {OrderStatus.opened},
             OrderStatus.ready: {OrderStatus.processing},
@@ -356,6 +1690,17 @@ class MisService:
         if data.status not in allowed:
             raise BusinessError("该状态必须通过报价、维修项目、交付或收款等专用动作进入")
         self._ensure_repair_transition(order, data.status, allowed[data.status])
+        if data.status == OrderStatus.cancelled:
+            issued = self._rows(
+                """
+                SELECT unit_code FROM material_units
+                WHERE repair_order_id=? AND current_status IN ('已发放', '已使用', '退料待验收', '拆回待检')
+                """,
+                (repair_order_id,),
+            )
+            if issued:
+                codes = "、".join(row["unit_code"] for row in issued[:3])
+                raise BusinessError(f"工单已有未闭环领料，需先退料或确认报损后才能取消：{codes}")
         self.repo.update_repair_order_status(repair_order_id, data.status.value, data.remark)
         if data.status == OrderStatus.cancelled:
             self.repo.add_machine_event(int(order["machine_id"]), "repair", "维修作废", data.remark, user.username, "repair", repair_order_id)
@@ -363,6 +1708,24 @@ class MisService:
             self.repo.update_machine_status(int(order["machine_id"]), self._repair_machine_status(data.status).value)
             self.repo.add_machine_event(int(order["machine_id"]), "repair", f"维修{data.status.value}", data.remark, user.username, "repair", repair_order_id)
         self._log_success(user, "repair_order:status", "repair_order", str(repair_order_id), customer_id=order["customer_id"], request_summary=data.status.value)
+        self.conn.commit()
+        return self._repair_order_response(repair_order_id)
+
+    def engineer_close_repair_order(self, user: User, repair_order_id: int, data: RepairEngineerCloseInput) -> dict[str, Any]:
+        self._allowed(user, "repair_order:engineer_close")
+        order = self.repo.get_repair_order(repair_order_id)
+        if not order:
+            raise BusinessError("维修单不存在")
+        self._ensure_engineer_owns_repair(user, order)
+        status = self._repair_order_status(order)
+        if status not in {OrderStatus.processing, OrderStatus.ready}:
+            raise BusinessError("只有维修中或待交付订单可以工程师结单")
+        if not self.repo.list_repair_items(repair_order_id):
+            raise BusinessError("请先记录维修项目后再工程师结单")
+        self.repo.engineer_close_repair_order(repair_order_id, data.remark)
+        self.repo.update_machine_status(int(order["machine_id"]), MachineStatus.ready_for_delivery.value)
+        self.repo.add_machine_event(int(order["machine_id"]), "repair", "工程师结单", data.remark, user.username, "repair", repair_order_id)
+        self._log_success(user, "repair_order:engineer_close", "repair_order", str(repair_order_id), customer_id=order["customer_id"], request_summary=data.remark)
         self.conn.commit()
         return self._repair_order_response(repair_order_id)
 
@@ -495,6 +1858,8 @@ class MisService:
                 raise BusinessError("维修单已结单，不能重复收款")
             if status != OrderStatus.delivered:
                 raise BusinessError("维修单交付后才能收款结单")
+            if order.get("assigned_to") and not order.get("engineer_closed_at"):
+                raise BusinessError("工程师结单后才能由前台收费")
             if data.direction != PaymentDirection.income:
                 raise BusinessError("维修单只能登记收入流水")
         payment_id = self.repo.create_payment(

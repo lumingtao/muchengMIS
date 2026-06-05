@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>沐辰 MIS MVP</title>
-  <link rel="stylesheet" href="/static/styles.css?v=compact-info-panel">
+  <link rel="stylesheet" href="/static/styles.css?v=repair-list-merged-filters">
 </head>
 <body>
   <section id="auth-screen" class="auth-screen" hidden>
@@ -31,7 +31,7 @@
         </label>
         <button type="submit">登录</button>
       </form>
-      <p class="auth-hint">默认演示账号：admin / admin、staff / staff、finance / finance</p>
+      <p class="auth-hint">默认演示账号：admin / admin、frontdesk / frontdesk、engineer / engineer、finance / finance、boss / boss</p>
     </div>
   </section>
 
@@ -50,6 +50,7 @@
         <span class="nav-section">业务处理</span>
         <button data-view="repairPool" data-icon="修" class="active">维修订单池</button>
         <button data-view="recyclePool" data-icon="收">回收订单池</button>
+        <button data-view="warehouse" data-icon="仓">配件仓库</button>
         <button data-view="inventory" data-icon="库">回收库存</button>
         <button data-view="sales" data-icon="售">销售开单</button>
         <span class="nav-section">经营管理</span>
@@ -88,27 +89,91 @@
       <div class="panel">
         <div class="panel-header">
           <div>
-            <h2>维修订单池</h2>
-            <p>按维修状态筛选机器，点击记录查看完整生命周期。</p>
+            <h2>维修闭环中心</h2>
+            <p>真实维修业务看板，覆盖接单、维修、交付、收款、挂账与财务确认。</p>
           </div>
           <button type="button" id="open-repair-tab">新建维修单</button>
         </div>
+        <div id="repair-workbench-metrics" class="metrics compact-metrics"></div>
         <div class="toolbar filters">
-          <input id="repair-keyword" placeholder="机器编号、IMEI、序列号、机型、客户">
+          <input id="repair-keyword" class="repair-keyword-input" placeholder="工单号、机型、客户、工程师、柜台、备注">
+          <label class="date-filter">
+            <span>开始日期</span>
+            <input id="repair-date-from" type="date">
+          </label>
+          <label class="date-filter">
+            <span>结束日期</span>
+            <input id="repair-date-to" type="date">
+          </label>
           <select id="repair-status">
             <option value="">全部维修状态</option>
-            <option value="检测中">检测中</option>
-            <option value="已报价">已报价</option>
+            <option value="新建">新建</option>
+            <option value="待检测">待检测</option>
+            <option value="待报价确认">待报价确认</option>
             <option value="维修中">维修中</option>
-            <option value="待交付">待交付</option>
+            <option value="维修完成">维修完成</option>
+            <option value="待交付检测">待交付检测</option>
+            <option value="待取机">待取机</option>
+            <option value="待送机">待送机</option>
             <option value="已交付">已交付</option>
-            <option value="已结单">已结单</option>
+            <option value="财务待确认">财务待确认</option>
+            <option value="同行挂账">同行挂账</option>
+            <option value="已完结">已完结</option>
+          </select>
+          <select id="repair-payment-status">
+            <option value="">全部收款状态</option>
+            <option value="未收款">未收款</option>
+            <option value="已付款待财务确认">已付款待财务确认</option>
+            <option value="财务已确认">财务已确认</option>
+            <option value="同行挂账">同行挂账</option>
+            <option value="预付款已收">预付款已收</option>
+            <option value="无需收款">无需收款</option>
+          </select>
+          <select id="repair-customer-type">
+            <option value="">全部客户类型</option>
+            <option value="到店客户">到店客户</option>
+            <option value="同行客户">同行客户</option>
+            <option value="寄修客户">寄修客户</option>
+            <option value="销售微信客户">销售微信客户</option>
+          </select>
+          <select id="repair-missing-only">
+            <option value="">全部资料</option>
+            <option value="1">只看待补/待确认</option>
           </select>
           <button id="search-repair-orders">查询</button>
           <button type="button" id="reset-repair-filters" class="ghost-button">重置</button>
         </div>
         <div id="repair-order-table" class="table-wrap"></div>
       </div>
+      <div class="dashboard-grid">
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>财务待确认</h2>
+              <p>前台已收款但财务未确认到账。</p>
+            </div>
+          </div>
+          <div id="repair-finance-pending" class="table-wrap"></div>
+        </section>
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>同行挂账 / 应收</h2>
+              <p>按柜台或同行客户汇总未结应收。</p>
+            </div>
+          </div>
+          <div id="repair-receivables" class="table-wrap"></div>
+        </section>
+      </div>
+      <section class="panel">
+        <div class="panel-header">
+          <div>
+            <h2>物料库存摘要</h2>
+            <p>维修领料、采购入库和临采补录的核心库存。</p>
+          </div>
+        </div>
+        <div id="repair-material-summary" class="table-wrap"></div>
+      </section>
     </section>
 
     <section id="recyclePool" class="view">
@@ -168,7 +233,13 @@
           </div>
           <input name="repair_order_id" type="number" placeholder="维修单 ID *" required>
           <input name="diagnosis" placeholder="检测结论">
+          <input name="fault_detail" placeholder="检测故障">
+          <input name="repair_solution" placeholder="维修方案">
+          <input name="sku_ids" placeholder="报价 SKU ID，多个用逗号分隔">
+          <button type="button" id="show-repair-material-hints" class="ghost-button">查看故障物料库存</button>
+          <div id="repair-material-hints" class="hint-box"></div>
           <input name="quoted_amount" type="number" step="0.01" placeholder="报价">
+          <input name="sku_id" type="number" placeholder="维修项目 SKU ID">
           <input name="item_name" placeholder="维修项目/配件">
           <input name="quantity" type="number" placeholder="数量" value="1">
           <input name="cost_amount" type="number" step="0.01" placeholder="成本">
@@ -179,6 +250,7 @@
             <button type="button" id="quote-repair">检测报价</button>
             <button type="button" id="add-repair-item">记维修项目</button>
             <button type="button" id="ready-repair">待交付</button>
+            <button type="button" id="engineer-close-repair">工程师结单</button>
             <button type="button" id="deliver-repair">交付检测</button>
             <button type="button" id="go-repair-payment">收款结单</button>
           </div>
@@ -225,6 +297,126 @@
             <button type="button" id="stock-in-recycle">付款入库</button>
           </div>
         </form>
+      </div>
+    </section>
+
+    <section id="warehouse" class="view">
+      <div class="panel">
+        <div class="panel-header">
+          <div>
+            <h2>配件仓库</h2>
+            <p>物料编码、批次入库、采购退货、工程师申领发放、退料验收、盘点调整和维修故障物料绑定。</p>
+          </div>
+          <button type="button" id="refresh-warehouse">刷新仓库</button>
+        </div>
+        <div id="warehouse-metrics" class="metrics compact-metrics"></div>
+      </div>
+
+      <div class="dashboard-grid">
+        <form id="warehouse-category-form" class="panel form-grid compact">
+          <div class="panel-header"><div><h2>物料类别</h2><p>生成物料代码前缀。</p></div></div>
+          <input name="category_code" placeholder="类别代码，如 SSD">
+          <input name="name" placeholder="类别名称 *" required>
+          <textarea name="remark" placeholder="备注"></textarea>
+          <button type="submit">保存类别</button>
+        </form>
+        <form id="warehouse-location-form" class="panel form-grid compact">
+          <div class="panel-header"><div><h2>库区库位</h2><p>库区、库位和默认存放点。</p></div></div>
+          <input name="area_id" type="number" placeholder="库区 ID">
+          <input name="location_code" placeholder="库位代码">
+          <input name="name" placeholder="库位名称 *" required>
+          <select name="status"><option>启用</option><option>停用</option></select>
+          <textarea name="remark" placeholder="备注"></textarea>
+          <button type="submit">保存库位</button>
+        </form>
+      </div>
+
+      <div class="dashboard-grid">
+        <form id="warehouse-material-form" class="panel form-grid compact">
+          <div class="panel-header"><div><h2>物料档案</h2><p>同类物料生成物料代码，单件码由入库批次生成。</p></div></div>
+          <input name="sku" placeholder="SKU/旧物料号，可空">
+          <input name="material_code" placeholder="物料代码，可空自动生成">
+          <input name="category_id" type="number" placeholder="类别 ID">
+          <input name="default_location_id" type="number" placeholder="默认库位 ID">
+          <input name="name" placeholder="物料名称 *" required>
+          <input name="brand" placeholder="品牌/供应链">
+          <input name="compatible_range" placeholder="适配范围，如 IPH12-15">
+          <input name="spec" placeholder="规格，如 512G">
+          <input name="min_qty" type="number" step="1" placeholder="低库存阈值">
+          <textarea name="remark" placeholder="备注"></textarea>
+          <button type="submit">保存物料</button>
+        </form>
+        <form id="warehouse-batch-form" class="panel form-grid compact">
+          <div class="panel-header"><div><h2>采购/临采入库</h2><p>入库生成批次和每一件物料的单件编码。</p></div></div>
+          <select name="batch_kind"><option value="purchase">采购入库</option><option value="ad-hoc">临采入库</option></select>
+          <input name="material_id" type="number" placeholder="物料 ID *" required>
+          <input name="batch_no" placeholder="批次号，可空自动生成">
+          <input name="supplier" placeholder="供应商，未知填待确认" value="待确认">
+          <input name="location_id" type="number" placeholder="库位 ID">
+          <input name="qty" type="number" min="1" placeholder="数量 *" required>
+          <input name="unit_cost" type="number" step="0.01" placeholder="单价">
+          <input name="payment_status" placeholder="采购付款状态" value="待确认">
+          <textarea name="remark" placeholder="备注"></textarea>
+          <button type="submit">确认入库</button>
+        </form>
+      </div>
+
+      <div class="dashboard-grid">
+        <form id="warehouse-request-form" class="panel form-grid compact">
+          <div class="panel-header"><div><h2>申领发放</h2><p>申请和审核不扣库存，仓库发放具体单件码时扣库存。</p></div></div>
+          <input name="repair_order_id" type="number" placeholder="维修工单 ID">
+          <input name="engineer_user" placeholder="工程师账号，默认自己">
+          <input name="material_id" type="number" placeholder="物料 ID *" required>
+          <input name="repair_sku_id" type="number" placeholder="维修故障 SKU ID">
+          <input name="qty" type="number" min="1" placeholder="申领数量" value="1">
+          <textarea name="remark" placeholder="申领备注"></textarea>
+          <div class="button-row">
+            <button type="submit">创建申领</button>
+            <input name="request_id" type="number" placeholder="申领单 ID">
+            <input name="unit_ids" placeholder="发放单件 ID，逗号分隔">
+            <button type="button" id="approve-material-request">审核通过</button>
+            <button type="button" id="issue-material-request">发放</button>
+          </div>
+        </form>
+        <form id="warehouse-return-form" class="panel form-grid compact">
+          <div class="panel-header"><div><h2>退货/退料/盘点</h2><p>退货、退料和盘点均生成库存流水，不硬删除。</p></div></div>
+          <input name="batch_id" type="number" placeholder="退货批次 ID">
+          <input name="return_unit_ids" placeholder="退货单件 ID，逗号分隔">
+          <input name="refund_status" placeholder="供应商退款状态" value="待确认">
+          <button type="button" id="return-material-batch">采购退货</button>
+          <input name="unit_id" type="number" placeholder="退料单件 ID">
+          <select name="inspect_result"><option>可复用</option><option>已损坏</option><option>已使用拆回</option><option>可退供应商</option></select>
+          <button type="button" id="request-material-return">发起退料</button>
+          <input name="return_id" type="number" placeholder="退料单 ID">
+          <button type="button" id="inspect-material-return">验收退料</button>
+          <input name="adjust_material_id" type="number" placeholder="调整物料 ID">
+          <input name="adjust_qty" type="number" min="1" value="1" placeholder="调整数量">
+          <select name="adjustment_type"><option>盘盈入库</option><option>盘亏出库</option><option>报损出库</option><option>反向调整入库</option><option>反向调整出库</option></select>
+          <button type="button" id="create-stock-adjustment">库存调整</button>
+        </form>
+      </div>
+
+      <form id="warehouse-binding-form" class="panel form-grid compact">
+        <div class="panel-header"><div><h2>维修故障物料绑定</h2><p>开单/报价选择故障时提示推荐物料、可用库存、库位和低库存预警。</p></div></div>
+        <input name="repair_sku_id" type="number" placeholder="维修 SKU ID *" required>
+        <input name="material_id" type="number" placeholder="物料 ID *" required>
+        <input name="qty" type="number" step="1" placeholder="推荐用量" value="1">
+        <input name="priority" type="number" placeholder="优先级" value="1">
+        <textarea name="remark" placeholder="绑定备注"></textarea>
+        <button type="submit">保存绑定</button>
+      </form>
+
+      <div class="dashboard-grid">
+        <section class="panel"><div class="panel-header"><div><h2>物料档案与余量</h2></div></div><div id="warehouse-material-table" class="table-wrap"></div></section>
+        <section class="panel"><div class="panel-header"><div><h2>单件库存状态</h2></div></div><div id="warehouse-unit-table" class="table-wrap"></div></section>
+      </div>
+      <div class="dashboard-grid">
+        <section class="panel"><div class="panel-header"><div><h2>批次与退货</h2></div></div><div id="warehouse-batch-table" class="table-wrap"></div></section>
+        <section class="panel"><div class="panel-header"><div><h2>我的/全部申领</h2></div></div><div id="warehouse-request-table" class="table-wrap"></div></section>
+      </div>
+      <div class="dashboard-grid">
+        <section class="panel"><div class="panel-header"><div><h2>退料验收</h2></div></div><div id="warehouse-return-table" class="table-wrap"></div></section>
+        <section class="panel"><div class="panel-header"><div><h2>库存流水</h2></div></div><div id="warehouse-movement-table" class="table-wrap"></div></section>
       </div>
     </section>
 
@@ -398,6 +590,6 @@
     <option value="不开机">
     <option value="进水检测">
   </datalist>
-  <script src="/static/app.js?v=editable-customer-status"></script>
+  <script src="/static/app.js?v=repair-list-merged-filters"></script>
 </body>
 </html>

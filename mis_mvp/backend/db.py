@@ -128,13 +128,38 @@ CREATE TABLE IF NOT EXISTS machines (
 
 CREATE TABLE IF NOT EXISTS repair_orders (
     repair_order_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_no TEXT,
     machine_id INTEGER NOT NULL,
     customer_id INTEGER,
+    customer_name TEXT NOT NULL DEFAULT '',
+    customer_type TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT '',
+    counter_no TEXT NOT NULL DEFAULT '',
+    sales_person TEXT NOT NULL DEFAULT '',
+    service_type TEXT NOT NULL DEFAULT '',
+    intake_condition TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL,
+    workflow_status TEXT NOT NULL DEFAULT '待指派工程师',
+    assigned_to TEXT NOT NULL DEFAULT '',
     fault_description TEXT NOT NULL DEFAULT '',
+    fault_detail TEXT NOT NULL DEFAULT '',
     diagnosis TEXT NOT NULL DEFAULT '',
+    repair_solution TEXT NOT NULL DEFAULT '',
     quoted_amount REAL NOT NULL DEFAULT 0,
+    quote_confirm_status TEXT NOT NULL DEFAULT '',
+    quote_confirm_method TEXT NOT NULL DEFAULT '',
+    quote_contact_person TEXT NOT NULL DEFAULT '',
+    quote_confirm_remark TEXT NOT NULL DEFAULT '',
+    quote_confirmed_at TEXT,
     delivery_check TEXT NOT NULL DEFAULT '',
+    payment_status TEXT NOT NULL DEFAULT '未收款',
+    settlement_status TEXT NOT NULL DEFAULT '未结',
+    promised_hours REAL,
+    due_at TEXT NOT NULL DEFAULT '',
+    completed_at TEXT NOT NULL DEFAULT '',
+    delivered_at TEXT NOT NULL DEFAULT '',
+    engineer_closed_at TEXT,
+    engineer_close_remark TEXT NOT NULL DEFAULT '',
     remark TEXT NOT NULL DEFAULT '',
     created_by TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -146,6 +171,7 @@ CREATE TABLE IF NOT EXISTS repair_orders (
 CREATE TABLE IF NOT EXISTS repair_items (
     repair_item_id INTEGER PRIMARY KEY AUTOINCREMENT,
     repair_order_id INTEGER NOT NULL,
+    sku_id INTEGER,
     item_name TEXT NOT NULL,
     quantity INTEGER NOT NULL DEFAULT 1,
     cost_amount REAL NOT NULL DEFAULT 0,
@@ -153,6 +179,306 @@ CREATE TABLE IF NOT EXISTS repair_items (
     remark TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (repair_order_id) REFERENCES repair_orders(repair_order_id)
+);
+
+CREATE TABLE IF NOT EXISTS repair_income_items (
+    income_item_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    repair_order_id INTEGER NOT NULL,
+    item_type TEXT NOT NULL,
+    item_name TEXT NOT NULL,
+    amount REAL NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT '待确认',
+    remark TEXT NOT NULL DEFAULT '',
+    source_key TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (repair_order_id) REFERENCES repair_orders(repair_order_id)
+);
+
+CREATE TABLE IF NOT EXISTS repair_cost_items (
+    cost_item_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    repair_order_id INTEGER NOT NULL,
+    item_type TEXT NOT NULL,
+    item_name TEXT NOT NULL,
+    qty REAL NOT NULL DEFAULT 1,
+    unit_cost REAL NOT NULL DEFAULT 0,
+    total_cost REAL NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT '待确认',
+    remark TEXT NOT NULL DEFAULT '',
+    source_key TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (repair_order_id) REFERENCES repair_orders(repair_order_id)
+);
+
+CREATE TABLE IF NOT EXISTS materials (
+    material_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sku TEXT NOT NULL UNIQUE,
+    material_code TEXT NOT NULL DEFAULT '',
+    category_id INTEGER,
+    default_location_id INTEGER,
+    min_qty REAL NOT NULL DEFAULT 0,
+    track_unit INTEGER NOT NULL DEFAULT 1,
+    name TEXT NOT NULL,
+    brand TEXT NOT NULL DEFAULT '',
+    spec TEXT NOT NULL DEFAULT '',
+    compatible_range TEXT NOT NULL DEFAULT '',
+    unit TEXT NOT NULL DEFAULT '件',
+    current_qty REAL NOT NULL DEFAULT 0,
+    avg_cost REAL NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT '在库',
+    remark TEXT NOT NULL DEFAULT '',
+    source_key TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS material_categories (
+    category_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    category_code TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    parent_id INTEGER,
+    remark TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS warehouse_areas (
+    area_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    area_code TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT '启用',
+    remark TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS warehouse_locations (
+    location_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    area_id INTEGER,
+    location_code TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT '启用',
+    remark TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (area_id) REFERENCES warehouse_areas(area_id)
+);
+
+CREATE TABLE IF NOT EXISTS material_batches (
+    batch_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    material_id INTEGER NOT NULL,
+    batch_no TEXT NOT NULL UNIQUE,
+    supplier TEXT NOT NULL DEFAULT '待确认',
+    purchase_type TEXT NOT NULL DEFAULT '采购入库',
+    batch_type TEXT NOT NULL DEFAULT 'purchase',
+    location_id INTEGER,
+    purchase_no TEXT NOT NULL DEFAULT '',
+    handler TEXT NOT NULL DEFAULT '',
+    qty REAL NOT NULL DEFAULT 0,
+    unit_cost REAL NOT NULL DEFAULT 0,
+    remaining_qty REAL NOT NULL DEFAULT 0,
+    payment_status TEXT NOT NULL DEFAULT '待确认',
+    refund_status TEXT NOT NULL DEFAULT '',
+    refund_amount REAL NOT NULL DEFAULT 0,
+    refund_method TEXT NOT NULL DEFAULT '',
+    refund_transaction_no TEXT NOT NULL DEFAULT '',
+    purchased_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    remark TEXT NOT NULL DEFAULT '',
+    source_key TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY (material_id) REFERENCES materials(material_id)
+);
+
+CREATE TABLE IF NOT EXISTS material_units (
+    unit_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    material_id INTEGER NOT NULL,
+    batch_id INTEGER,
+    unit_code TEXT NOT NULL UNIQUE,
+    current_status TEXT NOT NULL DEFAULT '在库可用',
+    location_id INTEGER,
+    engineer_user TEXT NOT NULL DEFAULT '',
+    repair_order_id INTEGER,
+    request_id INTEGER,
+    unit_cost REAL NOT NULL DEFAULT 0,
+    remark TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (material_id) REFERENCES materials(material_id),
+    FOREIGN KEY (batch_id) REFERENCES material_batches(batch_id),
+    FOREIGN KEY (location_id) REFERENCES warehouse_locations(location_id)
+);
+
+CREATE TABLE IF NOT EXISTS material_requests (
+    request_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_no TEXT NOT NULL UNIQUE,
+    repair_order_id INTEGER,
+    engineer_user TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT '待审核',
+    requested_by TEXT NOT NULL DEFAULT '',
+    approved_by TEXT NOT NULL DEFAULT '',
+    issued_by TEXT NOT NULL DEFAULT '',
+    rejected_by TEXT NOT NULL DEFAULT '',
+    cancelled_by TEXT NOT NULL DEFAULT '',
+    remark TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    approved_at TEXT,
+    issued_at TEXT,
+    closed_at TEXT,
+    FOREIGN KEY (repair_order_id) REFERENCES repair_orders(repair_order_id)
+);
+
+CREATE TABLE IF NOT EXISTS material_request_items (
+    request_item_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id INTEGER NOT NULL,
+    material_id INTEGER NOT NULL,
+    repair_sku_id INTEGER,
+    qty REAL NOT NULL DEFAULT 1,
+    approved_qty REAL NOT NULL DEFAULT 0,
+    issued_qty REAL NOT NULL DEFAULT 0,
+    remark TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY (request_id) REFERENCES material_requests(request_id),
+    FOREIGN KEY (material_id) REFERENCES materials(material_id),
+    FOREIGN KEY (repair_sku_id) REFERENCES repair_skus(sku_id)
+);
+
+CREATE TABLE IF NOT EXISTS material_returns (
+    return_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    unit_id INTEGER NOT NULL,
+    request_id INTEGER,
+    repair_order_id INTEGER,
+    engineer_user TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT '待验收',
+    return_type TEXT NOT NULL DEFAULT '工程师退料',
+    inspect_result TEXT NOT NULL DEFAULT '',
+    inspected_by TEXT NOT NULL DEFAULT '',
+    remark TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    inspected_at TEXT,
+    FOREIGN KEY (unit_id) REFERENCES material_units(unit_id),
+    FOREIGN KEY (request_id) REFERENCES material_requests(request_id),
+    FOREIGN KEY (repair_order_id) REFERENCES repair_orders(repair_order_id)
+);
+
+CREATE TABLE IF NOT EXISTS repair_materials (
+    repair_material_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    repair_order_id INTEGER NOT NULL,
+    material_id INTEGER NOT NULL,
+    qty REAL NOT NULL DEFAULT 1,
+    unit_cost REAL NOT NULL DEFAULT 0,
+    total_cost REAL NOT NULL DEFAULT 0,
+    source_type TEXT NOT NULL DEFAULT '库存',
+    issued_by TEXT NOT NULL DEFAULT '',
+    issued_to TEXT NOT NULL DEFAULT '',
+    issued_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    remark TEXT NOT NULL DEFAULT '',
+    source_key TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY (repair_order_id) REFERENCES repair_orders(repair_order_id),
+    FOREIGN KEY (material_id) REFERENCES materials(material_id)
+);
+
+CREATE TABLE IF NOT EXISTS stock_movements (
+    stock_movement_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    material_id INTEGER NOT NULL,
+    batch_id INTEGER,
+    unit_id INTEGER,
+    request_id INTEGER,
+    repair_order_id INTEGER,
+    location_id INTEGER,
+    movement_type TEXT NOT NULL,
+    direction TEXT NOT NULL DEFAULT '',
+    source_type TEXT NOT NULL DEFAULT '',
+    source_id INTEGER,
+    qty REAL NOT NULL,
+    unit_cost REAL NOT NULL DEFAULT 0,
+    actor TEXT NOT NULL DEFAULT '',
+    counterparty TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    happened_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    source_key TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY (material_id) REFERENCES materials(material_id),
+    FOREIGN KEY (repair_order_id) REFERENCES repair_orders(repair_order_id)
+);
+
+CREATE TABLE IF NOT EXISTS stock_counts (
+    count_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    count_no TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL DEFAULT '草稿',
+    counted_by TEXT NOT NULL DEFAULT '',
+    confirmed_by TEXT NOT NULL DEFAULT '',
+    remark TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    confirmed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS stock_count_items (
+    count_item_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    count_id INTEGER NOT NULL,
+    material_id INTEGER NOT NULL,
+    location_id INTEGER,
+    book_qty REAL NOT NULL DEFAULT 0,
+    actual_qty REAL NOT NULL DEFAULT 0,
+    diff_qty REAL NOT NULL DEFAULT 0,
+    reason TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY (count_id) REFERENCES stock_counts(count_id),
+    FOREIGN KEY (material_id) REFERENCES materials(material_id)
+);
+
+CREATE TABLE IF NOT EXISTS stock_adjustments (
+    adjustment_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    adjustment_no TEXT NOT NULL UNIQUE,
+    material_id INTEGER NOT NULL,
+    unit_id INTEGER,
+    location_id INTEGER,
+    qty REAL NOT NULL DEFAULT 0,
+    adjustment_type TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    operator TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (material_id) REFERENCES materials(material_id),
+    FOREIGN KEY (unit_id) REFERENCES material_units(unit_id)
+);
+
+CREATE TABLE IF NOT EXISTS repair_fault_materials (
+    binding_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    repair_sku_id INTEGER NOT NULL,
+    material_id INTEGER NOT NULL,
+    qty REAL NOT NULL DEFAULT 1,
+    priority INTEGER NOT NULL DEFAULT 1,
+    remark TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(repair_sku_id, material_id),
+    FOREIGN KEY (repair_sku_id) REFERENCES repair_skus(sku_id),
+    FOREIGN KEY (material_id) REFERENCES materials(material_id)
+);
+
+CREATE TABLE IF NOT EXISTS receivables (
+    receivable_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    repair_order_id INTEGER,
+    customer_id INTEGER,
+    customer_name TEXT NOT NULL,
+    counter_no TEXT NOT NULL DEFAULT '',
+    receivable_type TEXT NOT NULL,
+    amount REAL NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT '未结',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    settled_at TEXT NOT NULL DEFAULT '',
+    remark TEXT NOT NULL DEFAULT '',
+    source_key TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY (repair_order_id) REFERENCES repair_orders(repair_order_id)
+);
+
+CREATE TABLE IF NOT EXISTS repair_skus (
+    sku_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sku_code TEXT NOT NULL UNIQUE,
+    fault_name TEXT NOT NULL,
+    solution_name TEXT NOT NULL,
+    cost_amount REAL NOT NULL DEFAULT 0,
+    charge_amount REAL NOT NULL DEFAULT 0,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    remark TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS recycle_orders (
@@ -208,10 +534,18 @@ CREATE TABLE IF NOT EXISTS payments (
     direction TEXT NOT NULL,
     amount REAL NOT NULL,
     method TEXT NOT NULL DEFAULT '',
+    account TEXT NOT NULL DEFAULT '',
+    transaction_no TEXT NOT NULL DEFAULT '',
     payer TEXT NOT NULL DEFAULT '',
     payee TEXT NOT NULL DEFAULT '',
     operator TEXT NOT NULL DEFAULT '',
+    received_by TEXT NOT NULL DEFAULT '',
+    confirmed_by TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT '已登记',
+    paid_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    confirmed_at TEXT NOT NULL DEFAULT '',
     remark TEXT NOT NULL DEFAULT '',
+    source_key TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -224,6 +558,7 @@ CREATE TABLE IF NOT EXISTS machine_events (
     operator TEXT NOT NULL DEFAULT '',
     related_type TEXT NOT NULL DEFAULT '',
     related_id INTEGER,
+    source_key TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (machine_id) REFERENCES machines(machine_id)
 );
@@ -250,13 +585,98 @@ def connect(database_path: Path | str) -> sqlite3.Connection:
 
 def migrate(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    ensure_columns(conn)
     seed_users(conn)
+    seed_repair_skus(conn)
+    backfill_material_units(conn)
     conn.commit()
+
+
+def ensure_columns(conn: sqlite3.Connection) -> None:
+    columns: dict[str, list[tuple[str, str]]] = {
+        "repair_orders": [
+            ("order_no", "TEXT"),
+            ("customer_name", "TEXT NOT NULL DEFAULT ''"),
+            ("customer_type", "TEXT NOT NULL DEFAULT ''"),
+            ("source", "TEXT NOT NULL DEFAULT ''"),
+            ("counter_no", "TEXT NOT NULL DEFAULT ''"),
+            ("sales_person", "TEXT NOT NULL DEFAULT ''"),
+            ("service_type", "TEXT NOT NULL DEFAULT ''"),
+            ("intake_condition", "TEXT NOT NULL DEFAULT ''"),
+            ("workflow_status", "TEXT NOT NULL DEFAULT '待指派工程师'"),
+            ("assigned_to", "TEXT NOT NULL DEFAULT ''"),
+            ("fault_detail", "TEXT NOT NULL DEFAULT ''"),
+            ("repair_solution", "TEXT NOT NULL DEFAULT ''"),
+            ("quote_confirm_status", "TEXT NOT NULL DEFAULT ''"),
+            ("quote_confirm_method", "TEXT NOT NULL DEFAULT ''"),
+            ("quote_contact_person", "TEXT NOT NULL DEFAULT ''"),
+            ("quote_confirm_remark", "TEXT NOT NULL DEFAULT ''"),
+            ("quote_confirmed_at", "TEXT"),
+            ("payment_status", "TEXT NOT NULL DEFAULT '未收款'"),
+            ("settlement_status", "TEXT NOT NULL DEFAULT '未结'"),
+            ("promised_hours", "REAL"),
+            ("due_at", "TEXT NOT NULL DEFAULT ''"),
+            ("completed_at", "TEXT NOT NULL DEFAULT ''"),
+            ("delivered_at", "TEXT NOT NULL DEFAULT ''"),
+            ("engineer_closed_at", "TEXT"),
+            ("engineer_close_remark", "TEXT NOT NULL DEFAULT ''"),
+        ],
+        "repair_items": [
+            ("sku_id", "INTEGER"),
+        ],
+        "payments": [
+            ("account", "TEXT NOT NULL DEFAULT ''"),
+            ("transaction_no", "TEXT NOT NULL DEFAULT ''"),
+            ("received_by", "TEXT NOT NULL DEFAULT ''"),
+            ("confirmed_by", "TEXT NOT NULL DEFAULT ''"),
+            ("status", "TEXT NOT NULL DEFAULT '已登记'"),
+            ("paid_at", "TEXT NOT NULL DEFAULT ''"),
+            ("confirmed_at", "TEXT NOT NULL DEFAULT ''"),
+            ("source_key", "TEXT NOT NULL DEFAULT ''"),
+        ],
+        "machine_events": [
+            ("source_key", "TEXT NOT NULL DEFAULT ''"),
+        ],
+        "materials": [
+            ("material_code", "TEXT NOT NULL DEFAULT ''"),
+            ("category_id", "INTEGER"),
+            ("default_location_id", "INTEGER"),
+            ("min_qty", "REAL NOT NULL DEFAULT 0"),
+            ("track_unit", "INTEGER NOT NULL DEFAULT 1"),
+        ],
+        "material_batches": [
+            ("batch_type", "TEXT NOT NULL DEFAULT 'purchase'"),
+            ("location_id", "INTEGER"),
+            ("purchase_no", "TEXT NOT NULL DEFAULT ''"),
+            ("handler", "TEXT NOT NULL DEFAULT ''"),
+            ("refund_status", "TEXT NOT NULL DEFAULT ''"),
+            ("refund_amount", "REAL NOT NULL DEFAULT 0"),
+            ("refund_method", "TEXT NOT NULL DEFAULT ''"),
+            ("refund_transaction_no", "TEXT NOT NULL DEFAULT ''"),
+        ],
+        "stock_movements": [
+            ("batch_id", "INTEGER"),
+            ("unit_id", "INTEGER"),
+            ("request_id", "INTEGER"),
+            ("location_id", "INTEGER"),
+            ("direction", "TEXT NOT NULL DEFAULT ''"),
+            ("source_type", "TEXT NOT NULL DEFAULT ''"),
+            ("source_id", "INTEGER"),
+        ],
+    }
+    for table, table_columns in columns.items():
+        existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        for name, definition in table_columns:
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
 
 
 def seed_users(conn: sqlite3.Connection) -> None:
     users = [
         ("admin", "admin", "admin"),
+        ("boss", "boss", "boss"),
+        ("frontdesk", "frontdesk", "frontdesk"),
+        ("engineer", "engineer", "engineer"),
         ("staff", "staff", "staff"),
         ("finance", "finance", "finance"),
     ]
@@ -268,3 +688,102 @@ def seed_users(conn: sqlite3.Connection) -> None:
             """,
             (username, hash_password(password), role),
         )
+
+
+def seed_repair_skus(conn: sqlite3.Connection) -> None:
+    skus = [
+        ("SCREEN-OLED", "屏幕损坏", "更换 OLED 屏幕总成", 320, 580, "常见碎屏维修"),
+        ("BATTERY", "电池老化", "更换电池", 80, 180, "电池健康低于建议值"),
+        ("CHARGE-FLEX", "无法充电", "更换尾插排线", 60, 160, "充电口或排线故障"),
+        ("BOARD-DIAG", "不开机", "主板检测维修", 180, 580, "主板类故障基础报价"),
+        ("WATER-CLEAN", "进水", "进水清洗检测", 50, 120, "不保证修复结果"),
+    ]
+    for sku_code, fault_name, solution_name, cost_amount, charge_amount, remark in skus:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO repair_skus
+            (sku_code, fault_name, solution_name, cost_amount, charge_amount, enabled, remark)
+            VALUES (?, ?, ?, ?, ?, 1, ?)
+            """,
+            (sku_code, fault_name, solution_name, cost_amount, charge_amount, remark),
+        )
+
+
+def backfill_material_units(conn: sqlite3.Connection) -> None:
+    movement_balances = {
+        row["material_id"]: int(row["qty"] or 0)
+        for row in conn.execute(
+            "SELECT material_id, SUM(qty) AS qty FROM stock_movements GROUP BY material_id"
+        ).fetchall()
+        if row["qty"] is not None
+    }
+    materials = {
+        row["material_id"]: int(row["current_qty"] or 0)
+        for row in conn.execute("SELECT material_id, current_qty FROM materials").fetchall()
+    }
+    available_targets = {material_id: max(0, movement_balances.get(material_id, qty)) for material_id, qty in materials.items()}
+    allocated_available: dict[int, int] = {}
+    batches = conn.execute(
+        """
+        SELECT b.*, m.sku, m.material_code
+        FROM material_batches b
+        JOIN materials m ON m.material_id=b.material_id
+        ORDER BY b.batch_id
+        """
+    ).fetchall()
+    for batch in batches:
+        existing = conn.execute("SELECT COUNT(*) AS qty FROM material_units WHERE batch_id=?", (batch["batch_id"],)).fetchone()["qty"]
+        if existing:
+            continue
+        total_qty = int(batch["qty"] or 0)
+        remaining_qty = int(batch["remaining_qty"] or 0)
+        if total_qty <= 0:
+            continue
+        material_code = batch["material_code"] or batch["sku"]
+        purchased_day = str(batch["purchased_at"] or "").replace("-", "")[:8] or "HISTORY"
+        target_available = available_targets.get(batch["material_id"], max(0, remaining_qty))
+        already_available = allocated_available.get(batch["material_id"], 0)
+        for index in range(1, total_qty + 1):
+            unit_code = f"{material_code}-{purchased_day}-{index:04d}"
+            status = "在库可用" if already_available < target_available else "历史出库"
+            if status == "在库可用":
+                already_available += 1
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO material_units
+                (material_id, batch_id, unit_code, current_status, location_id, unit_cost, remark)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    batch["material_id"],
+                    batch["batch_id"],
+                    unit_code,
+                    status,
+                    batch["location_id"] if "location_id" in batch.keys() else None,
+                    batch["unit_cost"] or 0,
+                    "历史批次迁移生成单件码",
+                ),
+            )
+        allocated_available[batch["material_id"]] = already_available
+    for material_id, target_available in available_targets.items():
+        generated = conn.execute(
+            """
+            SELECT unit_id FROM material_units
+            WHERE material_id=? AND remark='历史批次迁移生成单件码'
+            ORDER BY unit_id
+            """,
+            (material_id,),
+        ).fetchall()
+        for index, unit in enumerate(generated):
+            status = "在库可用" if index < target_available else "历史出库"
+            conn.execute(
+                "UPDATE material_units SET current_status=? WHERE unit_id=? AND remark='历史批次迁移生成单件码'",
+                (status, unit["unit_id"]),
+            )
+    material_ids = conn.execute("SELECT material_id FROM materials").fetchall()
+    for row in material_ids:
+        qty = conn.execute(
+            "SELECT COUNT(*) AS qty FROM material_units WHERE material_id=? AND current_status='在库可用'",
+            (row["material_id"],),
+        ).fetchone()["qty"]
+        conn.execute("UPDATE materials SET current_qty=? WHERE material_id=?", (qty, row["material_id"]))

@@ -383,19 +383,24 @@ class Repository:
         self.conn.execute("DELETE FROM machine_events WHERE machine_id=?", (machine_id,))
         self.conn.execute("DELETE FROM machines WHERE machine_id=?", (machine_id,))
 
-    def search_machines(self, keyword: str = "") -> list[dict[str, Any]]:
+    def search_machines(self, keyword: str = "", assigned_to: str | None = None) -> list[dict[str, Any]]:
         like = f"%{keyword}%"
+        assigned_filter = " AND (m.assigned_to = ? OR EXISTS (SELECT 1 FROM repair_orders ro WHERE ro.machine_id = m.machine_id AND ro.assigned_to = ?))" if assigned_to else ""
+        params: list[Any] = [keyword, like, like, like, like, like, like]
+        if assigned_to:
+            params.extend([assigned_to, assigned_to])
         rows = self.conn.execute(
-            """
+            f"""
             SELECT m.*, c.name AS customer_name
             FROM machines m
             LEFT JOIN customers c ON c.customer_id = m.customer_id
-            WHERE ? = '' OR m.machine_no LIKE ? OR m.imei LIKE ? OR m.serial LIKE ?
-               OR m.model LIKE ? OR c.name LIKE ? OR c.phone LIKE ?
+            WHERE (? = '' OR m.machine_no LIKE ? OR m.imei LIKE ? OR m.serial LIKE ?
+               OR m.model LIKE ? OR c.name LIKE ? OR c.phone LIKE ?)
+            {assigned_filter}
             ORDER BY m.updated_at DESC, m.machine_id DESC
             LIMIT 100
             """,
-            (keyword, like, like, like, like, like, like),
+            params,
         ).fetchall()
         return [dict(row) for row in rows]
 
@@ -403,8 +408,8 @@ class Repository:
         cur = self.conn.execute(
             """
             INSERT INTO repair_orders
-            (machine_id, customer_id, status, fault_description, remark, created_by)
-            VALUES (?, ?, ?, ?, ?, ?)
+            (machine_id, customer_id, status, workflow_status, fault_description, remark, created_by)
+            VALUES (?, ?, ?, '待指派工程师', ?, ?, ?)
             """,
             (machine_id, customer_id, status, fault_description, remark, created_by),
         )
@@ -412,6 +417,22 @@ class Repository:
 
     def get_repair_order(self, repair_order_id: int) -> dict[str, Any] | None:
         return row_to_dict(self.conn.execute("SELECT * FROM repair_orders WHERE repair_order_id=?", (repair_order_id,)).fetchone())
+
+    def assign_repair_order(self, repair_order_id: int, engineer: str, workflow_status: str) -> None:
+        self.conn.execute(
+            """
+            UPDATE repair_orders
+            SET assigned_to=?, workflow_status=?, updated_at=CURRENT_TIMESTAMP
+            WHERE repair_order_id=?
+            """,
+            (engineer, workflow_status, repair_order_id),
+        )
+
+    def assign_machine(self, machine_id: int, engineer: str) -> None:
+        self.conn.execute(
+            "UPDATE machines SET assigned_to=?, updated_at=CURRENT_TIMESTAMP WHERE machine_id=?",
+            (engineer, machine_id),
+        )
 
     def update_repair_order_status(self, repair_order_id: int, status: str, remark: str = "") -> None:
         self.conn.execute(
@@ -425,14 +446,36 @@ class Repository:
             (status, remark, remark, status, repair_order_id),
         )
 
-    def quote_repair_order(self, repair_order_id: int, diagnosis: str, quoted_amount: float, status: str) -> None:
+    def quote_repair_order(
+        self,
+        repair_order_id: int,
+        diagnosis: str,
+        quoted_amount: float,
+        status: str,
+        fault_detail: str = "",
+        repair_solution: str = "",
+        workflow_status: str = "待客户确认",
+    ) -> None:
         self.conn.execute(
             """
             UPDATE repair_orders
-            SET diagnosis=?, quoted_amount=?, status=?, updated_at=CURRENT_TIMESTAMP
+            SET diagnosis=?, quoted_amount=?, status=?, fault_detail=?,
+                repair_solution=?, workflow_status=?, updated_at=CURRENT_TIMESTAMP
             WHERE repair_order_id=?
             """,
-            (diagnosis, quoted_amount, status, repair_order_id),
+            (diagnosis, quoted_amount, status, fault_detail, repair_solution, workflow_status, repair_order_id),
+        )
+
+    def confirm_repair_quote(self, repair_order_id: int, status: str, workflow_status: str, result: str, method: str, contact: str, remark: str) -> None:
+        self.conn.execute(
+            """
+            UPDATE repair_orders
+            SET status=?, workflow_status=?, quote_confirm_status=?, quote_confirm_method=?,
+                quote_contact_person=?, quote_confirm_remark=?, quote_confirmed_at=CURRENT_TIMESTAMP,
+                updated_at=CURRENT_TIMESTAMP
+            WHERE repair_order_id=?
+            """,
+            (status, workflow_status, result, method, contact, remark, repair_order_id),
         )
 
     def update_repair_order_price(self, repair_order_id: int, quoted_amount: float) -> None:
@@ -441,14 +484,64 @@ class Repository:
             (quoted_amount, repair_order_id),
         )
 
-    def add_repair_item(self, repair_order_id: int, item_name: str, quantity: int, cost_amount: float, charge_amount: float, remark: str) -> int:
+    def add_repair_item(self, repair_order_id: int, item_name: str, quantity: int, cost_amount: float, charge_amount: float, remark: str, sku_id: int | None = None) -> int:
         cur = self.conn.execute(
             """
             INSERT INTO repair_items
-            (repair_order_id, item_name, quantity, cost_amount, charge_amount, remark)
-            VALUES (?, ?, ?, ?, ?, ?)
+            (repair_order_id, sku_id, item_name, quantity, cost_amount, charge_amount, remark)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (repair_order_id, item_name, quantity, cost_amount, charge_amount, remark),
+            (repair_order_id, sku_id, item_name, quantity, cost_amount, charge_amount, remark),
+        )
+        return int(cur.lastrowid)
+
+    def list_repair_skus(self, include_disabled: bool = False) -> list[dict[str, Any]]:
+        if include_disabled:
+            rows = self.conn.execute("SELECT * FROM repair_skus ORDER BY enabled DESC, sku_id").fetchall()
+        else:
+            rows = self.conn.execute("SELECT * FROM repair_skus WHERE enabled=1 ORDER BY sku_id").fetchall()
+        return [dict(row) for row in rows]
+
+    def get_repair_sku(self, sku_id: int) -> dict[str, Any] | None:
+        return row_to_dict(self.conn.execute("SELECT * FROM repair_skus WHERE sku_id=?", (sku_id,)).fetchone())
+
+    def upsert_repair_sku(self, data: dict[str, Any]) -> int:
+        existing = self.conn.execute("SELECT sku_id FROM repair_skus WHERE sku_code=?", (data["sku_code"],)).fetchone()
+        if existing:
+            sku_id = int(existing["sku_id"])
+            self.conn.execute(
+                """
+                UPDATE repair_skus
+                SET fault_name=?, solution_name=?, cost_amount=?, charge_amount=?,
+                    enabled=?, remark=?, updated_at=CURRENT_TIMESTAMP
+                WHERE sku_id=?
+                """,
+                (
+                    data["fault_name"],
+                    data["solution_name"],
+                    data["cost_amount"],
+                    data["charge_amount"],
+                    1 if data.get("enabled", True) else 0,
+                    data.get("remark", ""),
+                    sku_id,
+                ),
+            )
+            return sku_id
+        cur = self.conn.execute(
+            """
+            INSERT INTO repair_skus
+            (sku_code, fault_name, solution_name, cost_amount, charge_amount, enabled, remark)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                data["sku_code"],
+                data["fault_name"],
+                data["solution_name"],
+                data["cost_amount"],
+                data["charge_amount"],
+                1 if data.get("enabled", True) else 0,
+                data.get("remark", ""),
+            ),
         )
         return int(cur.lastrowid)
 
@@ -468,6 +561,19 @@ class Repository:
             WHERE repair_order_id=?
             """,
             (delivery_check, remark, remark, status, repair_order_id),
+        )
+
+    def engineer_close_repair_order(self, repair_order_id: int, remark: str) -> None:
+        self.conn.execute(
+            """
+            UPDATE repair_orders
+            SET workflow_status='待前台收费/交付', engineer_closed_at=CURRENT_TIMESTAMP,
+                engineer_close_remark=CASE WHEN ? = '' THEN engineer_close_remark ELSE ? END,
+                status=CASE WHEN status='处理中' THEN '待交付' ELSE status END,
+                updated_at=CURRENT_TIMESTAMP
+            WHERE repair_order_id=?
+            """,
+            (remark, remark, repair_order_id),
         )
 
     def create_recycle_order(self, machine_id: int, customer_id: int | None, status: str, inspection_note: str, remark: str, created_by: str) -> int:

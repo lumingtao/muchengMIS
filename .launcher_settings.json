@@ -1,0 +1,5 @@
+{
+  "port": 8088,
+  "database_path": "C:\\Users\\admini\\AppData\\Local\\Temp\\mis-mvp-runtime\\mis_mvp.sqlite3",
+  "open_browser": true
+}
