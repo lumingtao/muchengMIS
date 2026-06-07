@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import re
 from typing import Callable
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -66,7 +67,10 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
 static_dir = ROOT_DIR / "static"
 frontend_dir = ROOT_DIR / "frontend_dist"
+uploads_dir = ROOT_DIR / "uploads"
+uploads_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
+app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
 if (frontend_dir / "assets").exists():
     app.mount("/assets", StaticFiles(directory=frontend_dir / "assets"), name="frontend_assets")
 
@@ -94,6 +98,41 @@ def endpoint(call: Callable):
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except BusinessError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def parse_photo_upload(content_type: str, body: bytes) -> tuple[str, str, str, bytes]:
+    match = re.search(r"boundary=(?P<boundary>[^;]+)", content_type)
+    if not match:
+        raise HTTPException(status_code=400, detail="缺少 multipart boundary")
+    boundary = match.group("boundary").strip().strip('"')
+    delimiter = b"--" + boundary.encode("utf-8")
+    stage = ""
+    filename = ""
+    file_content_type = ""
+    file_content = b""
+    for raw_part in body.split(delimiter):
+        part = raw_part.strip(b"\r\n")
+        if not part or part == b"--":
+            continue
+        if part.endswith(b"--"):
+            part = part[:-2].rstrip(b"\r\n")
+        header_blob, _, content = part.partition(b"\r\n\r\n")
+        headers = header_blob.decode("latin1", errors="ignore")
+        name_match = re.search(r'name="([^"]+)"', headers)
+        if not name_match:
+            continue
+        field_name = name_match.group(1)
+        if field_name == "stage":
+            stage = content.decode("utf-8", errors="ignore").strip()
+        elif field_name == "file":
+            filename_match = re.search(r'filename="([^"]*)"', headers)
+            type_match = re.search(r"Content-Type:\s*([^\r\n]+)", headers, re.IGNORECASE)
+            filename = filename_match.group(1) if filename_match else ""
+            file_content_type = type_match.group(1).strip() if type_match else ""
+            file_content = content
+    if not stage or not file_content:
+        raise HTTPException(status_code=400, detail="缺少 stage 或 file")
+    return stage, filename, file_content_type, file_content
 
 
 @app.get("/")
@@ -166,6 +205,22 @@ def repair_workbench(user: User = Depends(current_user), service: MisService = D
 @app.get("/api/repair-workbench/{repair_order_id}")
 def repair_workbench_detail(repair_order_id: int, user: User = Depends(current_user), service: MisService = Depends(get_service)):
     return endpoint(lambda: service.repair_workbench_detail(user, repair_order_id))
+
+
+@app.get("/api/repair-orders/{repair_order_id}/photos")
+def repair_order_photos(repair_order_id: int, user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.list_repair_order_photos(user, repair_order_id))
+
+
+@app.post("/api/repair-orders/{repair_order_id}/photos")
+async def upload_repair_order_photo(
+    repair_order_id: int,
+    request: Request,
+    user: User = Depends(current_user),
+    service: MisService = Depends(get_service),
+):
+    stage, filename, content_type, content = parse_photo_upload(request.headers.get("content-type", ""), await request.body())
+    return endpoint(lambda: service.add_repair_order_photo(user, repair_order_id, stage, filename, content_type, content))
 
 
 @app.post("/api/repair-orders/{repair_order_id}/workflow-action")

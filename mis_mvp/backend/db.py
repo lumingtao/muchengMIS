@@ -571,6 +571,17 @@ CREATE TABLE IF NOT EXISTS machine_notes (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (machine_id) REFERENCES machines(machine_id)
 );
+
+CREATE TABLE IF NOT EXISTS repair_order_photos (
+    photo_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    repair_order_id INTEGER NOT NULL,
+    stage TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    url TEXT NOT NULL,
+    uploaded_by TEXT NOT NULL DEFAULT '',
+    uploaded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (repair_order_id) REFERENCES repair_orders(repair_order_id)
+);
 """
 
 

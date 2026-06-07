@@ -671,6 +671,7 @@ function OrderDetailPage({
   const [itemForm, setItemForm] = useState<AnyRecord>({ quantity: 1 });
   const [preInspectionState, setPreInspectionState] = useState<Record<string, boolean>>({});
   const [postInspectionState, setPostInspectionState] = useState<Record<string, boolean>>({});
+  const [logsExpanded, setLogsExpanded] = useState(false);
   const query = useQuery({
     queryKey: ["repair-workbench-detail", orderId],
     queryFn: () => api<AnyRecord>(`/api/repair-workbench/${orderId}`),
@@ -683,7 +684,12 @@ function OrderDetailPage({
     queryFn: () => api<AnyRecord>(`/api/machines/${order.machine_id}/timeline`),
     enabled: Boolean(order.machine_id) && mode !== "new",
   });
-  const events = ((data.events as AnyRecord[] | undefined) || []).slice(0, 8);
+  const photosQuery = useQuery({
+    queryKey: ["repair-order-photos", orderId],
+    queryFn: () => api<AnyRecord[]>(`/api/repair-orders/${orderId}/photos`),
+    enabled: Boolean(orderId) && mode !== "new",
+  });
+  const events = ((data.events as AnyRecord[] | undefined) || []);
   const incomeItems = ((data.income_items as AnyRecord[] | undefined) || []);
   const costItems = ((data.cost_items as AnyRecord[] | undefined) || []);
   const payments = ((data.payments as AnyRecord[] | undefined) || []);
@@ -716,6 +722,10 @@ function OrderDetailPage({
   const historyOrders = (((timelineQuery.data?.repair_orders as AnyRecord[] | undefined) || []))
     .filter(row => String(row.repair_order_id) !== String(order.repair_order_id || orderId))
     .sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
+  const photos = ((photosQuery.data as AnyRecord[] | undefined) || []);
+  const prePhotos = photos.filter(row => row.stage === "pre");
+  const postPhotos = photos.filter(row => row.stage === "post");
+  const visibleLogs = logsExpanded ? events : events.slice(0, 3);
 
   const createMutation = useMutation({
     mutationFn: (payload: AnyRecord) => api<AnyRecord>("/api/repair-orders", { method: "POST", body: JSON.stringify(payload) }),
@@ -810,6 +820,23 @@ function OrderDetailPage({
     },
     onError: error => notify(error instanceof Error ? error.message : "添加失败", true),
   });
+  const photoMutation = useMutation({
+    mutationFn: ({ stage, file }: { stage: "pre" | "post"; file: File }) => {
+      if (!orderId) throw new Error("缺少工单 ID");
+      const payload = new FormData();
+      payload.append("stage", stage);
+      payload.append("file", file);
+      return api<AnyRecord>(`/api/repair-orders/${orderId}/photos`, { method: "POST", body: payload });
+    },
+    onSuccess: () => {
+      notify("照片已上传");
+      photosQuery.refetch();
+      query.refetch();
+      queryClient.invalidateQueries({ queryKey: ["repair-order-photos", orderId] });
+      queryClient.invalidateQueries({ queryKey: ["repair-workbench-detail", orderId] });
+    },
+    onError: error => notify(error instanceof Error ? error.message : "上传失败", true),
+  });
   const cancelMutation = useMutation({
     mutationFn: (payload: AnyRecord) => api<AnyRecord>(`/api/repair-orders/${orderId}/status`, { method: "POST", body: JSON.stringify({ status: "已作废", remark: payload.cancel_reason || "取消工单" }) }),
     onSuccess: () => {
@@ -871,6 +898,14 @@ function OrderDetailPage({
     if (mode !== "new" && mode !== "edit") return;
     const setter = kind === "pre" ? setPreInspectionState : setPostInspectionState;
     setter(prev => ({ ...prev, [item]: !prev[item] }));
+  }
+  function uploadPhoto(stage: "pre" | "post", file: File | null) {
+    if (!file) return;
+    if (mode === "new" || !orderId) {
+      notify("请先创建工单后再上传照片", true);
+      return;
+    }
+    photoMutation.mutate({ stage, file });
   }
   function submitNew() {
     if (!String(display.customer_name || "").trim() || !String(display.model || "").trim()) {
@@ -947,20 +982,20 @@ function OrderDetailPage({
             </div>
           </section>
 
-          <InspectionCard title="维修前检测 (Pre-Repair)" inspections={inspections} note={String(order.diagnosis || "其他检测备注...")} mode={mode} state={preInspectionState} onToggle={item => toggleInspection("pre", item)} />
+          <InspectionCard title="维修前检测 (Pre-Repair)" inspections={inspections} note={String(order.diagnosis || "其他检测备注...")} mode={mode} state={preInspectionState} photos={prePhotos} stage="pre" onToggle={item => toggleInspection("pre", item)} onUpload={uploadPhoto} uploading={photoMutation.isPending} />
 
           <section className="order-card">
             <div className="repair-card-head">
               <h3><FileText size={24} />故障与维修详情</h3>
-              <button type="button" className="mini-add-button" onClick={() => canAddRepairItem ? setShowItemForm(true) : notify("当前订单状态不可添加维修故障", true)} disabled={!canAddRepairItem}><Plus size={16} />添加故障</button>
+              {mode === "edit" && <button type="button" className="mini-add-button" onClick={() => canAddRepairItem ? setShowItemForm(true) : notify("当前订单状态不可添加维修故障", true)} disabled={!canAddRepairItem}><Plus size={16} />添加故障</button>}
             </div>
             <p className="order-muted">{mode === "new" ? "保存后生成维修明细，可在编辑态继续添加配件和收费项目。" : String(order.fault_description || "客户反馈设备异常，需要检测并维修。")}</p>
-            {showItemForm && <div className="inline-item-editor repair-item-editor"><OrderField label="故障名称" value={itemForm.item_name} editable onChange={v => setItemField("item_name", v)} /><OrderField label="数量" value={itemForm.quantity || 1} editable type="number" onChange={v => setItemField("quantity", v)} /><OrderField label="配件成本" value={itemForm.cost_amount} editable type="number" onChange={v => setItemField("cost_amount", v)} /><OrderField label="工时/服务费" value={itemForm.charge_amount} editable type="number" onChange={v => setItemField("charge_amount", v)} /><OrderField label="备注" value={itemForm.remark} editable area onChange={v => setItemField("remark", v)} /><div className="inline-editor-actions"><button type="button" className="mini-add-button" onClick={submitRepairItem} disabled={addItemMutation.isPending}>保存故障</button><button type="button" className="ghost-mini-button" onClick={() => { setShowItemForm(false); setItemForm({ quantity: 1 }); }}>取消</button></div></div>}
+            {mode === "edit" && showItemForm && <div className="inline-item-editor repair-item-editor"><OrderField label="故障名称" value={itemForm.item_name} editable onChange={v => setItemField("item_name", v)} /><OrderField label="数量" value={itemForm.quantity || 1} editable type="number" onChange={v => setItemField("quantity", v)} /><OrderField label="配件成本" value={itemForm.cost_amount} editable type="number" onChange={v => setItemField("cost_amount", v)} /><OrderField label="工时/服务费" value={itemForm.charge_amount} editable type="number" onChange={v => setItemField("charge_amount", v)} /><OrderField label="备注" value={itemForm.remark} editable area onChange={v => setItemField("remark", v)} /><div className="inline-editor-actions"><button type="button" className="mini-add-button" onClick={submitRepairItem} disabled={addItemMutation.isPending}>保存故障</button><button type="button" className="ghost-mini-button" onClick={() => { setShowItemForm(false); setItemForm({ quantity: 1 }); }}>取消</button></div></div>}
             <div className="repair-lines"><table><thead><tr><th>故障名称</th><th>更换配件/SKU</th><th>配件单价</th><th>工时/服务费</th><th>小计</th><th className="align-right">操作</th></tr></thead><tbody>{detailRows.map((row, index) => { const unitCost = Number(row.total_cost || row.unit_cost || 0); const amount = Number(row.amount || row.charge_amount || row.price || 0); return <tr key={String(row.cost_item_id || row.item_name || index)}><td>{String(row.item_name || row.material_name || "维修项目")}</td><td>{String(row.sku || row.material_code || "-")}</td><td>{poolMoney(unitCost)}</td><td>{poolMoney(Math.max(amount - unitCost, 0))}</td><td><b>{poolMoney(amount || unitCost)}</b></td><td className="align-right">{mode === "edit" ? <button type="button" className="table-link danger">删除</button> : "-"}</td></tr>; })}</tbody></table></div>
             <div className="order-fee-summary stacked-fee-summary"><span>费用总计 <b>{poolMoney(quoted || 1430)}</b></span><span>折扣优惠 <b className="danger-text">- {poolMoney(30)}</b></span><span>应收总额 <b>{poolMoney(Math.max((quoted || 1430) - 30, 0))}</b></span>{mode === "edit" && <OrderField label="修改报价" value={form.quoted_amount ?? order.quoted_amount} editable type="number" onChange={v => setField("quoted_amount", v)} />}</div>
           </section>
 
-          <InspectionCard title="维修后检测 (Post-Repair)" inspections={inspections.slice(0, 8)} note="质检备注..." compact={false} mode={mode} state={postInspectionState} onToggle={item => toggleInspection("post", item)} />
+          <InspectionCard title="维修后检测 (Post-Repair)" inspections={inspections.slice(0, 8)} note="质检备注..." compact={false} mode={mode} state={postInspectionState} photos={postPhotos} stage="post" onToggle={item => toggleInspection("post", item)} onUpload={uploadPhoto} uploading={photoMutation.isPending} />
           <section className="order-card"><h3><ClipboardList size={24} />维修历史</h3><div className="history-list">{historyOrders.length ? historyOrders.slice(0, 5).map(row => <button type="button" className="history-order-row" key={String(row.repair_order_id)} onClick={() => { onCreated(row.repair_order_id as number | string); onModeChange("view"); }}><b>{String(row.order_no || `RO-${row.repair_order_id}`)}</b><span>{String(row.status || "待确认")} · {String(row.fault_description || "无故障描述")}</span><em>{poolMoney(row.quoted_amount || row.paid_amount || 0)} · {String(row.created_at || "")}</em></button>) : <div className="history-empty">无</div>}</div></section>
         </div>
 
@@ -969,7 +1004,7 @@ function OrderDetailPage({
           {mode === "cancel" && <section className="order-card cancel-warning-card"><h3>取消确认</h3><p>取消订单会将业务状态改为已作废，不会删除数据库记录。若订单已有未闭环领料，后端会提示先退料或报损。</p><OrderField label="取消原因" value={form.cancel_reason} editable area onChange={v => setField("cancel_reason", v)} /></section>}
           {mode === "edit" && <section className="order-card"><h3>订单转派</h3><OrderField label="负责人账号" value={form.assigned_to ?? order.assigned_to} editable onChange={v => setField("assigned_to", v)} /><OrderField label="修改备注" value={form.remark} editable area onChange={v => setField("remark", v)} /></section>}
           <section className="order-card notes-card"><div className="side-title-row"><h3>备注信息</h3><CirclePlus size={22} /></div><div className="note-box warning"><b>内部备注</b><p>{String(order.remark || "客户要求尽量保留原厂原色原彩，维修后请务必同步写入数据。")}</p></div><div className="note-box muted"><b>交付说明</b><p>告知客户外壳磕碰处无法复原，仅保证屏幕功能完好。</p></div></section>
-          <section className="order-card log-card"><h3>系统操作日志</h3>{(events.length ? events : [{ title: "价格变更通知", detail: "财务组已确认优惠申请", created_at: "10-27 16:45" }, { title: "订单负责人变更", detail: "由李四转交给张工", created_at: "10-27 16:15" }, { title: "备件申领完成", detail: "原装拆机屏幕已出库", created_at: "10-27 15:50" }]).slice(0, 5).map((event, index) => <div className="log-item" key={String(event.event_id || event.created_at || index)}><b>{String(event.title || "系统操作")}</b><p>{String(event.detail || "工单信息已更新")}</p><span>{String(event.created_at || "")}</span></div>)}</section>
+          <section className="order-card log-card"><div className="side-title-row"><h3>订单日志</h3>{events.length > 3 && <button type="button" className="table-link" onClick={() => setLogsExpanded(value => !value)}>{logsExpanded ? "收起" : "更多"}</button>}</div>{visibleLogs.length ? visibleLogs.map((event, index) => <div className="log-item" key={String(event.event_id || event.created_at || index)}><b>{String(event.title || "订单维护")}</b><p>{String(event.detail || "工单信息已更新")}</p><span>{String(event.created_at || "")}</span></div>) : <div className="history-empty">暂无订单日志</div>}</section>
         </aside>
       </div>
     </div>
@@ -1417,7 +1452,7 @@ function InfoLine({ label, value, pill, tag, highlight }: { label: string; value
   return <div className={`info-line ${pill ? "pill-value" : ""}`}><span>{label}</span><strong className={highlight ? "highlight" : ""}>{String(value || "待补")}{tag && <em>{tag}</em>}</strong></div>;
 }
 
-function InspectionCard({ title, inspections, note, compact, mode = "view", state = {}, onToggle }: { title: string; inspections: string[]; note: string; compact?: boolean; mode?: OrderMode; state?: Record<string, boolean>; onToggle?: (item: string) => void }) {
+function InspectionCard({ title, inspections, note, compact, mode = "view", state = {}, photos = [], stage, onToggle, onUpload, uploading }: { title: string; inspections: string[]; note: string; compact?: boolean; mode?: OrderMode; state?: Record<string, boolean>; photos?: AnyRecord[]; stage?: "pre" | "post"; onToggle?: (item: string) => void; onUpload?: (stage: "pre" | "post", file: File | null) => void; uploading?: boolean }) {
   const editable = mode === "new" || mode === "edit";
   const visibleInspections = editable ? inspections : inspections.filter(item => state[item]);
   return (
@@ -1425,7 +1460,7 @@ function InspectionCard({ title, inspections, note, compact, mode = "view", stat
       <div className="inspection-head"><h3><span />{title}</h3></div>
       {visibleInspections.length ? <div className="inspection-grid">{visibleInspections.map(item => <button type="button" className={state[item] ? "abnormal" : ""} key={item} disabled={!editable} onClick={() => onToggle?.(item)}><b>{item}</b><span>{state[item] ? "异常" : "正常"}</span></button>)}</div> : <div className="inspection-empty">无异常功能</div>}
       <input className="inspection-note" value={note} readOnly />
-      {!compact && <div className="photo-strip"><div className="photo-thumb" /><button type="button" className="upload-tile"><Camera size={24} />上传</button></div>}
+      {!compact && <div className="photo-strip">{photos.length ? photos.map(photo => <img className="photo-thumb" key={String(photo.photo_id || photo.url)} src={String(photo.url || "")} alt={String(photo.filename || "维修照片")} />) : <div className="photo-thumb" />}{stage && <label className={`upload-tile ${uploading ? "disabled" : ""}`}><Camera size={24} />{uploading ? "上传中" : "上传"}<input type="file" accept="image/jpeg,image/png,image/webp" disabled={uploading} onChange={event => { onUpload?.(stage, event.currentTarget.files?.[0] || null); event.currentTarget.value = ""; }} /></label>}</div>}
     </section>
   );
 }

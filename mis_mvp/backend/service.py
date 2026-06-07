@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from .auth import hash_password, permissions_for, require_permission
+from .config import ROOT_DIR
 from .models import (
     BusinessLine,
     CustomerInput,
@@ -445,6 +447,55 @@ class MisService:
             "payments": self.repo.payments_for_source("repair", repair_order_id),
             "receivables": self._rows("SELECT * FROM receivables WHERE repair_order_id=? ORDER BY receivable_id", (repair_order_id,)),
             "events": self.repo.repair_order_events(int(order["machine_id"]), repair_order_id),
+        }
+
+    def list_repair_order_photos(self, user: User, repair_order_id: int) -> list[dict[str, Any]]:
+        self._allowed(user, "repair_order:read")
+        order = self.repo.get_repair_order(repair_order_id)
+        if not order:
+            raise BusinessError("维修单不存在")
+        return self.repo.list_repair_order_photos(repair_order_id)
+
+    def add_repair_order_photo(self, user: User, repair_order_id: int, stage: str, filename: str, content_type: str, content: bytes) -> dict[str, Any]:
+        self._allowed(user, "repair_order:update")
+        order = self.repo.get_repair_order(repair_order_id)
+        if not order:
+            raise BusinessError("维修单不存在")
+        self._ensure_engineer_owns_repair(user, order)
+        normalized_stage = stage.strip().lower()
+        if normalized_stage not in {"pre", "post"}:
+            raise BusinessError("照片阶段必须是 pre 或 post")
+        if not content:
+            raise BusinessError("照片内容不能为空")
+        if len(content) > 10 * 1024 * 1024:
+            raise BusinessError("照片不能超过 10MB")
+        allowed_types = {"image/jpeg", "image/png", "image/webp"}
+        suffix = Path(filename or "").suffix.lower()
+        allowed_suffixes = {".jpg", ".jpeg", ".png", ".webp"}
+        if content_type not in allowed_types and suffix not in allowed_suffixes:
+            raise BusinessError("仅支持 jpg、png、webp 图片")
+        if suffix not in allowed_suffixes:
+            suffix = ".jpg" if content_type == "image/jpeg" else ".png" if content_type == "image/png" else ".webp"
+
+        directory = ROOT_DIR / "uploads" / "repair_orders" / str(repair_order_id)
+        directory.mkdir(parents=True, exist_ok=True)
+        stored_name = f"{normalized_stage}-{uuid4().hex}{suffix}"
+        (directory / stored_name).write_bytes(content)
+        url = f"/uploads/repair_orders/{repair_order_id}/{stored_name}"
+        photo_id = self.repo.add_repair_order_photo(repair_order_id, normalized_stage, stored_name, url, user.username)
+        title = "上传维修前照片" if normalized_stage == "pre" else "上传维修后照片"
+        self.repo.add_machine_event(int(order["machine_id"]), "repair", title, Path(filename or stored_name).name, user.username, "repair", repair_order_id)
+        self._log_success(user, "repair_order:photo", "repair_order", str(repair_order_id), customer_id=order.get("customer_id"), request_summary=title)
+        self.conn.commit()
+        photo = next((row for row in self.repo.list_repair_order_photos(repair_order_id) if int(row["photo_id"]) == photo_id), {})
+        return {
+            "photo_id": photo_id,
+            "repair_order_id": repair_order_id,
+            "stage": normalized_stage,
+            "filename": stored_name,
+            "url": url,
+            "uploaded_by": user.username,
+            "uploaded_at": photo.get("uploaded_at", ""),
         }
 
     def list_materials(self, user: User) -> dict[str, Any]:

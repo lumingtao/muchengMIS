@@ -780,6 +780,23 @@ class Repository:
         order["events"] = self.repair_order_events(machine_id, repair_order_id)
         return order
 
+    def add_repair_order_photo(self, repair_order_id: int, stage: str, filename: str, url: str, uploaded_by: str) -> int:
+        cur = self.conn.execute(
+            """
+            INSERT INTO repair_order_photos (repair_order_id, stage, filename, url, uploaded_by)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (repair_order_id, stage, filename, url, uploaded_by),
+        )
+        return int(cur.lastrowid)
+
+    def list_repair_order_photos(self, repair_order_id: int) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            "SELECT * FROM repair_order_photos WHERE repair_order_id=? ORDER BY photo_id",
+            (repair_order_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def add_machine_event(self, machine_id: int, event_type: str, title: str, detail: str, operator: str, related_type: str = "", related_id: int | None = None) -> None:
         self.conn.execute(
             """

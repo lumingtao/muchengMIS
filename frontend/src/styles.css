@@ -1124,6 +1124,7 @@ tr.clickable { cursor: pointer; }
 
 .photo-strip {
   display: flex;
+  flex-wrap: wrap;
   gap: 16px;
   margin-top: 26px;
 }
@@ -1136,6 +1137,8 @@ tr.clickable { cursor: pointer; }
 }
 
 .photo-thumb {
+  display: block;
+  object-fit: cover;
   background:
     linear-gradient(135deg, rgba(255,255,255,.12), transparent 30%),
     linear-gradient(145deg, #232838, #10131d);
@@ -1149,6 +1152,16 @@ tr.clickable { cursor: pointer; }
   color: #667386;
   background: #fff;
   font-weight: 800;
+  cursor: pointer;
+}
+
+.upload-tile input {
+  display: none;
+}
+
+.upload-tile.disabled {
+  opacity: .62;
+  cursor: default;
 }
 
 .order-muted {
