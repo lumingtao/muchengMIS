@@ -33,8 +33,8 @@
 │   │   └── seed_demo_data.py         # 演示数据
 │   └── tests/                       # API、业务流与机器生命周期测试
 ├── mis_pwa/data/mis_workflow.sqlite3 # 真实维修工作流迁移来源
-├── BUSINESS_REALITY_LOG.md           # 真实维修业务流水
-├── MATERIAL_INVENTORY_LOG.md         # 真实物料采购、库存、领料记录
+├── BUSINESS_REALITY_LOG.md           # 典型真实业务观察，不再作为完整订单流水
+├── MATERIAL_INVENTORY_LOG.md         # 典型物料采购、库存、领料观察，不再替代库存数据库
 ├── BUSINESS_TIMELINE_SUMMARY.md      # 业务复盘与系统改造依据
 ├── project_ctl.py                    # 命令式启动/重启/停止控制
 ├── project_launcher.py               # 图形化启动入口
@@ -49,17 +49,13 @@
 - 后端：`mis_mvp/backend/app.py` 使用 FastAPI 暴露 REST API，并挂载 `/static` 静态资源。
 - 数据：SQLite 作为运行库，启动时由 `backend.db.migrate()` 自动补齐表结构。
 
-默认数据库路径由 `mis_mvp/backend/config.py` 和启动入口共同决定。项目启动器可通过 `.launcher_settings.json` 绑定运行库；当前已使用过的真实运行库路径为：
-
-```text
-C:\Users\admini\AppData\Local\Temp\mis-mvp-runtime\mis_mvp.sqlite3
-```
-
-仓库内默认库为：
+固定数据库路径由 `mis_mvp/backend/config.py` 和启动入口共同指向：
 
 ```text
 mis_mvp/data/mis_mvp.sqlite3
 ```
+
+项目启动器仍支持手动选择数据库文件，但真实业务默认运行库固定为上面这个路径；临时目录数据库只作为历史迁移来源或本地测试备份，不再作为日常运行库。
 
 ## 4. 核心业务模块
 
@@ -178,6 +174,14 @@ mis_mvp/data/mis_mvp.sqlite3
 - 数据区展示物料档案与余量、单件库存状态、批次与退货、我的/全部申领、退料验收、库存流水。
 
 ## 7. 数据迁移与真实数据口径
+
+日常真实订单录入口径：
+
+- 维修订单、物料消耗、收款、挂账和交付状态以固定 SQLite 数据库 `mis_mvp/data/mis_mvp.sqlite3` 中的结构化数据为准。
+- 启动器、`project_ctl.py` 和 `start_project.ps1` 默认都指向固定库；如临时指定其他 `MIS_DATABASE_PATH`，只能用于测试或迁移，不应作为真实业务录入库。
+- 后续新增真实订单应优先写入数据库，至少落到 `machines`、`repair_orders`，涉及收费/挂账/物料时同步落到 `payments`、`receivables`、`repair_items`、`stock_movements` 等对应表。
+- `BUSINESS_REALITY_LOG.md`、`MATERIAL_INVENTORY_LOG.md`、`BUSINESS_TIMELINE_SUMMARY.md` 只记录有典型特征、会改变业务理解或系统设计的样本，不再逐单充当完整业务台账。
+- 当数据库记录和 Markdown 观察文档不一致时，以数据库为订单事实源；Markdown 只作为需求、规则和业务经验的解释材料。
 
 真实业务数据来源：
 

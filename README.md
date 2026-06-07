@@ -24,6 +24,13 @@ start_project.ps1        PowerShell 启动脚本
 - [BUSINESS_REALITY_LOG.md](BUSINESS_REALITY_LOG.md)
 - [MATERIAL_INVENTORY_LOG.md](MATERIAL_INVENTORY_LOG.md)
 
+真实业务录入原则：
+
+- 后续新增订单、交付、收款、挂账和物料消耗优先写入固定 SQLite 数据库：`mis_mvp/data/mis_mvp.sqlite3`。
+- 启动器、`project_ctl.py` 和 `start_project.ps1` 默认都指向这一个固定库；不要再使用临时目录数据库作为真实业务运行库。
+- `BUSINESS_REALITY_LOG.md` 和 `MATERIAL_INVENTORY_LOG.md` 只补充有典型特征、会影响系统设计或业务规则判断的样本，不再作为完整订单流水台账。
+- 订单事实以数据库为准；文档用于记录业务经验、异常模式、待确认规则和开发调整依据。
+
 ## 启动项目
 
 安装依赖：
@@ -74,13 +81,13 @@ finance / finance
 
 ## 数据与运维
 
-默认 SQLite 数据库位置：
+固定 SQLite 数据库位置：
 
 ```text
 mis_mvp/data/mis_mvp.sqlite3
 ```
 
-启动器默认运行库位于用户临时目录下的 `MuchenMIS` 运行目录。真实业务迁移来源数据保留在：
+启动器、命令行控制器和 PowerShell 启动脚本都默认使用上面的固定库。真实业务迁移来源数据保留在：
 
 ```text
 mis_pwa/data/mis_workflow.sqlite3
@@ -89,3 +96,33 @@ mis_pwa/data/mis_workflow.sqlite3
 ## Git 注意事项
 
 请勿提交真实 MIS 账号密码、本地 `.env`、运行日志、Python 缓存、虚拟环境、编译产物或本地数据库备份。
+
+## React frontend upgrade
+
+The project now includes a Vite + React + TypeScript frontend in `frontend/`. The FastAPI backend APIs and SQLite database remain unchanged.
+
+Development:
+
+```powershell
+cd frontend
+npm.cmd install
+npm.cmd run dev
+```
+
+The Vite dev server proxies `/api` to `http://127.0.0.1:8088`, so start the FastAPI service first.
+
+Production build:
+
+```powershell
+cd frontend
+npm.cmd run build
+```
+
+The build output is written to `mis_mvp/frontend_dist/`. FastAPI serves that React build first; if it is missing, it falls back to the legacy `mis_mvp/static/` frontend.
+
+Frontend tests:
+
+```powershell
+cd frontend
+npm.cmd run test
+```

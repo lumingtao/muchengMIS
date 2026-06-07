@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-import tempfile
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -12,7 +11,7 @@ from tkinter import filedialog, messagebox, ttk
 ROOT_DIR = Path(__file__).resolve().parent
 CONTROL_SCRIPT = ROOT_DIR / "project_ctl.py"
 SETTINGS_PATH = ROOT_DIR / ".launcher_settings.json"
-DEFAULT_DB = Path(tempfile.gettempdir()) / "MuchenMIS" / "mis_mvp.sqlite3"
+DEFAULT_DB = ROOT_DIR / "mis_mvp" / "data" / "mis_mvp.sqlite3"
 
 
 class Launcher(tk.Tk):
@@ -25,7 +24,7 @@ class Launcher(tk.Tk):
 
         settings = self.load_settings()
         self.port_var = tk.StringVar(value=str(settings.get("port", 8088)))
-        self.db_var = tk.StringVar(value=settings.get("database_path", str(DEFAULT_DB)))
+        self.db_var = tk.StringVar(value=self.normalized_database_path(settings.get("database_path")))
         self.open_browser_var = tk.BooleanVar(value=settings.get("open_browser", True))
         self.status_var = tk.StringVar(value="请选择数据库后启动、重启或停止服务。")
 
@@ -46,6 +45,14 @@ class Launcher(tk.Tk):
             "open_browser": bool(self.open_browser_var.get()),
         }
         SETTINGS_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def normalized_database_path(self, configured: str | None) -> str:
+        if not configured:
+            return str(DEFAULT_DB)
+        path_text = str(Path(configured)).lower()
+        if ("\\temp\\mis-mvp-runtime\\" in path_text) or ("\\temp\\muchenmis\\" in path_text):
+            return str(DEFAULT_DB)
+        return configured
 
     def build_ui(self) -> None:
         outer = ttk.Frame(self, padding=18)

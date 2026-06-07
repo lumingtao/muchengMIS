@@ -65,7 +65,10 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
 static_dir = ROOT_DIR / "static"
+frontend_dir = ROOT_DIR / "frontend_dist"
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
+if (frontend_dir / "assets").exists():
+    app.mount("/assets", StaticFiles(directory=frontend_dir / "assets"), name="frontend_assets")
 
 
 def get_service():
@@ -95,6 +98,8 @@ def endpoint(call: Callable):
 
 @app.get("/")
 def index() -> FileResponse:
+    if (frontend_dir / "index.html").exists():
+        return FileResponse(frontend_dir / "index.html")
     return FileResponse(static_dir / "index.html")
 
 

@@ -15,14 +15,16 @@ $ErrorActionPreference = "Stop"
 
 $RootDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $AppDir = Join-Path $RootDir "mis_mvp"
+$DataDir = Join-Path $AppDir "data"
 $RuntimeDir = Join-Path ([System.IO.Path]::GetTempPath()) "MuchenMIS"
 $LogDir = Join-Path $RuntimeDir "logs"
 
 if (-not $DatabasePath) {
-    $DatabasePath = Join-Path $RuntimeDir "mis_mvp.sqlite3"
+    $DatabasePath = Join-Path $DataDir "mis_mvp.sqlite3"
 }
 
 function Ensure-RuntimeDirs {
+    New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
     New-Item -ItemType Directory -Force -Path $RuntimeDir | Out-Null
     New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 }

@@ -14,6 +14,7 @@ ROOT_DIR = Path(__file__).resolve().parent
 APP_DIR = ROOT_DIR / "mis_mvp"
 RUNTIME_DIR = Path(tempfile.gettempdir()) / "MuchenMIS"
 LOG_DIR = RUNTIME_DIR / "logs"
+DEFAULT_DB = ROOT_DIR / "mis_mvp" / "data" / "mis_mvp.sqlite3"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8088
 
@@ -102,7 +103,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("action", nargs="?", choices=["start", "restart", "stop"], default="start")
     parser.add_argument("port", nargs="?", type=int, default=DEFAULT_PORT)
     parser.add_argument("--host", default=DEFAULT_HOST)
-    parser.add_argument("--database-path", default=str(RUNTIME_DIR / "mis_mvp.sqlite3"))
+    parser.add_argument("--database-path", default=str(DEFAULT_DB))
     parser.add_argument("--no-browser", action="store_true")
     return parser.parse_args()
 
