@@ -1410,6 +1410,67 @@ tr.clickable { cursor: pointer; }
   min-height: 98px;
 }
 
+.repair-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.repair-card-head h3 {
+  margin: 0;
+}
+
+.mini-add-button {
+  min-height: 34px;
+  padding: 0 12px;
+  border-color: #0052cc;
+  color: #fff;
+  background: #0052cc;
+  font-size: 13px;
+}
+
+.inline-item-editor {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0 0 18px;
+  padding: 14px;
+  border: 1px solid #d7deea;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.stacked-fee-summary {
+  justify-content: flex-end;
+  align-items: flex-end;
+}
+
+.stacked-fee-summary .order-flow-field {
+  min-width: 180px;
+}
+
+.table-link {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  color: #0052cc;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.table-link.danger {
+  color: #ef4444;
+}
+
+.order-editable-line input {
+  min-height: 34px;
+  padding: 6px 10px;
+  background: #fbfcff;
+}
+
 .order-mode-edit .order-card,
 .order-mode-new .order-card {
   border-color: #c8d8f7;
@@ -2013,4 +2074,6 @@ tr.clickable { cursor: pointer; }
   .info-line { grid-template-columns: 1fr; gap: 6px; padding-bottom: 10px; }
   .info-line code { grid-column: 1; }
   .inspection-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .repair-card-head { align-items: flex-start; flex-direction: column; }
+  .inline-item-editor { grid-template-columns: 1fr; }
 }
