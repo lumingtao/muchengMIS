@@ -226,7 +226,6 @@ function App() {
           ))}
         </nav>
         <div className="sidebar-footer">
-          {view !== "orderDetail" && <button type="button" className="new-order-button" onClick={() => setView("repair")}><Plus size={22} />新建工单</button>}
           <button type="button" className="plain-nav-button"><HelpCircle size={20} />帮助中心</button>
           <button type="button" className="plain-nav-button" onClick={logout}><LogOut size={20} />退出登录</button>
         </div>
