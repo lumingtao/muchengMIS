@@ -1369,6 +1369,82 @@ tr.clickable { cursor: pointer; }
   gap: 8px;
 }
 
+.order-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px 18px;
+}
+
+.order-flow-field {
+  display: grid;
+  gap: 7px;
+}
+
+.order-flow-field.wide {
+  grid-column: 1 / -1;
+}
+
+.order-flow-field span {
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.order-flow-field strong {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  border-bottom: 1px dashed #d9dde6;
+  color: #172033;
+  font-size: 16px;
+}
+
+.order-flow-field input,
+.order-flow-field textarea {
+  border-color: #d7deea;
+  background: #fbfcff;
+}
+
+.order-flow-field textarea {
+  min-height: 98px;
+}
+
+.order-mode-edit .order-card,
+.order-mode-new .order-card {
+  border-color: #c8d8f7;
+}
+
+.order-mode-cancel .order-status-pill,
+.danger-action {
+  color: #fff;
+  background: #dc2626;
+  border-color: #dc2626;
+}
+
+.danger-action:hover {
+  background: #b91c1c;
+}
+
+.cancel-warning-card {
+  border-color: #fecaca;
+  background: #fffafa;
+}
+
+.cancel-warning-card h3 {
+  color: #b91c1c;
+}
+
+.cancel-warning-card p {
+  margin: -8px 0 18px;
+  color: #7f1d1d;
+  line-height: 1.6;
+}
+
+.flow-summary {
+  justify-content: flex-start;
+}
+
 .repair-pool-shell main {
   padding: 0;
   background: #f8fafc;
@@ -1931,6 +2007,7 @@ tr.clickable { cursor: pointer; }
   .order-detail-layout { padding: 0 16px 28px; }
   .order-side-column { grid-template-columns: 1fr; }
   .order-card { padding: 20px 18px; }
+  .order-form-grid { grid-template-columns: 1fr; }
   .order-info-grid,
   .order-info-grid.compact { grid-template-columns: 1fr; }
   .info-line { grid-template-columns: 1fr; gap: 6px; padding-bottom: 10px; }
