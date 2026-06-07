@@ -558,7 +558,7 @@ function PoolOrderRow({ row, onOpen, notify }: { row: AnyRecord; onOpen: (row: A
       <td>{String(row.assigned_to || row.engineer_user || "--")}</td>
       <td className="muted">{String(row.updated_at || row.created_at || "--")}</td>
       <td className="align-right"><b>{poolMoney(row.quoted_amount || row.charge_amount || row.amount || 0)}</b></td>
-      <td className="align-center"><div className="pool-row-actions"><button type="button" onClick={() => onOpen(row)}>详情</button><button type="button" onClick={() => notify("编辑入口已预留，可在详情页继续完善。")}>编辑</button>{status === "待支付" && <button type="button" className="danger" onClick={() => notify("取消入口已预留。")}>取消</button>}</div></td>
+      <td className="align-center"><div className="pool-row-actions"><button type="button" onClick={() => onOpen(row, "view")}>详情</button><button type="button" onClick={() => onOpen(row, "edit")}>编辑</button>{status === "待支付" && <button type="button" className="danger" onClick={() => notify("取消入口已预留。")}>取消</button>}</div></td>
     </tr>
   );
 }
