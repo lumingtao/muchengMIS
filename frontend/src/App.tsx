@@ -791,6 +791,8 @@ function OrderDetailPage({
   });
   const data = query.data || {};
   const order = ((data.order || {}) as AnyRecord);
+  const modules = ((data.modules || {}) as AnyRecord);
+  const availableActions = new Set(((data.available_actions as string[] | undefined) || []));
   const timelineQuery = useQuery({
     queryKey: ["machine-timeline", order.machine_id],
     queryFn: () => api<AnyRecord>(`/api/machines/${order.machine_id}/timeline`),
@@ -1105,6 +1107,23 @@ function OrderDetailPage({
     },
     onError: error => notify(error instanceof Error ? error.message : "备注删除失败", true),
   });
+  const moduleMutation = useMutation({
+    mutationFn: ({ module, action, payload }: { module: string; action: string; payload: AnyRecord }) => {
+      if (!orderId) throw new Error("缺少工单 ID");
+      return api<AnyRecord>(`/api/repair-orders/${orderId}/modules/${module}/${action}`, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+    },
+    onSuccess: () => {
+      notify("模块动作已完成");
+      query.refetch();
+      queryClient.invalidateQueries({ queryKey: ["repair-workbench"] });
+      queryClient.invalidateQueries({ queryKey: ["repair-workbench-detail", orderId] });
+      if (order.machine_id) queryClient.invalidateQueries({ queryKey: ["machine-timeline", order.machine_id] });
+    },
+    onError: error => notify(error instanceof Error ? error.message : "模块动作失败", true),
+  });
 
   function setField(key: string, value: unknown) {
     setForm(prev => {
@@ -1119,6 +1138,46 @@ function OrderDetailPage({
       }
       return next;
     });
+  }
+  function runModuleAction(actionKey: string) {
+    if (!orderId) return;
+    const [module, action] = actionKey.split(".");
+    const payload: AnyRecord = {};
+    if (actionKey === "quote.complete") {
+      const amount = Number(window.prompt("本次报价金额", String(quoted || order.quoted_amount || 0)) || 0);
+      if (amount <= 0) {
+        notify("报价金额必须大于 0", true);
+        return;
+      }
+      payload.amount = amount;
+      payload.remark = window.prompt("检测结论", String(order.diagnosis || order.fault_description || "检测完成")) || "检测完成";
+    }
+    if (actionKey === "quote.confirm") {
+      payload.method = window.prompt("客户确认方式", "现场") || "现场";
+      payload.remark = window.prompt("确认备注", "客户同意维修") || "客户同意维修";
+    }
+    if (actionKey === "repair.complete") {
+      payload.remark = window.prompt("维修完成备注", "维修完成，等待维修后质检") || "维修完成，等待维修后质检";
+    }
+    if (actionKey === "qc.complete") {
+      const defaultResult = Object.values(postInspectionState).some(Boolean) ? "质检不通过" : "质检通过";
+      const result = window.prompt("维修后质检结果：质检通过 / 质检不通过", defaultResult) || defaultResult;
+      payload.status = result;
+      payload.remark = postInspectionNote || window.prompt("质检备注", result) || result;
+    }
+    if (actionKey === "payment.register") {
+      const paymentModule = (modules.payment || {}) as AnyRecord;
+      const receivable = Number(paymentModule.receivable_amount ?? Math.max(quoted - paid, 0));
+      const amount = Number(window.prompt("本次收费金额", String(receivable || quoted || 0)) || 0);
+      if (amount <= 0) {
+        notify("收费金额必须大于 0", true);
+        return;
+      }
+      payload.amount = amount;
+      payload.method = window.prompt("收款方式", "现金/微信/支付宝") || "待确认";
+      payload.remark = "维修模块收费";
+    }
+    moduleMutation.mutate({ module, action, payload });
   }
   function beginProfileEdit() {
     if (!order.machine_id && mode !== "new") {
@@ -1371,6 +1430,57 @@ function OrderDetailPage({
           {mode !== "view" && mode !== "new" && <button type="button" onClick={() => { setForm({}); onModeChange("view"); }}>放弃</button>}
         </div>
       </section>
+
+      {mode !== "new" && (
+        <section className="order-module-board">
+          <div className="module-progress">
+            {repairModuleSteps(modules).map((step, index) => (
+              <div className={`module-progress-step ${step.done ? "done" : ""} ${step.active ? "active" : ""}`} key={step.key}>
+                <span>{index + 1}</span>
+                <b>{step.title}</b>
+              </div>
+            ))}
+          </div>
+          <div className="module-card-grid">
+            <RepairModuleCard
+              module={(modules.create || {}) as AnyRecord}
+              fallbackTitle="建单"
+              actionKey="create.complete"
+              actionLabel="确认建单完成"
+              availableActions={availableActions}
+              loading={moduleMutation.isPending}
+              onAction={runModuleAction}
+            />
+            <RepairModuleCard
+              module={(modules.quote || {}) as AnyRecord}
+              fallbackTitle="检测报价"
+              actionKey={availableActions.has("quote.confirm") ? "quote.confirm" : "quote.complete"}
+              actionLabel={availableActions.has("quote.confirm") ? "确认客户同意" : "完成检测报价"}
+              availableActions={availableActions}
+              loading={moduleMutation.isPending}
+              onAction={runModuleAction}
+            />
+            <RepairModuleCard
+              module={(modules.repair_qc || {}) as AnyRecord}
+              fallbackTitle="维修与维修后质检"
+              actionKey={availableActions.has("qc.complete") ? "qc.complete" : availableActions.has("repair.complete") ? "repair.complete" : "repair.start"}
+              actionLabel={availableActions.has("qc.complete") ? "提交维修后质检" : availableActions.has("repair.complete") ? "确认维修完成" : "开始维修"}
+              availableActions={availableActions}
+              loading={moduleMutation.isPending}
+              onAction={runModuleAction}
+            />
+            <RepairModuleCard
+              module={(modules.payment || {}) as AnyRecord}
+              fallbackTitle="收费结单"
+              actionKey={availableActions.has("payment.confirm") ? "payment.confirm" : "payment.register"}
+              actionLabel={availableActions.has("payment.confirm") ? "财务确认收费" : "登记收费"}
+              availableActions={availableActions}
+              loading={moduleMutation.isPending}
+              onAction={runModuleAction}
+            />
+          </div>
+        </section>
+      )}
 
       <div className="order-detail-layout">
         <div className="order-main-column">
@@ -1774,6 +1884,57 @@ function SuggestionList({ loading, rows, selectedId, idKey, primaryKey, secondar
   );
 }
 
+function repairModuleSteps(modules: AnyRecord) {
+  const createModule = (modules.create || {}) as AnyRecord;
+  const quoteModule = (modules.quote || {}) as AnyRecord;
+  const repairModule = (modules.repair_qc || {}) as AnyRecord;
+  const paymentModule = (modules.payment || {}) as AnyRecord;
+  const createStatus = String(createModule.status || "");
+  const quoteStatus = String(quoteModule.status || "");
+  const repairStatus = String(repairModule.status || "");
+  const paymentStatus = String(paymentModule.status || "");
+  return [
+    { key: "create", title: "建单", done: createStatus === "已完成", active: createStatus !== "已完成" },
+    { key: "quote", title: "检测报价", done: quoteStatus === "客户已确认", active: createStatus === "已完成" && quoteStatus !== "客户已确认" },
+    { key: "repair_qc", title: "维修与质检", done: repairStatus === "质检通过", active: quoteStatus === "客户已确认" && repairStatus !== "质检通过" },
+    { key: "payment", title: "收费结单", done: paymentStatus === "已完成", active: repairStatus === "质检通过" && paymentStatus !== "已完成" },
+  ];
+}
+
+function RepairModuleCard({
+  module,
+  fallbackTitle,
+  actionKey,
+  actionLabel,
+  availableActions,
+  loading,
+  onAction,
+}: {
+  module?: AnyRecord;
+  fallbackTitle: string;
+  actionKey: string;
+  actionLabel: string;
+  availableActions: Set<string>;
+  loading: boolean;
+  onAction: (actionKey: string) => void;
+}) {
+  const status = String(module?.status || "待处理");
+  const canRun = availableActions.has(actionKey);
+  return (
+    <section className={`order-card module-card ${canRun ? "actionable" : ""}`}>
+      <div className="module-card-head">
+        <h3>{String(module?.title || fallbackTitle)}</h3>
+        <StatusTag value={status} />
+      </div>
+      <p>{String(module?.summary || "等待上一模块完成")}</p>
+      {"amount" in (module || {}) && <strong className="module-money">报价 {poolMoney(module?.amount)}</strong>}
+      {"receivable_amount" in (module || {}) && <strong className="module-money">待收 {poolMoney(module?.receivable_amount)}</strong>}
+      <button type="button" className="mini-add-button" disabled={!canRun || loading} onClick={() => onAction(actionKey)}>
+        {canRun ? actionLabel : "等待上一模块"}
+      </button>
+    </section>
+  );
+}
 
 function OrderField({ label, value, editable, onChange, area, type = "text" }: { label: string; value: unknown; editable?: boolean; onChange?: (value: string) => void; area?: boolean; type?: string }) {
   return (

@@ -534,11 +534,17 @@ class MisService:
         order["customer_name"] = order.get("customer_name") or order.get("linked_customer_name") or "待补"
         order["customer_type"] = order.get("customer_type") or order.get("linked_customer_type") or "待确认"
         order["unknown_fields"] = self._repair_unknown_fields(order)
+        payments = self.repo.payments_for_source("repair", repair_order_id)
+        inspections = self.repo.list_repair_order_inspections(repair_order_id)
+        repair_items = self.repo.list_repair_items(repair_order_id)
+        modules = self._repair_modules(order, repair_items, payments, inspections)
         return {
             "order": order,
+            "modules": modules,
+            "available_actions": self._repair_module_available_actions(order, modules, repair_items),
             "income_items": self._rows("SELECT * FROM repair_income_items WHERE repair_order_id=? ORDER BY income_item_id", (repair_order_id,)),
             "cost_items": self._rows("SELECT * FROM repair_cost_items WHERE repair_order_id=? ORDER BY cost_item_id", (repair_order_id,)),
-            "repair_items": self.repo.list_repair_items(repair_order_id),
+            "repair_items": repair_items,
             "materials": self._rows(
                 """
                 SELECT rm.*, mt.sku, mt.name, mt.compatible_range
@@ -549,12 +555,190 @@ class MisService:
                 """,
                 (repair_order_id,),
             ),
-            "payments": self.repo.payments_for_source("repair", repair_order_id),
+            "payments": payments,
             "receivables": self._rows("SELECT * FROM receivables WHERE repair_order_id=? ORDER BY receivable_id", (repair_order_id,)),
             "events": self.repo.repair_order_events(int(order["machine_id"]), repair_order_id),
-            "inspections": self.repo.list_repair_order_inspections(repair_order_id),
+            "inspections": inspections,
             "notes": self.repo.list_repair_order_notes(repair_order_id),
         }
+
+    def _repair_modules(
+        self,
+        order: dict[str, Any],
+        repair_items: list[dict[str, Any]],
+        payments: list[dict[str, Any]],
+        inspections: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        status = str(order.get("status") or "")
+        workflow = str(order.get("workflow_status") or "")
+        quote_confirm = str(order.get("quote_confirm_status") or "")
+        quoted_amount = float(order.get("quoted_amount") or 0)
+        paid_amount = sum(float(row.get("amount") or 0) for row in payments if row.get("direction") == "收入")
+        post_inspections = [row for row in inspections if row.get("stage") == "post"]
+        post_has_abnormal = any(int(row.get("abnormal") or 0) for row in post_inspections)
+        closed = status in {"已完结", "已结单"} or bool(order.get("closed_at"))
+
+        if closed:
+            quote_status = "客户已确认" if quoted_amount > 0 else "待检测"
+            repair_qc_status = "质检通过" if repair_items else "待维修"
+            payment_status = "已完成"
+        else:
+            quote_status = "待检测"
+            if quoted_amount > 0 or status in {"已报价", "处理中", "待交付", "已交付", "财务待确认"}:
+                quote_status = "已报价"
+            if quote_confirm == "客户同意维修" or status in {"处理中", "待交付", "已交付", "财务待确认"}:
+                quote_status = "客户已确认"
+
+            repair_qc_status = "待维修"
+            if "质检不通过" in workflow:
+                repair_qc_status = "质检不通过"
+            elif "质检通过" in workflow or status == "已交付":
+                repair_qc_status = "质检通过"
+            elif status == "待交付" or order.get("engineer_closed_at"):
+                repair_qc_status = "待质检"
+            elif status == "处理中" and (repair_items or "维修中" in workflow):
+                repair_qc_status = "维修中"
+
+            if paid_amount >= quoted_amount and quoted_amount > 0:
+                payment_status = "已完成"
+            elif paid_amount > 0:
+                payment_status = "部分收款"
+            else:
+                payment_status = "待收费"
+
+        return {
+            "create": {
+                "key": "create",
+                "title": "建单",
+                "status": "已完成" if order.get("repair_order_id") else "待完成",
+                "summary": f"{order.get('order_no') or order.get('repair_order_id')} / {order.get('model') or ''}",
+            },
+            "quote": {
+                "key": "quote",
+                "title": "检测报价",
+                "status": quote_status,
+                "summary": order.get("diagnosis") or order.get("fault_description") or "等待检测报价",
+                "amount": quoted_amount,
+            },
+            "repair_qc": {
+                "key": "repair_qc",
+                "title": "维修与维修后质检",
+                "status": repair_qc_status,
+                "summary": order.get("repair_solution") or order.get("engineer_close_remark") or "等待维修记录",
+                "post_has_abnormal": post_has_abnormal,
+            },
+            "payment": {
+                "key": "payment",
+                "title": "收费结单",
+                "status": payment_status,
+                "summary": f"已收 {paid_amount:.2f} / 应收 {quoted_amount:.2f}",
+                "paid_amount": paid_amount,
+                "receivable_amount": max(quoted_amount - paid_amount, 0),
+            },
+        }
+
+    def _repair_module_available_actions(self, order: dict[str, Any], modules: dict[str, Any], repair_items: list[dict[str, Any]]) -> list[str]:
+        status = str(order.get("status") or "")
+        if status in {"已完结", "已结单", "已作废"}:
+            return []
+        actions: list[str] = []
+        if status == "已开单":
+            actions.append("create.complete")
+        if status == "检测中":
+            actions.append("quote.complete")
+        if status == "已报价":
+            actions.append("quote.confirm")
+        if modules["quote"]["status"] == "客户已确认" and modules["repair_qc"]["status"] in {"待维修", "维修中", "质检不通过"} and not repair_items:
+            actions.append("repair.start")
+        if status == "处理中" and modules["repair_qc"]["status"] == "维修中" and repair_items:
+            actions.append("repair.complete")
+        if status == "待交付":
+            actions.append("qc.complete")
+        if modules["repair_qc"]["status"] == "质检通过":
+            actions.append("payment.register")
+        if str(order.get("payment_status") or "") == "已付款待财务确认":
+            actions.append("payment.confirm")
+        return actions
+
+    def apply_repair_module_action(self, user: User, repair_order_id: int, module: str, action: str, data: RepairWorkflowActionInput) -> dict[str, Any]:
+        normalized = f"{module}.{action}"
+        order = self.repo.get_repair_order(repair_order_id)
+        if not order:
+            raise BusinessError("维修单不存在")
+        module_detail = self.repair_workbench_detail(user, repair_order_id)
+        retry_repair_complete = (
+            normalized == "repair.complete"
+            and str(order.get("status") or "") == OrderStatus.processing.value
+            and bool(self.repo.list_repair_items(repair_order_id))
+        )
+        if normalized not in module_detail.get("available_actions", []) and not retry_repair_complete:
+            raise BusinessError("当前模块状态不允许执行该动作")
+        if normalized == "create.complete":
+            result = self.update_repair_order_status(user, repair_order_id, RepairOrderStatusInput(status=OrderStatus.diagnosing, remark=data.remark))
+            return self.repair_workbench_detail(user, int(result["repair_order_id"]))
+        if normalized == "quote.complete":
+            quoted_amount = float(data.amount or order.get("quoted_amount") or 0)
+            return self.repair_workbench_detail(
+                user,
+                int(self.quote_repair_order(
+                    user,
+                    repair_order_id,
+                    RepairQuoteInput(
+                        diagnosis=data.remark or order.get("diagnosis") or order.get("fault_description") or "检测完成",
+                        quoted_amount=quoted_amount,
+                        fault_detail=data.remark or order.get("fault_detail") or "",
+                        repair_solution=order.get("repair_solution") or "",
+                    ),
+                )["repair_order_id"]),
+            )
+        if normalized == "quote.confirm":
+            return self.repair_workbench_detail(
+                user,
+                int(self.confirm_repair_quote(
+                    user,
+                    repair_order_id,
+                    RepairQuoteConfirmInput(confirm_result="客户同意维修", confirm_method=data.method or "现场", contact_person=data.received_by or "", remark=data.remark),
+                )["repair_order_id"]),
+            )
+        if normalized == "repair.start":
+            self.repo.update_repair_order_status(repair_order_id, OrderStatus.processing.value, data.remark)
+            self.conn.execute("UPDATE repair_orders SET workflow_status='工程师维修中', updated_at=CURRENT_TIMESTAMP WHERE repair_order_id=?", (repair_order_id,))
+            self.repo.update_machine_status(int(order["machine_id"]), MachineStatus.repairing.value)
+            self.repo.add_machine_event(int(order["machine_id"]), "repair", "开始维修", data.remark, user.username, "repair", repair_order_id)
+            self._log_success(user, "repair_order:module_repair_start", "repair_order", str(repair_order_id), customer_id=order.get("customer_id"), request_summary=data.remark)
+            self.conn.commit()
+            return self.repair_workbench_detail(user, repair_order_id)
+        if normalized == "repair.complete":
+            result = self.engineer_close_repair_order(user, repair_order_id, RepairEngineerCloseInput(remark=data.remark or "维修完成，待维修后质检"))
+            return self.repair_workbench_detail(user, int(result["repair_order_id"]))
+        if normalized == "qc.complete":
+            qc_status = data.status or "质检通过"
+            if qc_status not in {"质检通过", "质检不通过"}:
+                raise BusinessError("维修后质检结果必须是 质检通过 或 质检不通过")
+            if qc_status == "质检不通过":
+                self.repo.update_repair_order_status(repair_order_id, OrderStatus.processing.value, data.remark)
+                self.conn.execute("UPDATE repair_orders SET workflow_status='质检不通过，工程师返修', updated_at=CURRENT_TIMESTAMP WHERE repair_order_id=?", (repair_order_id,))
+                self.repo.update_machine_status(int(order["machine_id"]), MachineStatus.repairing.value)
+            else:
+                self.repo.deliver_repair_order(repair_order_id, data.remark or "维修后质检通过", data.remark, OrderStatus.delivered.value)
+                self.conn.execute("UPDATE repair_orders SET workflow_status='质检通过，待收费', updated_at=CURRENT_TIMESTAMP WHERE repair_order_id=?", (repair_order_id,))
+                self.repo.update_machine_status(int(order["machine_id"]), MachineStatus.delivered.value)
+            self.repo.add_machine_event(int(order["machine_id"]), "repair", "维修后质检", qc_status if not data.remark else f"{qc_status}；{data.remark}", user.username, "repair", repair_order_id)
+            self._log_success(user, "repair_order:module_qc", "repair_order", str(repair_order_id), customer_id=order.get("customer_id"), request_summary=qc_status)
+            self.conn.commit()
+            return self.repair_workbench_detail(user, repair_order_id)
+        if normalized == "payment.register":
+            amount = float(data.amount or 0)
+            if amount <= 0:
+                raise BusinessError("登记收费金额必须大于 0")
+            result = self.create_payment(
+                user,
+                PaymentInput(source_type="repair", source_id=repair_order_id, direction=PaymentDirection.income, amount=amount, method=data.method, remark=data.remark or "维修模块收费"),
+            )
+            return self.repair_workbench_detail(user, int(repair_order_id if result.get("machine_id") else repair_order_id))
+        if normalized == "payment.confirm":
+            return self.apply_repair_workflow_action(user, repair_order_id, RepairWorkflowActionInput(action="finance_confirm", confirmed_by=data.confirmed_by, remark=data.remark))
+        raise BusinessError("未知维修模块动作")
 
     def list_repair_order_photos(self, user: User, repair_order_id: int) -> list[dict[str, Any]]:
         self._allowed(user, "repair_order:read")
@@ -1900,6 +2084,7 @@ class MisService:
             order.get("repair_solution", ""),
             "工程师维修中",
         )
+        self.conn.execute("UPDATE repair_orders SET workflow_status='工程师维修中', updated_at=CURRENT_TIMESTAMP WHERE repair_order_id=?", (repair_order_id,))
         self.repo.update_machine_status(int(order["machine_id"]), MachineStatus.repairing.value)
         self.repo.add_machine_event(int(order["machine_id"]), "repair", "维修项目", f"{item_name} x{data.quantity}", user.username, "repair_item", item_id)
         self._log_success(user, "repair_order:item", "repair_item", str(item_id), customer_id=order["customer_id"], request_summary=item_name)

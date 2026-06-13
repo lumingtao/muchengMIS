@@ -253,6 +253,11 @@ def repair_workflow_action(repair_order_id: int, data: RepairWorkflowActionInput
     return endpoint(lambda: service.apply_repair_workflow_action(user, repair_order_id, data))
 
 
+@app.post("/api/repair-orders/{repair_order_id}/modules/{module}/{action}")
+def repair_module_action(repair_order_id: int, module: str, action: str, data: RepairWorkflowActionInput, user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.apply_repair_module_action(user, repair_order_id, module, action, data))
+
+
 @app.get("/api/materials")
 def materials(user: User = Depends(current_user), service: MisService = Depends(get_service)):
     return endpoint(lambda: service.list_materials(user))
