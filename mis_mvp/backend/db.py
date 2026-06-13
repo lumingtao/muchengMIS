@@ -628,51 +628,6 @@ CREATE TABLE IF NOT EXISTS repair_order_notes (
     is_deleted INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (repair_order_id) REFERENCES repair_orders(repair_order_id)
 );
-
-CREATE TABLE IF NOT EXISTS repair_order_modules (
-    module_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    repair_order_id INTEGER NOT NULL,
-    module_key TEXT NOT NULL,
-    module_name TEXT NOT NULL,
-    sequence INTEGER NOT NULL,
-    status TEXT NOT NULL,
-    owner_role TEXT NOT NULL DEFAULT '',
-    owner_user_id TEXT NOT NULL DEFAULT '',
-    started_at TEXT,
-    started_by TEXT NOT NULL DEFAULT '',
-    completed_at TEXT,
-    completed_by TEXT NOT NULL DEFAULT '',
-    reopened_at TEXT,
-    reopened_by TEXT NOT NULL DEFAULT '',
-    reopen_count INTEGER NOT NULL DEFAULT 0,
-    blocked_reason TEXT NOT NULL DEFAULT '',
-    readonly INTEGER NOT NULL DEFAULT 0,
-    summary TEXT NOT NULL DEFAULT '',
-    payload_json TEXT NOT NULL DEFAULT '{}',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (repair_order_id, module_key),
-    FOREIGN KEY (repair_order_id) REFERENCES repair_orders(repair_order_id)
-);
-
-CREATE TABLE IF NOT EXISTS repair_order_module_actions (
-    action_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    repair_order_id INTEGER NOT NULL,
-    module_id INTEGER,
-    module_key TEXT NOT NULL,
-    action_key TEXT NOT NULL,
-    action_name TEXT NOT NULL,
-    from_status TEXT NOT NULL DEFAULT '',
-    to_status TEXT NOT NULL DEFAULT '',
-    actor_user_id TEXT NOT NULL DEFAULT '',
-    actor_name TEXT NOT NULL DEFAULT '',
-    payload_json TEXT NOT NULL DEFAULT '{}',
-    reason TEXT NOT NULL DEFAULT '',
-    idempotency_key TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (repair_order_id) REFERENCES repair_orders(repair_order_id),
-    FOREIGN KEY (module_id) REFERENCES repair_order_modules(module_id)
-);
 """
 
 
@@ -777,24 +732,6 @@ def ensure_columns(conn: sqlite3.Connection) -> None:
             ("direction", "TEXT NOT NULL DEFAULT ''"),
             ("source_type", "TEXT NOT NULL DEFAULT ''"),
             ("source_id", "INTEGER"),
-        ],
-        "repair_order_modules": [
-            ("owner_role", "TEXT NOT NULL DEFAULT ''"),
-            ("owner_user_id", "TEXT NOT NULL DEFAULT ''"),
-            ("started_at", "TEXT"),
-            ("started_by", "TEXT NOT NULL DEFAULT ''"),
-            ("completed_at", "TEXT"),
-            ("completed_by", "TEXT NOT NULL DEFAULT ''"),
-            ("reopened_at", "TEXT"),
-            ("reopened_by", "TEXT NOT NULL DEFAULT ''"),
-            ("reopen_count", "INTEGER NOT NULL DEFAULT 0"),
-            ("blocked_reason", "TEXT NOT NULL DEFAULT ''"),
-            ("readonly", "INTEGER NOT NULL DEFAULT 0"),
-            ("summary", "TEXT NOT NULL DEFAULT ''"),
-            ("payload_json", "TEXT NOT NULL DEFAULT '{}'"),
-        ],
-        "repair_order_module_actions": [
-            ("idempotency_key", "TEXT NOT NULL DEFAULT ''"),
         ],
     }
     for table, table_columns in columns.items():

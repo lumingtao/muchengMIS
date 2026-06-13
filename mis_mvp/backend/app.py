@@ -227,11 +227,6 @@ def repair_workbench_detail(repair_order_id: int, user: User = Depends(current_u
     return endpoint(lambda: service.repair_workbench_detail(user, repair_order_id))
 
 
-@app.get("/api/repair-orders/{repair_order_id}/module-workflow")
-def repair_module_workflow(repair_order_id: int, user: User = Depends(current_user), service: MisService = Depends(get_service)):
-    return endpoint(lambda: service.repair_module_workflow(user, repair_order_id))
-
-
 @app.get("/api/repair-orders/{repair_order_id}/photos")
 def repair_order_photos(repair_order_id: int, user: User = Depends(current_user), service: MisService = Depends(get_service)):
     return endpoint(lambda: service.list_repair_order_photos(user, repair_order_id))

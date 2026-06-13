@@ -1143,12 +1143,6 @@ function OrderDetailPage({
     if (!orderId) return;
     const [module, action] = actionKey.split(".");
     const payload: AnyRecord = {};
-    if (actionKey.endsWith(".start")) {
-      payload.remark = window.prompt("开始备注", "开始处理") || "开始处理";
-    }
-    if (actionKey === "create.complete") {
-      payload.remark = window.prompt("建单完成备注", "建单资料已确认") || "建单资料已确认";
-    }
     if (actionKey === "quote.complete") {
       const amount = Number(window.prompt("本次报价金额", String(quoted || order.quoted_amount || 0)) || 0);
       if (amount <= 0) {
@@ -1161,16 +1155,6 @@ function OrderDetailPage({
     if (actionKey === "quote.confirm") {
       payload.method = window.prompt("客户确认方式", "现场") || "现场";
       payload.remark = window.prompt("确认备注", "客户同意维修") || "客户同意维修";
-    }
-    if (actionKey === "payment.prepay") {
-      const amount = Number(window.prompt("预收款金额", "0") || 0);
-      if (amount <= 0) {
-        notify("预收款金额必须大于 0", true);
-        return;
-      }
-      payload.amount = amount;
-      payload.method = window.prompt("收款方式", "现金/微信/支付宝") || "待确认";
-      payload.remark = "维修预收款";
     }
     if (actionKey === "repair.complete") {
       payload.remark = window.prompt("维修完成备注", "维修完成，等待维修后质检") || "维修完成，等待维修后质检";
@@ -1192,28 +1176,6 @@ function OrderDetailPage({
       payload.amount = amount;
       payload.method = window.prompt("收款方式", "现金/微信/支付宝") || "待确认";
       payload.remark = "维修模块收费";
-    }
-    if (actionKey === "payment.credit") {
-      payload.credit_amount = Number(window.prompt("挂账金额", String(Math.max(quoted - paid, 0) || quoted || 0)) || 0);
-      payload.credit_term_days = Number(window.prompt("账期天数", "30") || 0);
-      payload.credit_limit = Number(window.prompt("授信额度", String(quoted || 0)) || 0);
-      payload.approver_user_id = window.prompt("审批人账号", "manager") || "";
-      payload.approval_reason = window.prompt("挂账审批理由", "客户账期挂账") || "";
-      if (!payload.approver_user_id || Number(payload.credit_amount || 0) <= 0) {
-        notify("挂账必须填写金额和审批人", true);
-        return;
-      }
-    }
-    if (actionKey === "payment.confirm") {
-      payload.confirmed_by = window.prompt("财务确认人", "finance") || "finance";
-      payload.remark = window.prompt("确认备注", "财务已确认") || "财务已确认";
-    }
-    if (actionKey.endsWith(".reopen")) {
-      payload.reason = window.prompt("重开原因", "") || "";
-      if (!String(payload.reason || "").trim()) {
-        notify("重开模块必须填写原因", true);
-        return;
-      }
     }
     moduleMutation.mutate({ module, action, payload });
   }
@@ -1482,32 +1444,36 @@ function OrderDetailPage({
           <div className="module-card-grid">
             <RepairModuleCard
               module={(modules.create || {}) as AnyRecord}
-              moduleKey="create"
               fallbackTitle="建单"
+              actionKey="create.complete"
+              actionLabel="确认建单完成"
               availableActions={availableActions}
               loading={moduleMutation.isPending}
               onAction={runModuleAction}
             />
             <RepairModuleCard
               module={(modules.quote || {}) as AnyRecord}
-              moduleKey="quote"
               fallbackTitle="检测报价"
+              actionKey={availableActions.has("quote.confirm") ? "quote.confirm" : "quote.complete"}
+              actionLabel={availableActions.has("quote.confirm") ? "确认客户同意" : "完成检测报价"}
               availableActions={availableActions}
               loading={moduleMutation.isPending}
               onAction={runModuleAction}
             />
             <RepairModuleCard
               module={(modules.repair_qc || {}) as AnyRecord}
-              moduleKey="repair_qc"
               fallbackTitle="维修与维修后质检"
+              actionKey={availableActions.has("qc.complete") ? "qc.complete" : availableActions.has("repair.complete") ? "repair.complete" : "repair.start"}
+              actionLabel={availableActions.has("qc.complete") ? "提交维修后质检" : availableActions.has("repair.complete") ? "确认维修完成" : "开始维修"}
               availableActions={availableActions}
               loading={moduleMutation.isPending}
               onAction={runModuleAction}
             />
             <RepairModuleCard
               module={(modules.payment || {}) as AnyRecord}
-              moduleKey="payment"
               fallbackTitle="收费结单"
+              actionKey={availableActions.has("payment.confirm") ? "payment.confirm" : "payment.register"}
+              actionLabel={availableActions.has("payment.confirm") ? "财务确认收费" : "登记收费"}
               availableActions={availableActions}
               loading={moduleMutation.isPending}
               onAction={runModuleAction}
@@ -1935,61 +1901,25 @@ function repairModuleSteps(modules: AnyRecord) {
   ];
 }
 
-const repairModuleActionMap: Record<string, Array<[string, string]>> = {
-  create: [
-    ["create.start", "开始建单"],
-    ["create.save", "保存草稿"],
-    ["create.complete", "确认建单完成"],
-    ["create.reopen", "重开建单"],
-  ],
-  quote: [
-    ["quote.start", "开始检测"],
-    ["quote.save", "保存草稿"],
-    ["quote.complete", "提交报价"],
-    ["quote.submit", "提交报价"],
-    ["quote.confirm", "客户确认报价"],
-    ["quote.reopen", "重开报价"],
-  ],
-  repair_qc: [
-    ["repair.start", "开始维修"],
-    ["repair.save", "保存维修草稿"],
-    ["repair.complete", "确认维修完成"],
-    ["qc.start", "开始质检"],
-    ["qc.complete", "提交维修后质检"],
-    ["repair_qc.reopen", "重开维修质检"],
-  ],
-  payment: [
-    ["payment.prepay", "登记预收款"],
-    ["payment.start", "开始收费"],
-    ["payment.register", "登记收费"],
-    ["payment.credit", "登记挂账"],
-    ["payment.confirm", "财务确认"],
-    ["payment.reopen", "重开收费"],
-  ],
-};
-
-function repairModuleActions(moduleKey: string, availableActions: Set<string>) {
-  return (repairModuleActionMap[moduleKey] || []).filter(([key]) => availableActions.has(key));
-}
-
 function RepairModuleCard({
   module,
-  moduleKey,
   fallbackTitle,
+  actionKey,
+  actionLabel,
   availableActions,
   loading,
   onAction,
 }: {
   module?: AnyRecord;
-  moduleKey: string;
   fallbackTitle: string;
+  actionKey: string;
+  actionLabel: string;
   availableActions: Set<string>;
   loading: boolean;
   onAction: (actionKey: string) => void;
 }) {
   const status = String(module?.status || "待处理");
-  const actions = repairModuleActions(moduleKey, availableActions);
-  const canRun = actions.length > 0;
+  const canRun = availableActions.has(actionKey);
   return (
     <section className={`order-card module-card ${canRun ? "actionable" : ""}`}>
       <div className="module-card-head">
@@ -1999,14 +1929,9 @@ function RepairModuleCard({
       <p>{String(module?.summary || "等待上一模块完成")}</p>
       {"amount" in (module || {}) && <strong className="module-money">报价 {poolMoney(module?.amount)}</strong>}
       {"receivable_amount" in (module || {}) && <strong className="module-money">待收 {poolMoney(module?.receivable_amount)}</strong>}
-      <div className="inline-actions">
-        {actions.map(([key, label]) => (
-          <button type="button" className="mini-add-button" disabled={loading} key={key} onClick={() => onAction(key)}>
-            {label}
-          </button>
-        ))}
-        {!actions.length && <button type="button" className="ghost-mini-button" disabled>等待上一模块</button>}
-      </div>
+      <button type="button" className="mini-add-button" disabled={!canRun || loading} onClick={() => onAction(actionKey)}>
+        {canRun ? actionLabel : "等待上一模块"}
+      </button>
     </section>
   );
 }
