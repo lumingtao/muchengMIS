@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime
 from typing import Any
 
 from .models import CustomerInput, DeviceStatus, PurchaseInput, RepairInput, RepairStatus, SettlementStatus
@@ -24,6 +25,23 @@ class Repository:
             if not exists:
                 return member_no
             next_id += 1
+
+    def next_order_no(self, table: str, prefix: str) -> str:
+        if table not in {"repair_orders", "recycle_orders"}:
+            raise ValueError(f"Unsupported order table: {table}")
+        day = datetime.now().strftime("%Y%m%d")
+        pattern = f"{prefix}{day}-%"
+        rows = self.conn.execute(
+            f"SELECT order_no FROM {table} WHERE order_no LIKE ? ORDER BY order_no DESC",
+            (pattern,),
+        ).fetchall()
+        next_seq = 1
+        for row in rows:
+            suffix = str(row["order_no"] or "").rsplit("-", 1)[-1]
+            if suffix.isdigit():
+                next_seq = int(suffix) + 1
+                break
+        return f"{prefix}{day}-{next_seq:04d}"
 
     def get_user(self, username: str) -> dict[str, Any] | None:
         return row_to_dict(self.conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone())
@@ -748,21 +766,19 @@ class Repository:
         created_by: str,
         workflow_status: str = "待指派工程师",
         assigned_to: str = "",
+        order_prefix: str = "WX",
+        service_type: str = "维修",
     ) -> int:
+        order_no = self.next_order_no("repair_orders", order_prefix)
         cur = self.conn.execute(
             """
             INSERT INTO repair_orders
-            (machine_id, customer_id, status, workflow_status, assigned_to, fault_description, remark, created_by)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            (order_no, machine_id, customer_id, status, workflow_status, assigned_to, service_type, fault_description, remark, created_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (machine_id, customer_id, status, workflow_status, assigned_to, fault_description, remark, created_by),
+            (order_no, machine_id, customer_id, status, workflow_status, assigned_to, service_type, fault_description, remark, created_by),
         )
-        repair_order_id = int(cur.lastrowid)
-        self.conn.execute(
-            "UPDATE repair_orders SET order_no=? WHERE repair_order_id=?",
-            (f"RO-{repair_order_id}", repair_order_id),
-        )
-        return repair_order_id
+        return int(cur.lastrowid)
 
     def get_repair_order(self, repair_order_id: int) -> dict[str, Any] | None:
         return row_to_dict(self.conn.execute("SELECT * FROM repair_orders WHERE repair_order_id=?", (repair_order_id,)).fetchone())
@@ -952,13 +968,14 @@ class Repository:
         )
 
     def create_recycle_order(self, machine_id: int, customer_id: int | None, status: str, inspection_note: str, remark: str, created_by: str) -> int:
+        order_no = self.next_order_no("recycle_orders", "ZB")
         cur = self.conn.execute(
             """
             INSERT INTO recycle_orders
-            (machine_id, customer_id, status, inspection_note, remark, created_by)
-            VALUES (?, ?, ?, ?, ?, ?)
+            (order_no, machine_id, customer_id, status, inspection_note, remark, created_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (machine_id, customer_id, status, inspection_note, remark, created_by),
+            (order_no, machine_id, customer_id, status, inspection_note, remark, created_by),
         )
         return int(cur.lastrowid)
 

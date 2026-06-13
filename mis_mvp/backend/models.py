@@ -167,6 +167,7 @@ class RepairOrderInput(BaseModel):
     machine: MachineInput | None = None
     customer_id: int | None = None
     customer: CustomerInput | None = None
+    order_type: str = "维修"
     fault_description: str = ""
     remark: str = ""
     repair_items: list["RepairItemInput"] = []

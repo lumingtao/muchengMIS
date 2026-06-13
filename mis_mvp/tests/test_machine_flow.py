@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -50,6 +51,10 @@ from backend.models import (
     User,
 )
 from backend.service import BusinessError, MisService
+
+
+def assert_order_no(value: str, prefix: str) -> None:
+    assert re.fullmatch(rf"{prefix}\d{{8}}-\d{{4}}", value)
 
 
 @pytest.fixture()
@@ -216,7 +221,7 @@ def test_frontdesk_repair_order_creation_defaults_and_order_no(service: MisServi
     assert order["status"] == "已开单"
     assert order["workflow_status"] == "待指派工程师"
     assert order["assigned_to"] == ""
-    assert order["order_no"] == f"RO-{order['repair_order_id']}"
+    assert_order_no(order["order_no"], "WX")
 
     timeline = service.machine_timeline(user(Role.frontdesk), order["machine_id"])
     assert timeline["machine"]["current_status"] == "检测中"
@@ -241,7 +246,7 @@ def test_engineer_can_create_repair_order_and_is_auto_assigned(service: MisServi
     assert order["status"] == "已开单"
     assert order["workflow_status"] == "工程师待检测"
     assert order["assigned_to"] == "engineer"
-    assert order["order_no"] == f"RO-{order['repair_order_id']}"
+    assert_order_no(order["order_no"], "WX")
 
     visible = service.search_machines(user(Role.engineer), "862222222222226")
     assert [row["machine_id"] for row in visible] == [order["machine_id"]]
@@ -273,8 +278,23 @@ def test_repair_order_creation_can_reuse_customer_and_machine(service: MisServic
 
     assert order["machine_id"] == machine["machine_id"]
     assert order["customer_id"] == customer_id
-    assert order["order_no"] == f"RO-{order['repair_order_id']}"
+    assert_order_no(order["order_no"], "WX")
     assert len(service.search_machines(user(Role.frontdesk), "862222222222227")) == 1
+
+
+def test_rework_repair_order_uses_rework_order_no_prefix(service: MisService) -> None:
+    order = service.create_repair_order(
+        user(Role.frontdesk),
+        RepairOrderInput(
+            machine=MachineInput(imei="862222222222247", model="iPhone 15 Pro"),
+            customer=CustomerInput(name="返修客户"),
+            order_type="返修",
+            fault_description="上次维修后返修检测",
+        ),
+    )
+
+    assert_order_no(order["order_no"], "FX")
+    assert order["service_type"] == "返修"
 
 
 def test_repair_order_creation_validation_errors(service: MisService) -> None:
@@ -579,6 +599,7 @@ def test_recycle_inventory_sale_and_payment(service: MisService) -> None:
         ),
     )
     recycle_id = recycle["recycle_order_id"]
+    assert_order_no(recycle["order_no"], "ZB")
     service.quote_recycle_order(user(Role.staff), recycle_id, RecycleQuoteInput(inspection_result="功能正常", quoted_amount=3200))
     inventory = service.stock_in_recycle_order(user(), recycle_id, StockInInput(pay_amount=3200, sale_price=3880))
     assert inventory["status"] == "可销售"

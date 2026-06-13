@@ -517,6 +517,7 @@ CREATE TABLE IF NOT EXISTS repair_skus (
 
 CREATE TABLE IF NOT EXISTS recycle_orders (
     recycle_order_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_no TEXT,
     machine_id INTEGER NOT NULL,
     customer_id INTEGER,
     status TEXT NOT NULL,
@@ -704,6 +705,9 @@ def ensure_columns(conn: sqlite3.Connection) -> None:
             ("delivered_at", "TEXT NOT NULL DEFAULT ''"),
             ("engineer_closed_at", "TEXT"),
             ("engineer_close_remark", "TEXT NOT NULL DEFAULT ''"),
+        ],
+        "recycle_orders": [
+            ("order_no", "TEXT"),
         ],
         "repair_items": [
             ("sku_id", "INTEGER"),

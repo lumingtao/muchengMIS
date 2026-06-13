@@ -336,6 +336,8 @@ class MisService:
 
     def create_repair_order(self, user: User, data: RepairOrderInput) -> dict[str, Any]:
         self._allowed(user, "repair_order:create")
+        order_type = self._repair_order_type(data)
+        order_prefix = "FX" if order_type == "返修" else "WX"
         repair_items: list[dict[str, Any]] = []
         for item in data.repair_items:
             sku = self.repo.get_repair_sku(item.sku_id) if item.sku_id else None
@@ -377,6 +379,8 @@ class MisService:
             user.username,
             workflow_status,
             assigned_to,
+            order_prefix,
+            order_type,
         )
         self.repo.update_machine_status(machine_id, MachineStatus.diagnosing.value, BusinessLine.repair.value)
         self.repo.add_machine_event(machine_id, "repair", "维修开单", data.fault_description, user.username, "repair", order_id)
@@ -420,6 +424,18 @@ class MisService:
         self._log_success(user, "repair_order:create", "repair_order", str(order_id), customer_id=customer_id, request_summary=data.fault_description)
         self.conn.commit()
         return self._repair_order_response(order_id)
+
+    def _repair_order_type(self, data: RepairOrderInput) -> str:
+        explicit = data.order_type.strip()
+        haystack = "\n".join(
+            [
+                explicit,
+                data.fault_description,
+                data.remark,
+                *[note.content for note in data.notes],
+            ]
+        )
+        return "返修" if "返修" in haystack else "维修"
 
     def list_repair_skus(self, user: User, model: str = "", keyword: str = "") -> list[dict[str, Any]]:
         self._allowed(user, "repair_sku:read")

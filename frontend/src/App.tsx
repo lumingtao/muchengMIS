@@ -187,6 +187,16 @@ function nowText() {
   return new Date().toLocaleString("zh-CN", { hour12: false });
 }
 
+function normalizeDateTimeInput(value: string) {
+  if (!value) return "";
+  const text = value.replace("T", " ");
+  return text.length === 16 ? `${text}:00` : text;
+}
+
+function compareText(left: unknown, right: unknown) {
+  return String(left || "").localeCompare(String(right || ""), "zh-CN", { numeric: true, sensitivity: "base" });
+}
+
 function splitOptionText(value: unknown) {
   return String(value || "").split(/[\n,，、]/).map(item => item.trim()).filter(Boolean);
 }
@@ -197,6 +207,24 @@ function displayValue(row: AnyRecord, key: string) {
   if (moneyKeys.has(key)) return formatMoney(raw);
   if (Array.isArray(raw)) return raw.join("、") || "-";
   return String(raw);
+}
+
+function csvCell(value: unknown) {
+  const text = String(value ?? "").replace(/\r?\n/g, " ");
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+function downloadCsv(filename: string, headers: string[], rows: unknown[][]) {
+  const content = "\ufeff" + [headers.map(csvCell).join(","), ...rows.map(row => row.map(csvCell).join(","))].join("\n");
+  const blob = new Blob([content], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 
@@ -283,7 +311,7 @@ function App() {
           ))}
         </nav>
         <div className="sidebar-footer">
-          <button type="button" className="plain-nav-button"><HelpCircle size={20} />帮助中心</button>
+          <button type="button" className="plain-nav-button" onClick={() => notify("帮助中心已接入当前业务说明文档，可先查看 README 和 BUSINESS_FLOW。")}><HelpCircle size={20} />帮助中心</button>
           <button type="button" className="plain-nav-button" onClick={logout}><LogOut size={20} />退出登录</button>
         </div>
       </aside>
@@ -295,8 +323,8 @@ function App() {
             <button type="button" onClick={() => setView("sales")}>快速卖机</button>
           </div>
           <div className="top-icons">
-            <button type="button" className="icon-button"><Bell size={23} /><span /></button>
-            <button type="button" className="icon-button"><Mail size={23} /></button>
+            <button type="button" className="icon-button" aria-label="查看待处理提醒" onClick={() => setView("dashboard")}><Bell size={23} /><span /></button>
+            <button type="button" className="icon-button" aria-label="查看工作消息" onClick={() => { setView("dashboard"); notify("工作消息在首页右侧消息区查看。"); }}><Mail size={23} /></button>
           </div>
           <div className="admin-chip">
             <div><strong>{String(profile.data?.username || user) === "admin" ? "管理员" : String(profile.data?.username || user)}</strong><span>{String(profile.data?.role || "高级维修顾问")}</span></div>
@@ -358,7 +386,7 @@ function ViewRouter({
 }) {
   if (view === "dashboard") return <DashboardHome notify={notify} setView={setView} openOrderDetail={(row) => openOrderDetail(row, "dashboard")} />;
   if (view === "orderDetail") return <OrderDetailPage orderId={selectedRepairOrderId} mode={orderMode} notify={notify} onBack={onLeaveOrderDetail} onCreated={(id) => { setSelectedRepairOrderId(id); setOrderMode("view"); }} onModeChange={setOrderMode} />;
-  if (view === "repairPool") return <RepairPool notify={notify} setView={setView} openNewOrder={() => openNewOrder("repairPool")} openOrderDetail={(row, mode) => openOrderDetail(row, "repairPool", mode)} />;
+  if (view === "repairPool") return <RepairPool notify={notify} openNewOrder={() => openNewOrder("repairPool")} openOrderDetail={(row, mode) => openOrderDetail(row, "repairPool", mode)} />;
   if (view === "recyclePool") return <RecyclePool openModal={openModal} />;
   if (view === "warehouse") return <WarehousePage notify={notify} />;
   if (view === "inventory") return <InventoryPage />;
@@ -528,32 +556,104 @@ function WorkMessages({ financeCount, requestCount }: { financeCount: number; re
   return <section className="side-card message-card"><div className="side-card-title"><Mail size={26} /><h3>工作消息</h3><button type="button">全部已读</button></div>{rows.map(row => <div className="message-item" key={row.title}><div className={`message-icon ${row.kind}`}>{row.icon}</div><div><div><b>{row.title}</b><span>{row.time}</span></div><p>{row.note}</p></div></div>)}</section>;
 }
 
-function RepairPool({ notify, openOrderDetail, openNewOrder }: { notify: (message: string, error?: boolean) => void; openOrderDetail: (row: AnyRecord, mode?: OrderMode) => void; openNewOrder?: () => void; setView?: (view: ViewKey) => void }) {
+function RepairPool({ notify, openOrderDetail, openNewOrder }: { notify: (message: string, error?: boolean) => void; openOrderDetail: (row: AnyRecord, mode?: OrderMode) => void; openNewOrder?: () => void }) {
   const [keyword, setKeyword] = useState("");
   const [status, setStatus] = useState("全部状态");
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [customerType, setCustomerType] = useState("全部客户");
+  const [engineer, setEngineer] = useState("");
+  const [timeRange, setTimeRange] = useState<[string, string]>(["", ""]);
+  const [page, setPage] = useState(1);
+  const [sort, setSort] = useState<SortState>({ key: "updated_at", direction: "desc" });
+  const pageSize = 15;
   const query = useQuery({ queryKey: ["repair-workbench"], queryFn: () => api<AnyRecord>("/api/repair-workbench") });
   const orders = ((query.data?.orders as AnyRecord[] | undefined) || []);
-  const rows = useMemo(() => {
+  const filteredRows = useMemo(() => {
     const q = keyword.trim().toLowerCase();
+    const engineerNeedle = engineer.trim().toLowerCase();
+    const [startAt, endAt] = timeRange.map(normalizeDateTimeInput);
     return orders.filter(row => {
       const haystack = [row.order_no, row.machine_no, row.imei, row.serial, row.model, row.customer_name, row.phone, row.customer_phone, row.assigned_to].join(" ").toLowerCase();
-      return (!q || haystack.includes(q)) && (status === "全部状态" || normalizeRepairStatus(row.status) === status);
+      const orderTime = String(row.updated_at || row.created_at || "");
+      return (!q || haystack.includes(q))
+        && (status === "全部状态" || normalizeRepairStatus(row.status) === status)
+        && (customerType === "全部客户" || String(row.customer_type || "").includes(customerType))
+        && (!engineerNeedle || String(row.assigned_to || row.engineer_user || "").toLowerCase().includes(engineerNeedle))
+        && (!startAt || orderTime >= startAt)
+        && (!endAt || orderTime <= endAt);
     });
-  }, [keyword, orders, status]);
+  }, [customerType, engineer, keyword, orders, status, timeRange]);
+  const rows = useMemo(() => {
+    const direction = sort.direction === "asc" ? 1 : -1;
+    return [...filteredRows].sort((left, right) => direction * comparePoolOrder(left, right, sort.key));
+  }, [filteredRows, sort]);
   const repairing = orders.filter(row => normalizeRepairStatus(row.status) === "维修中").length;
   const paidWaiting = orders.filter(row => normalizeRepairStatus(row.status) === "待支付").length;
   const done = orders.filter(row => normalizeRepairStatus(row.status) === "已完结").length;
-  const visibleRows = rows.slice(0, 15);
+  const pageCount = Math.max(1, Math.ceil(rows.length / pageSize));
+  const visibleRows = rows.slice((page - 1) * pageSize, page * pageSize);
+
+  useEffect(() => {
+    setPage(1);
+  }, [customerType, engineer, keyword, status, timeRange]);
+
+  function clearAdvancedFilters() {
+    setCustomerType("全部客户");
+    setEngineer("");
+    setTimeRange(["", ""]);
+  }
+
+  function exportRows() {
+    if (!rows.length) {
+      notify("当前筛选结果为空，无法导出。", true);
+      return;
+    }
+    downloadCsv(
+      `维修工单-${new Date().toISOString().slice(0, 10)}.csv`,
+      ["订单编号", "设备型号", "客户", "联系方式", "状态", "技术员", "最后更新", "预估金额"],
+      rows.map(row => [
+        row.order_no || row.repair_order_id || "",
+        row.model || "",
+        row.customer_name || "",
+        row.phone || row.customer_phone || "",
+        row.status || "",
+        row.assigned_to || row.engineer_user || "",
+        row.updated_at || row.created_at || "",
+        row.quoted_amount || row.charge_amount || row.amount || 0,
+      ]),
+    );
+    notify(`已导出 ${rows.length} 条维修工单`);
+  }
+
+  function pageNumbers() {
+    const pages = new Set<number>([1, pageCount, page - 1, page, page + 1].filter(value => value >= 1 && value <= pageCount));
+    return Array.from(pages).sort((a, b) => a - b);
+  }
+
+  function changeSort(key: string) {
+    setSort(prev => prev.key === key ? { key, direction: prev.direction === "asc" ? "desc" : "asc" } : { key, direction: "asc" });
+  }
+
+  function sortHeader(key: string, label: string, className = "") {
+    const active = sort.key === key;
+    return (
+      <th className={className}>
+        <button type="button" className={'pool-sort-button ' + (active ? 'active' : '')} onClick={() => changeSort(key)} aria-sort={active ? (sort.direction === "asc" ? "ascending" : "descending") : "none"}>
+          {label}<span>{active ? (sort.direction === "asc" ? "↑" : "↓") : "↕"}</span>
+        </button>
+      </th>
+    );
+  }
 
   if (query.isLoading || query.error) return <QueryState loading={query.isLoading} error={query.error} />;
 
   return (
     <div className="repair-pool-page">
       <header className="pool-topbar">
-        <div className="pool-global-search"><Search size={23} /><Input variant="borderless" placeholder="全局搜索 (订单号, 配件, IMEI)..." /></div>
+        <div className="pool-global-search"><Search size={23} /><Input variant="borderless" value={keyword} onChange={event => setKeyword(event.target.value)} placeholder="全局搜索 (订单号, 配件, IMEI)..." allowClear /></div>
         <div className="pool-top-actions">
-          <button type="button" className="pool-icon-button"><Bell size={23} /><span /></button>
-          <button type="button" className="pool-icon-button"><HelpCircle size={23} /></button>
+          <button type="button" className="pool-icon-button" aria-label="查看待支付工单" onClick={() => setStatus("待支付")}><Bell size={23} /><span /></button>
+          <button type="button" className="pool-icon-button" aria-label="查看订单中心帮助" onClick={() => notify("订单中心支持搜索、状态筛选、高级筛选、导出、新建、查看、编辑和取消工单。")}><HelpCircle size={23} /></button>
           <div className="pool-user"><div><b>陈经理</b><span>管理员</span></div><div className="pool-avatar"><UserRound size={22} /></div></div>
         </div>
       </header>
@@ -572,34 +672,47 @@ function RepairPool({ notify, openOrderDetail, openNewOrder }: { notify: (messag
           <div className="pool-filter-left">
             <Input className="pool-search-input" prefix={<Search size={20} />} value={keyword} onChange={e => setKeyword(e.target.value)} placeholder="搜索订单号、IMEI 或客户手机..." allowClear />
             <Select className="pool-status-select" value={status} onChange={setStatus} options={["全部状态", "维修中", "待支付", "已完结", "已取消"].map(value => ({ value, label: value }))} />
-            <AppButton className="pool-ghost-button" onClick={() => notify("高级筛选已按设计预留，当前可用搜索和状态筛选。")}><Filter size={20} />高级筛选</AppButton>
+            <AppButton className="pool-ghost-button" onClick={() => setShowAdvanced(value => !value)}><Filter size={20} />高级筛选</AppButton>
           </div>
           <div className="pool-filter-right">
-            <AppButton className="pool-ghost-button" onClick={() => notify("导出数据入口已预留。")}><Download size={20} />导出数据</AppButton>
+            <AppButton className="pool-ghost-button" onClick={exportRows}><Download size={20} />导出数据</AppButton>
             <AppButton className="pool-primary-button" type="primary" onClick={() => openNewOrder?.()}><Plus size={22} />新建工单</AppButton>
           </div>
         </section>
+        {showAdvanced && (
+          <section className="pool-advanced-panel">
+            <Select value={customerType} onChange={setCustomerType} options={["全部客户", "个人客户", "同行客户", "企业客户", "VIP客户", "零售客户"].map(value => ({ value, label: value }))} />
+            <Input value={engineer} onChange={event => setEngineer(event.target.value)} placeholder="技术员/负责人" allowClear />
+            <div className="pool-time-range">
+              <Input type="datetime-local" value={timeRange[0]} onChange={event => setTimeRange([event.target.value, timeRange[1]])} aria-label="开始时间" />
+              <span>至</span>
+              <Input type="datetime-local" value={timeRange[1]} onChange={event => setTimeRange([timeRange[0], event.target.value])} aria-label="结束时间" />
+            </div>
+            <AppButton onClick={clearAdvancedFilters}>清空高级筛选</AppButton>
+          </section>
+        )}
 
         <section className="pool-table-card">
           <div className="pool-table-scroll">
             <table className="pool-table">
-              <thead><tr><th>订单编号</th><th>设备信息</th><th>客户</th><th>状态</th><th>技术员</th><th>最后更新</th><th className="align-right">预估金额</th><th className="align-center">操作</th></tr></thead>
+              <thead><tr>{sortHeader("order_no", "订单编号")}{sortHeader("model", "设备信息")}{sortHeader("customer_name", "客户")}{sortHeader("status", "状态")}{sortHeader("assigned_to", "技术员")}{sortHeader("updated_at", "最后更新")}{sortHeader("amount", "预估金额", "align-right")}<th className="align-center">操作</th></tr></thead>
               <tbody>
-                {visibleRows.map((row, index) => <PoolOrderRow row={row} key={String(row.repair_order_id || row.order_no || index)} onOpen={openOrderDetail} notify={notify} />)}
+                {visibleRows.map((row, index) => <PoolOrderRow row={row} key={String(row.repair_order_id || row.order_no || index)} onOpen={openOrderDetail} />)}
                 {!visibleRows.length && <tr><td colSpan={8}><div className="pool-empty">没有找到匹配的维修工单</div></td></tr>}
               </tbody>
             </table>
           </div>
           <div className="pool-pagination">
-            <span>显示第 <b>{visibleRows.length ? 1 : 0} - {visibleRows.length}</b> 条，共 <b>{rows.length || orders.length || 0}</b> 条工单</span>
+            <span>显示第 <b>{rows.length ? (page - 1) * pageSize + 1 : 0} - {Math.min(page * pageSize, rows.length)}</b> 条，共 <b>{rows.length || orders.length || 0}</b> 条工单</span>
             <div>
-              <button type="button" disabled><ChevronLeft size={22} /></button>
-              <button type="button" className="active">1</button>
-              <button type="button">2</button>
-              <button type="button">3</button>
-              <em>...</em>
-              <button type="button">321</button>
-              <button type="button"><ChevronRight size={22} /></button>
+              <button type="button" disabled={page <= 1} onClick={() => setPage(value => Math.max(1, value - 1))}><ChevronLeft size={22} /></button>
+              {pageNumbers().map((pageNo, index, pages) => (
+                <span className="pool-page-segment" key={pageNo}>
+                  {index > 0 && pageNo - pages[index - 1] > 1 && <em>...</em>}
+                  <button type="button" className={pageNo === page ? "active" : ""} onClick={() => setPage(pageNo)}>{pageNo}</button>
+                </span>
+              ))}
+              <button type="button" disabled={page >= pageCount} onClick={() => setPage(value => Math.min(pageCount, value + 1))}><ChevronRight size={22} /></button>
             </div>
           </div>
         </section>
@@ -612,7 +725,18 @@ function PoolStat({ icon, tone, label, value, note }: { icon: ReactNode; tone: "
   return <div className="pool-stat-card"><div className="pool-stat-top"><div className={`pool-stat-icon ${tone}`}>{icon}</div><span className={tone}>{note}</span></div><p>{label}</p><strong>{value.toLocaleString("zh-CN")}</strong></div>;
 }
 
-function PoolOrderRow({ row, onOpen, notify }: { row: AnyRecord; onOpen: (row: AnyRecord, mode?: OrderMode) => void; notify: (message: string, error?: boolean) => void }) {
+function comparePoolOrder(left: AnyRecord, right: AnyRecord, key: string) {
+  if (key === "amount") {
+    return Number(left.quoted_amount || left.charge_amount || left.amount || 0) - Number(right.quoted_amount || right.charge_amount || right.amount || 0);
+  }
+  if (key === "status") return compareText(normalizeRepairStatus(left.status), normalizeRepairStatus(right.status));
+  if (key === "assigned_to") return compareText(left.assigned_to || left.engineer_user, right.assigned_to || right.engineer_user);
+  if (key === "updated_at") return compareText(left.updated_at || left.created_at, right.updated_at || right.created_at);
+  if (key === "order_no") return compareText(left.order_no || left.repair_order_id, right.order_no || right.repair_order_id);
+  return compareText(left[key], right[key]);
+}
+
+function PoolOrderRow({ row, onOpen }: { row: AnyRecord; onOpen: (row: AnyRecord, mode?: OrderMode) => void }) {
   const status = normalizeRepairStatus(row.status);
   const phone = String(row.phone || row.customer_phone || "13800000000");
   const imei = String(row.imei || row.serial || row.machine_no || "");
@@ -625,7 +749,7 @@ function PoolOrderRow({ row, onOpen, notify }: { row: AnyRecord; onOpen: (row: A
       <td>{String(row.assigned_to || row.engineer_user || "--")}</td>
       <td className="muted">{String(row.updated_at || row.created_at || "--")}</td>
       <td className="align-right"><b>{poolMoney(row.quoted_amount || row.charge_amount || row.amount || 0)}</b></td>
-      <td className="align-center"><div className="pool-row-actions"><button type="button" onClick={() => onOpen(row, "view")}>详情</button><button type="button" onClick={() => onOpen(row, "edit")}>编辑</button>{status === "待支付" && <button type="button" className="danger" onClick={() => notify("取消入口已预留。")}>取消</button>}</div></td>
+      <td className="align-center"><div className="pool-row-actions"><button type="button" onClick={() => onOpen(row, "view")}>详情</button><button type="button" onClick={() => onOpen(row, "edit")}>编辑</button>{status === "待支付" && <button type="button" className="danger" onClick={() => onOpen(row, "cancel")}>取消</button>}</div></td>
     </tr>
   );
 }
@@ -1339,8 +1463,8 @@ function OrderDetailPage({
     <div className={`order-detail-page order-mode-${mode}`}>
       <header className="order-detail-topbar">
         <div className="order-detail-title"><button type="button" className="back-button" onClick={onBack}><ArrowLeft size={24} /></button><h1>{mode === "new" ? "新建工单" : mode === "edit" ? "编辑工单" : mode === "cancel" ? "取消工单" : "工单详情"}</h1></div>
-        <div className="order-detail-search"><Search size={22} /><Input allowClear placeholder="?????IMEI???..." /></div>
-        <div className="order-detail-icons"><button type="button" className="icon-button"><Bell size={23} /><span /></button><button type="button" className="icon-button"><UserRound size={23} /></button></div>
+        <div className="order-detail-search"><Search size={22} /><Input allowClear placeholder="搜索当前工单信息、IMEI 或客户..." onPressEnter={() => notify("当前详情页已展示选中工单，跨工单搜索请返回订单中心使用。")} /></div>
+        <div className="order-detail-icons"><button type="button" className="icon-button" aria-label="查看工单提醒" onClick={() => notify(statusText === "待支付" ? "该工单需要处理收款或财务确认。" : "当前工单暂无新的系统提醒。")}><Bell size={23} /><span /></button><button type="button" className="icon-button" aria-label="查看当前账号" onClick={() => notify(`当前账号：${currentOperator}`)}><UserRound size={23} /></button></div>
       </header>
 
       <section className="order-hero">
@@ -1432,7 +1556,7 @@ function OrderDetailPage({
       return displayValue(row, key);
     }}
     isStatusKey={() => false}
-    actions={{ title: "操作", render: (_row, index) => mode === "new" ? <AppButton className="table-link danger" type="link" danger onClick={() => removeNewRepairItem(index)}>删除</AppButton> : mode === "edit" ? <AppButton className="table-link danger" type="link" danger>删除</AppButton> : "-" }}
+    actions={{ title: "操作", render: (_row, index) => mode === "new" ? <AppButton className="table-link danger" type="link" danger onClick={() => removeNewRepairItem(index)}>删除</AppButton> : "-" }}
   />
 </div>
             <div className="order-fee-summary stacked-fee-summary"><span>费用总计 <b>{poolMoney(quoted)}</b></span><span>折扣优惠 <b className="danger-text">- {poolMoney(0)}</b></span><span>应收总额 <b>{poolMoney(quoted)}</b></span>{mode === "edit" && <OrderField label="修改报价" value={form.quoted_amount ?? order.quoted_amount} editable type="number" onChange={v => setField("quoted_amount", v)} />}</div>
@@ -2031,7 +2155,7 @@ function EditableInspectionCard({ title, inspections, note, compact, mode = "vie
         <div className="inspection-actions">
           {!editable && <AppButton className="ghost-mini-button" onClick={onStart}>{saved ? "修改检测结果" : "开始检测"}</AppButton>}
           {editable && stage && <AppButton className="mini-add-button" onClick={onSave} disabled={uploading}>保存检测</AppButton>}
-          {editing && <AppButton className="ghost-mini-button" onClick={onCancel}>??</AppButton>}
+          {editing && <AppButton className="ghost-mini-button" onClick={onCancel}>取消</AppButton>}
         </div>
       </div>
       {visibleInspections.length ? <div className="inspection-grid">{visibleInspections.map(item => <button type="button" className={state[item] ? "abnormal" : ""} key={item} disabled={!editable} onClick={() => onToggle?.(item)}><b>{item}</b><span>{state[item] ? "异常" : "正常"}</span></button>)}</div> : <div className="inspection-empty">{saved ? "无异常项目" : "无异常功能"}</div>}

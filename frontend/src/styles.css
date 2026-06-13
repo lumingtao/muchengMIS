@@ -2373,6 +2373,40 @@ tr.clickable { cursor: pointer; }
   box-shadow: 0 2px 8px rgba(15, 23, 42, .05);
 }
 
+.pool-advanced-panel {
+  display: grid;
+  grid-template-columns: minmax(150px, 180px) minmax(180px, 220px) minmax(360px, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  margin-top: 12px;
+  padding: 16px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, .05);
+}
+
+.pool-advanced-panel .ant-select-selector,
+.pool-advanced-panel .ant-input,
+.pool-advanced-panel .ant-input-affix-wrapper {
+  min-height: 40px;
+  border-color: #e2e8f0;
+  border-radius: 8px;
+}
+
+.pool-time-range {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+}
+
+.pool-time-range span {
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 800;
+}
+
 .pool-filter-left,
 .pool-filter-right {
   gap: 12px;
@@ -2554,6 +2588,37 @@ tr.clickable { cursor: pointer; }
   text-transform: uppercase;
 }
 
+.pool-sort-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: inherit;
+  gap: 5px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+
+.pool-sort-button:hover,
+.pool-sort-button.active {
+  color: #003d9b;
+  background: transparent;
+}
+
+.pool-sort-button span {
+  color: #94a3b8;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.pool-sort-button.active span {
+  color: #003d9b;
+}
+
 .pool-table td {
   padding: 12px 24px;
   border-bottom: 1px solid #e2e8f0;
@@ -2686,6 +2751,12 @@ tr.clickable { cursor: pointer; }
 }
 
 .pool-pagination > div {
+  gap: 8px;
+}
+
+.pool-page-segment {
+  display: inline-flex;
+  align-items: center;
   gap: 8px;
 }
 
@@ -2859,8 +2930,13 @@ tr.clickable { cursor: pointer; }
   .pool-filter-right { display: grid; }
   .pool-filter-left,
   .pool-filter-right { grid-template-columns: 1fr; }
+  .pool-advanced-panel { grid-template-columns: 1fr; }
+  .pool-time-range { grid-template-columns: 1fr; }
+  .pool-time-range span { display: none; }
   .pool-search-field,
-  .pool-select { min-width: 0; width: 100%; }
+  .pool-select,
+  .pool-search-input,
+  .pool-status-select { min-width: 0; width: 100%; }
   .pool-pagination { display: grid; }
   .pool-pagination > div { justify-content: flex-start; flex-wrap: wrap; }
   .order-detail-shell main { padding: 0; }
