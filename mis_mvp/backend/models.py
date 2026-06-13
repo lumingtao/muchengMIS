@@ -132,6 +132,17 @@ class Machine(BaseModel):
     remark: str = ""
 
 
+class DeviceModelInput(BaseModel):
+    device_model_id: int | None = None
+    brand: str = "Apple"
+    model_name: str = Field(min_length=1)
+    colors: list[str] = []
+    capacities: list[str] = []
+    enabled: bool = True
+    sort_order: int = 100
+    remark: str = ""
+
+
 class RepairOrderInput(BaseModel):
     machine_id: int | None = None
     machine: MachineInput | None = None
@@ -139,6 +150,29 @@ class RepairOrderInput(BaseModel):
     customer: CustomerInput | None = None
     fault_description: str = ""
     remark: str = ""
+    repair_items: list["RepairItemInput"] = []
+    inspections: list["RepairInspectionInput"] = []
+    notes: list["RepairOrderNoteInput"] = []
+    note_logs: list["RepairOrderLogInput"] = []
+
+
+class RepairOrderNoteInput(BaseModel):
+    note_type: str = "内部备注"
+    content: str = Field(min_length=1)
+
+
+class RepairOrderNoteUpdateInput(BaseModel):
+    note_type: str = "内部备注"
+    content: str = Field(min_length=1)
+
+
+class RepairOrderNoteDeleteInput(BaseModel):
+    reason: str = ""
+
+
+class RepairOrderLogInput(BaseModel):
+    title: str = Field(min_length=1)
+    detail: str = ""
 
 
 class RepairQuoteInput(BaseModel):
@@ -166,6 +200,7 @@ class RepairEngineerCloseInput(BaseModel):
 
 
 class RepairSkuInput(BaseModel):
+    model: str = ""
     sku_code: str = Field(min_length=1)
     fault_name: str = Field(min_length=1)
     solution_name: str = Field(min_length=1)
@@ -189,6 +224,17 @@ class RepairItemInput(BaseModel):
     remark: str = ""
 
 
+class RepairInspectionItemInput(BaseModel):
+    item: str = Field(min_length=1)
+    abnormal: bool = False
+
+
+class RepairInspectionInput(BaseModel):
+    stage: str = Field(min_length=1)
+    items: list[RepairInspectionItemInput] = []
+    note: str = ""
+
+
 class RepairDeliverInput(BaseModel):
     delivery_check: str = Field(min_length=1)
     remark: str = ""
@@ -197,6 +243,10 @@ class RepairDeliverInput(BaseModel):
 class RepairOrderStatusInput(BaseModel):
     status: OrderStatus
     remark: str = ""
+
+
+class RepairRemarkInput(BaseModel):
+    remark: str = Field(min_length=1)
 
 
 class RecycleOrderInput(BaseModel):

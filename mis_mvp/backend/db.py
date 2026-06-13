@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -124,6 +125,20 @@ CREATE TABLE IF NOT EXISTS machines (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     closed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS device_models (
+    device_model_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    brand TEXT NOT NULL DEFAULT 'Apple',
+    model_name TEXT NOT NULL,
+    colors_json TEXT NOT NULL DEFAULT '[]',
+    capacities_json TEXT NOT NULL DEFAULT '[]',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    sort_order INTEGER NOT NULL DEFAULT 100,
+    remark TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(brand, model_name)
 );
 
 CREATE TABLE IF NOT EXISTS repair_orders (
@@ -470,6 +485,7 @@ CREATE TABLE IF NOT EXISTS receivables (
 
 CREATE TABLE IF NOT EXISTS repair_skus (
     sku_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    model TEXT NOT NULL DEFAULT '',
     sku_code TEXT NOT NULL UNIQUE,
     fault_name TEXT NOT NULL,
     solution_name TEXT NOT NULL,
@@ -582,6 +598,35 @@ CREATE TABLE IF NOT EXISTS repair_order_photos (
     uploaded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (repair_order_id) REFERENCES repair_orders(repair_order_id)
 );
+
+CREATE TABLE IF NOT EXISTS repair_order_inspections (
+    inspection_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    repair_order_id INTEGER NOT NULL,
+    stage TEXT NOT NULL,
+    item TEXT NOT NULL,
+    abnormal INTEGER NOT NULL DEFAULT 0,
+    note TEXT NOT NULL DEFAULT '',
+    updated_by TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (repair_order_id, stage, item),
+    FOREIGN KEY (repair_order_id) REFERENCES repair_orders(repair_order_id)
+);
+
+CREATE TABLE IF NOT EXISTS repair_order_notes (
+    note_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    repair_order_id INTEGER NOT NULL,
+    note_type TEXT NOT NULL DEFAULT '内部备注',
+    content TEXT NOT NULL,
+    created_by TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_by TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT '',
+    deleted_by TEXT NOT NULL DEFAULT '',
+    deleted_at TEXT NOT NULL DEFAULT '',
+    deleted_reason TEXT NOT NULL DEFAULT '',
+    is_deleted INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (repair_order_id) REFERENCES repair_orders(repair_order_id)
+);
 """
 
 
@@ -598,6 +643,7 @@ def migrate(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     ensure_columns(conn)
     seed_users(conn)
+    seed_device_models(conn)
     seed_repair_skus(conn)
     backfill_material_units(conn)
     conn.commit()
@@ -634,6 +680,17 @@ def ensure_columns(conn: sqlite3.Connection) -> None:
         ],
         "repair_items": [
             ("sku_id", "INTEGER"),
+        ],
+        "repair_skus": [
+            ("model", "TEXT NOT NULL DEFAULT ''"),
+        ],
+        "device_models": [
+            ("brand", "TEXT NOT NULL DEFAULT 'Apple'"),
+            ("colors_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ("capacities_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ("enabled", "INTEGER NOT NULL DEFAULT 1"),
+            ("sort_order", "INTEGER NOT NULL DEFAULT 100"),
+            ("remark", "TEXT NOT NULL DEFAULT ''"),
         ],
         "payments": [
             ("account", "TEXT NOT NULL DEFAULT ''"),
@@ -701,6 +758,52 @@ def seed_users(conn: sqlite3.Connection) -> None:
         )
 
 
+def seed_device_models(conn: sqlite3.Connection) -> None:
+    apple_common_colors = ["黑色", "白色", "蓝色", "粉色", "绿色", "黄色", "紫色", "红色", "银色", "金色", "深空灰", "午夜色", "星光色"]
+    titanium_colors = ["原色钛金属", "黑色钛金属", "白色钛金属", "蓝色钛金属", "沙漠色钛金属"]
+    models = [
+        ("Apple", "iPhone 16 Pro Max", titanium_colors, ["256GB", "512GB", "1TB"], 10),
+        ("Apple", "iPhone 16 Pro", titanium_colors, ["128GB", "256GB", "512GB", "1TB"], 11),
+        ("Apple", "iPhone 16 Plus", ["黑色", "白色", "粉色", "青色", "深群青色"], ["128GB", "256GB", "512GB"], 12),
+        ("Apple", "iPhone 16", ["黑色", "白色", "粉色", "青色", "深群青色"], ["128GB", "256GB", "512GB"], 13),
+        ("Apple", "iPhone 15 Pro Max", titanium_colors[:4], ["256GB", "512GB", "1TB"], 20),
+        ("Apple", "iPhone 15 Pro", titanium_colors[:4], ["128GB", "256GB", "512GB", "1TB"], 21),
+        ("Apple", "iPhone 15 Plus", ["黑色", "蓝色", "绿色", "黄色", "粉色"], ["128GB", "256GB", "512GB"], 22),
+        ("Apple", "iPhone 15", ["黑色", "蓝色", "绿色", "黄色", "粉色"], ["128GB", "256GB", "512GB"], 23),
+        ("Apple", "iPhone 14 Pro Max", ["深空黑色", "银色", "金色", "暗紫色"], ["128GB", "256GB", "512GB", "1TB"], 30),
+        ("Apple", "iPhone 14 Pro", ["深空黑色", "银色", "金色", "暗紫色"], ["128GB", "256GB", "512GB", "1TB"], 31),
+        ("Apple", "iPhone 14 Plus", ["午夜色", "星光色", "蓝色", "紫色", "黄色", "红色"], ["128GB", "256GB", "512GB"], 32),
+        ("Apple", "iPhone 14", ["午夜色", "星光色", "蓝色", "紫色", "黄色", "红色"], ["128GB", "256GB", "512GB"], 33),
+        ("Apple", "iPhone 13 Pro Max", ["石墨色", "金色", "银色", "远峰蓝色", "苍岭绿色"], ["128GB", "256GB", "512GB", "1TB"], 40),
+        ("Apple", "iPhone 13 Pro", ["石墨色", "金色", "银色", "远峰蓝色", "苍岭绿色"], ["128GB", "256GB", "512GB", "1TB"], 41),
+        ("Apple", "iPhone 13", ["星光色", "午夜色", "蓝色", "粉色", "绿色", "红色"], ["128GB", "256GB", "512GB"], 42),
+        ("Apple", "iPhone 12", apple_common_colors, ["64GB", "128GB", "256GB"], 50),
+        ("Apple", "iPhone 11", ["黑色", "白色", "绿色", "黄色", "紫色", "红色"], ["64GB", "128GB", "256GB"], 60),
+        ("Apple", "iPad Pro 12.9", ["银色", "深空灰"], ["128GB", "256GB", "512GB", "1TB", "2TB"], 70),
+        ("Apple", "iPad Pro 11", ["银色", "深空灰"], ["128GB", "256GB", "512GB", "1TB", "2TB"], 71),
+        ("Apple", "iPad Air", ["深空灰", "星光色", "粉色", "紫色", "蓝色"], ["64GB", "256GB", "128GB", "512GB"], 72),
+        ("Apple", "iPad", ["银色", "蓝色", "粉色", "黄色"], ["64GB", "256GB"], 73),
+        ("Huawei", "Mate 30", ["亮黑色", "星河银", "翡冷翠", "罗兰紫"], ["128GB", "256GB"], 100),
+        ("OPPO", "OPPO 常见机型", ["黑色", "白色", "蓝色", "绿色", "金色"], ["64GB", "128GB", "256GB", "512GB"], 110),
+    ]
+    for brand, model_name, colors, capacities, sort_order in models:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO device_models
+            (brand, model_name, colors_json, capacities_json, enabled, sort_order, remark)
+            VALUES (?, ?, ?, ?, 1, ?, ?)
+            """,
+            (
+                brand,
+                model_name,
+                json.dumps(colors, ensure_ascii=False),
+                json.dumps(capacities, ensure_ascii=False),
+                sort_order,
+                "系统预置",
+            ),
+        )
+
+
 def seed_repair_skus(conn: sqlite3.Connection) -> None:
     skus = [
         ("SCREEN-OLED", "屏幕损坏", "更换 OLED 屏幕总成", 320, 580, "常见碎屏维修"),
@@ -713,8 +816,8 @@ def seed_repair_skus(conn: sqlite3.Connection) -> None:
         conn.execute(
             """
             INSERT OR IGNORE INTO repair_skus
-            (sku_code, fault_name, solution_name, cost_amount, charge_amount, enabled, remark)
-            VALUES (?, ?, ?, ?, ?, 1, ?)
+            (model, sku_code, fault_name, solution_name, cost_amount, charge_amount, enabled, remark)
+            VALUES ('', ?, ?, ?, ?, ?, 1, ?)
             """,
             (sku_code, fault_name, solution_name, cost_amount, charge_amount, remark),
         )

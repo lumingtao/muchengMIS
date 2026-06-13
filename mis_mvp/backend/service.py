@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import re
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -10,6 +11,7 @@ from .config import ROOT_DIR
 from .models import (
     BusinessLine,
     CustomerInput,
+    DeviceModelInput,
     DeviceStatus,
     LoginInput,
     MachineInput,
@@ -35,8 +37,13 @@ from .models import (
     RepairInput,
     RepairDeliverInput,
     RepairEngineerCloseInput,
+    RepairInspectionInput,
     RepairItemInput,
     RepairOrderInput,
+    RepairOrderNoteDeleteInput,
+    RepairOrderNoteInput,
+    RepairOrderNoteUpdateInput,
+    RepairRemarkInput,
     RepairOrderStatusInput,
     RepairQuoteConfirmInput,
     RepairQuoteInput,
@@ -306,13 +313,59 @@ class MisService:
         }
         return actions_by_status.get(status, [])
 
+    def _normalize_inspection_input(self, data: RepairInspectionInput) -> tuple[str, list[dict[str, Any]], str]:
+        stage = data.stage.strip().lower()
+        if stage not in {"pre", "post"}:
+            raise BusinessError("检测阶段必须是 pre 或 post")
+        note = data.note.strip()
+        normalized_items: list[dict[str, Any]] = []
+        for item in data.items:
+            name = item.item.strip()
+            if not name:
+                continue
+            normalized_items.append({"item": name, "abnormal": bool(item.abnormal), "note": note})
+        has_other_abnormal = any(row["item"] == "其他异常" and row["abnormal"] for row in normalized_items)
+        if has_other_abnormal and not note:
+            raise BusinessError("选择其他异常后必须填写备注")
+        return stage, normalized_items, note
+
+    def _input_has_field(self, data: Any, field: str) -> bool:
+        return field in getattr(data, "model_fields_set", set())
+
     def create_repair_order(self, user: User, data: RepairOrderInput) -> dict[str, Any]:
         self._allowed(user, "repair_order:create")
+        repair_items: list[dict[str, Any]] = []
+        for item in data.repair_items:
+            sku = self.repo.get_repair_sku(item.sku_id) if item.sku_id else None
+            if item.sku_id and (not sku or not int(sku.get("enabled", 1))):
+                raise BusinessError("维修 SKU 不存在或已停用")
+            item_name = item.item_name
+            cost_amount = float(item.cost_amount or 0)
+            charge_amount = float(item.charge_amount or 0)
+            if sku:
+                item_name = item_name or str(sku["solution_name"])
+                if not self._input_has_field(item, "cost_amount"):
+                    cost_amount = float(sku["cost_amount"] or 0)
+                if not self._input_has_field(item, "charge_amount"):
+                    charge_amount = float(sku["charge_amount"] or 0)
+            repair_items.append(
+                {
+                    "sku_id": item.sku_id,
+                    "item_name": item_name,
+                    "quantity": int(item.quantity or 1),
+                    "cost_amount": cost_amount,
+                    "charge_amount": charge_amount,
+                    "remark": item.remark,
+                }
+            )
+        inspection_payloads = [self._normalize_inspection_input(item) for item in data.inspections]
         customer_id = self._customer_id(data.customer_id, data.customer)
         machine = self._ensure_machine(user, data.machine_id, data.machine, BusinessLine.repair)
         if not customer_id:
             customer_id = machine.get("customer_id")
         machine_id = int(machine["machine_id"])
+        assigned_to = user.username if user.role == Role.engineer else ""
+        workflow_status = "工程师待检测" if assigned_to else "待指派工程师"
         order_id = self.repo.create_repair_order(
             machine_id,
             customer_id,
@@ -320,16 +373,66 @@ class MisService:
             data.fault_description,
             data.remark,
             user.username,
+            workflow_status,
+            assigned_to,
         )
         self.repo.update_machine_status(machine_id, MachineStatus.diagnosing.value, BusinessLine.repair.value)
         self.repo.add_machine_event(machine_id, "repair", "维修开单", data.fault_description, user.username, "repair", order_id)
+        quoted_amount = 0.0
+        for item in repair_items:
+            item_id = self.repo.add_repair_item(
+                order_id,
+                item["item_name"],
+                item["quantity"],
+                item["cost_amount"],
+                item["charge_amount"],
+                item["remark"],
+                item["sku_id"],
+            )
+            quoted_amount += (float(item["cost_amount"]) + float(item["charge_amount"])) * int(item["quantity"])
+            self.repo.add_machine_event(machine_id, "repair", "维修项目", f"{item['item_name']} x{item['quantity']}", user.username, "repair_item", item_id)
+        if repair_items:
+            self.repo.update_repair_order_price(order_id, quoted_amount)
+        for note in data.notes:
+            note_type = note.note_type.strip() or "内部备注"
+            content = note.content.strip()
+            if not content:
+                continue
+            note_id = self.repo.add_repair_order_note(order_id, note_type, content, user.username)
+            self.repo.add_machine_event(machine_id, "repair", "新增工单备注", f"{note_type}：{content}", user.username, "repair_note", note_id)
+        for log in data.note_logs:
+            title = log.title.strip()
+            if title:
+                self.repo.add_machine_event(machine_id, "repair", title, log.detail.strip(), user.username, "repair", order_id)
+        for stage, normalized_items, note in inspection_payloads:
+            self.repo.replace_repair_order_inspections(order_id, stage, normalized_items, user.username)
+            abnormal_items = [row["item"] for row in normalized_items if row["abnormal"]]
+            title = "更新维修前检测" if stage == "pre" else "更新维修后检测"
+            detail = "、".join(abnormal_items) if abnormal_items else "无异常功能"
+            if note:
+                detail = f"{detail}；备注：{note}"
+            self.repo.add_machine_event(machine_id, "repair", title, detail, user.username, "repair", order_id)
+        if assigned_to:
+            self.repo.assign_machine(machine_id, assigned_to)
+            self.repo.add_machine_event(machine_id, "repair", "指派工程师", f"系统自动指派给 {assigned_to}", user.username, "repair", order_id)
         self._log_success(user, "repair_order:create", "repair_order", str(order_id), customer_id=customer_id, request_summary=data.fault_description)
         self.conn.commit()
         return self._repair_order_response(order_id)
 
-    def list_repair_skus(self, user: User) -> list[dict[str, Any]]:
+    def list_repair_skus(self, user: User, model: str = "", keyword: str = "") -> list[dict[str, Any]]:
         self._allowed(user, "repair_sku:read")
-        return self.repo.list_repair_skus(include_disabled=user.role in {Role.admin, Role.boss, Role.staff})
+        return self.repo.list_repair_skus(include_disabled=user.role in {Role.admin, Role.boss, Role.staff}, model=model, keyword=keyword)
+
+    def list_device_models(self, user: User, keyword: str = "", enabled_only: bool = False) -> list[dict[str, Any]]:
+        self._allowed(user, "device_model:read")
+        return self.repo.list_device_models(keyword=keyword, enabled_only=enabled_only)
+
+    def upsert_device_model(self, user: User, data: DeviceModelInput) -> dict[str, Any]:
+        self._allowed(user, "device_model:write")
+        device_model_id = self.repo.upsert_device_model(data.model_dump())
+        self._log_success(user, "device_model:upsert", "device_model", str(device_model_id), request_summary=data.model_name)
+        self.conn.commit()
+        return self.repo.get_device_model(device_model_id) or {}
 
     def _rows(self, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
         return [dict(row) for row in self.conn.execute(sql, params).fetchall()]
@@ -447,6 +550,8 @@ class MisService:
             "payments": self.repo.payments_for_source("repair", repair_order_id),
             "receivables": self._rows("SELECT * FROM receivables WHERE repair_order_id=? ORDER BY receivable_id", (repair_order_id,)),
             "events": self.repo.repair_order_events(int(order["machine_id"]), repair_order_id),
+            "inspections": self.repo.list_repair_order_inspections(repair_order_id),
+            "notes": self.repo.list_repair_order_notes(repair_order_id),
         }
 
     def list_repair_order_photos(self, user: User, repair_order_id: int) -> list[dict[str, Any]]:
@@ -477,11 +582,11 @@ class MisService:
         if suffix not in allowed_suffixes:
             suffix = ".jpg" if content_type == "image/jpeg" else ".png" if content_type == "image/png" else ".webp"
 
-        directory = ROOT_DIR / "uploads" / "repair_orders" / str(repair_order_id)
+        directory = ROOT_DIR / "uploads" / "repair_orders" / str(repair_order_id) / normalized_stage
         directory.mkdir(parents=True, exist_ok=True)
-        stored_name = f"{normalized_stage}-{uuid4().hex}{suffix}"
+        stored_name = f"{uuid4().hex}{suffix}"
         (directory / stored_name).write_bytes(content)
-        url = f"/uploads/repair_orders/{repair_order_id}/{stored_name}"
+        url = f"/uploads/repair_orders/{repair_order_id}/{normalized_stage}/{stored_name}"
         photo_id = self.repo.add_repair_order_photo(repair_order_id, normalized_stage, stored_name, url, user.username)
         title = "上传维修前照片" if normalized_stage == "pre" else "上传维修后照片"
         self.repo.add_machine_event(int(order["machine_id"]), "repair", title, Path(filename or stored_name).name, user.username, "repair", repair_order_id)
@@ -497,6 +602,24 @@ class MisService:
             "uploaded_by": user.username,
             "uploaded_at": photo.get("uploaded_at", ""),
         }
+
+    def save_repair_order_inspection(self, user: User, repair_order_id: int, data: RepairInspectionInput) -> dict[str, Any]:
+        self._allowed(user, "repair_order:update")
+        order = self.repo.get_repair_order(repair_order_id)
+        if not order:
+            raise BusinessError("维修单不存在")
+        self._ensure_engineer_owns_repair(user, order)
+        stage, normalized_items, note = self._normalize_inspection_input(data)
+        self.repo.replace_repair_order_inspections(repair_order_id, stage, normalized_items, user.username)
+        abnormal_items = [row["item"] for row in normalized_items if row["abnormal"]]
+        title = "更新维修前检测" if stage == "pre" else "更新维修后检测"
+        detail = "、".join(abnormal_items) if abnormal_items else "无异常功能"
+        if note:
+            detail = f"{detail}；备注：{note}"
+        self.repo.add_machine_event(int(order["machine_id"]), "repair", title, detail, user.username, "repair", repair_order_id)
+        self._log_success(user, "repair_order:inspection", "repair_order", str(repair_order_id), customer_id=order.get("customer_id"), request_summary=detail)
+        self.conn.commit()
+        return {"repair_order_id": repair_order_id, "stage": stage, "items": normalized_items, "note": note}
 
     def list_materials(self, user: User) -> dict[str, Any]:
         self._allowed(user, "inventory:read")
@@ -1684,6 +1807,66 @@ class MisService:
         self.conn.commit()
         return self._repair_order_response(repair_order_id)
 
+    def append_repair_order_remark(self, user: User, repair_order_id: int, data: RepairRemarkInput) -> dict[str, Any]:
+        self._allowed(user, "repair_order:update")
+        order = self.repo.get_repair_order(repair_order_id)
+        if not order:
+            raise BusinessError("维修单不存在")
+        self._ensure_engineer_owns_repair(user, order)
+        addition = data.remark.strip()
+        if not addition:
+            raise BusinessError("备注内容不能为空")
+        note_type = "内部备注"
+        content = addition
+        match = re.match(r"^【(.+?)】(.+)$", addition)
+        if match:
+            note_type = match.group(1).strip() or note_type
+            content = match.group(2).strip() or content
+        note_id = self.repo.add_repair_order_note(repair_order_id, note_type, content, user.username)
+        current = str(order.get("remark") or "").strip()
+        merged = f"{current}\n{addition}" if current else addition
+        self.repo.update_repair_order_remark(repair_order_id, merged)
+        self.repo.add_machine_event(int(order["machine_id"]), "repair", "新增工单备注", addition, user.username, "repair_note", note_id)
+        self._log_success(user, "repair_order:remark", "repair_order", str(repair_order_id), customer_id=order.get("customer_id"), request_summary=addition)
+        self.conn.commit()
+        return self._repair_order_response(repair_order_id)
+
+    def update_repair_order_note(self, user: User, repair_order_id: int, note_id: int, data: RepairOrderNoteUpdateInput) -> dict[str, Any]:
+        self._allowed(user, "repair_order:update")
+        order = self.repo.get_repair_order(repair_order_id)
+        note = self.repo.get_repair_order_note(note_id)
+        if not order or not note or int(note["repair_order_id"]) != repair_order_id or int(note.get("is_deleted") or 0):
+            raise BusinessError("备注不存在")
+        self._ensure_engineer_owns_repair(user, order)
+        note_type = data.note_type.strip() or "内部备注"
+        content = data.content.strip()
+        if not content:
+            raise BusinessError("备注内容不能为空")
+        old_detail = f"{note.get('note_type') or '内部备注'}：{note.get('content') or ''}"
+        new_detail = f"{note_type}：{content}"
+        self.repo.update_repair_order_note(note_id, note_type, content, user.username)
+        self.repo.add_machine_event(int(order["machine_id"]), "repair", "修改工单备注", f"{old_detail} -> {new_detail}", user.username, "repair_note", note_id)
+        self._log_success(user, "repair_order:note:update", "repair_note", str(note_id), customer_id=order.get("customer_id"), request_summary=new_detail)
+        self.conn.commit()
+        return self._repair_order_response(repair_order_id)
+
+    def delete_repair_order_note(self, user: User, repair_order_id: int, note_id: int, data: RepairOrderNoteDeleteInput) -> dict[str, Any]:
+        self._allowed(user, "repair_order:update")
+        order = self.repo.get_repair_order(repair_order_id)
+        note = self.repo.get_repair_order_note(note_id)
+        if not order or not note or int(note["repair_order_id"]) != repair_order_id or int(note.get("is_deleted") or 0):
+            raise BusinessError("备注不存在")
+        self._ensure_engineer_owns_repair(user, order)
+        reason = data.reason.strip()
+        detail = f"{note.get('note_type') or '内部备注'}：{note.get('content') or ''}"
+        if reason:
+            detail = f"{detail}；原因：{reason}"
+        self.repo.delete_repair_order_note(note_id, user.username, reason)
+        self.repo.add_machine_event(int(order["machine_id"]), "repair", "删除工单备注", detail, user.username, "repair_note", note_id)
+        self._log_success(user, "repair_order:note:delete", "repair_note", str(note_id), customer_id=order.get("customer_id"), request_summary=detail)
+        self.conn.commit()
+        return self._repair_order_response(repair_order_id)
+
     def add_repair_item(self, user: User, repair_order_id: int, data: RepairItemInput) -> dict[str, Any]:
         self._allowed(user, "repair_order:update")
         order = self.repo.get_repair_order(repair_order_id)
@@ -1701,8 +1884,10 @@ class MisService:
             if not sku or not int(sku.get("enabled", 1)):
                 raise BusinessError("维修 SKU 不存在或已停用")
             item_name = data.item_name if data.item_name else sku["solution_name"]
-            cost_amount = cost_amount or float(sku["cost_amount"] or 0)
-            charge_amount = charge_amount or float(sku["charge_amount"] or 0)
+            if not self._input_has_field(data, "cost_amount"):
+                cost_amount = float(sku["cost_amount"] or 0)
+            if not self._input_has_field(data, "charge_amount"):
+                charge_amount = float(sku["charge_amount"] or 0)
         item_id = self.repo.add_repair_item(repair_order_id, item_name, data.quantity, cost_amount, charge_amount, data.remark, data.sku_id)
         self.repo.quote_repair_order(
             repair_order_id,

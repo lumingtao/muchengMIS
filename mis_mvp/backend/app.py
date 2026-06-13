@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from .config import ROOT_DIR, settings
 from .db import connect, migrate
 from .models import (
+    DeviceModelInput,
     LoginInput,
     MachineInput,
     MachineNoteInput,
@@ -31,9 +32,13 @@ from .models import (
     RepairAssignInput,
     RepairDeliverInput,
     RepairEngineerCloseInput,
+    RepairInspectionInput,
     RepairInput,
     RepairItemInput,
+    RepairOrderNoteDeleteInput,
+    RepairOrderNoteUpdateInput,
     RepairOrderInput,
+    RepairRemarkInput,
     RepairOrderStatusInput,
     RepairQuoteConfirmInput,
     RepairQuoteInput,
@@ -193,8 +198,23 @@ def create_repair_order(data: RepairOrderInput, user: User = Depends(current_use
 
 
 @app.get("/api/repair-skus")
-def repair_skus(user: User = Depends(current_user), service: MisService = Depends(get_service)):
-    return endpoint(lambda: service.list_repair_skus(user))
+def repair_skus(
+    model: str = Query(default=""),
+    q: str = Query(default=""),
+    user: User = Depends(current_user),
+    service: MisService = Depends(get_service),
+):
+    return endpoint(lambda: service.list_repair_skus(user, model=model, keyword=q))
+
+
+@app.get("/api/device-models")
+def device_models(
+    q: str = Query(default=""),
+    enabled_only: bool = Query(default=False),
+    user: User = Depends(current_user),
+    service: MisService = Depends(get_service),
+):
+    return endpoint(lambda: service.list_device_models(user, keyword=q, enabled_only=enabled_only))
 
 
 @app.get("/api/repair-workbench")
@@ -221,6 +241,11 @@ async def upload_repair_order_photo(
 ):
     stage, filename, content_type, content = parse_photo_upload(request.headers.get("content-type", ""), await request.body())
     return endpoint(lambda: service.add_repair_order_photo(user, repair_order_id, stage, filename, content_type, content))
+
+
+@app.post("/api/repair-orders/{repair_order_id}/inspections")
+def save_repair_order_inspection(repair_order_id: int, data: RepairInspectionInput, user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.save_repair_order_inspection(user, repair_order_id, data))
 
 
 @app.post("/api/repair-orders/{repair_order_id}/workflow-action")
@@ -388,6 +413,11 @@ def upsert_repair_sku(data: RepairSkuInput, user: User = Depends(current_user), 
     return endpoint(lambda: service.upsert_repair_sku(user, data))
 
 
+@app.post("/api/device-models")
+def upsert_device_model(data: DeviceModelInput, user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.upsert_device_model(user, data))
+
+
 @app.post("/api/repair-orders/{repair_order_id}/assign")
 def assign_repair_order(repair_order_id: int, data: RepairAssignInput, user: User = Depends(current_user), service: MisService = Depends(get_service)):
     return endpoint(lambda: service.assign_repair_order(user, repair_order_id, data))
@@ -416,6 +446,21 @@ def add_repair_item(repair_order_id: int, data: RepairItemInput, user: User = De
 @app.post("/api/repair-orders/{repair_order_id}/status")
 def update_repair_order_status(repair_order_id: int, data: RepairOrderStatusInput, user: User = Depends(current_user), service: MisService = Depends(get_service)):
     return endpoint(lambda: service.update_repair_order_status(user, repair_order_id, data))
+
+
+@app.post("/api/repair-orders/{repair_order_id}/remark")
+def append_repair_order_remark(repair_order_id: int, data: RepairRemarkInput, user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.append_repair_order_remark(user, repair_order_id, data))
+
+
+@app.put("/api/repair-orders/{repair_order_id}/notes/{note_id}")
+def update_repair_order_note(repair_order_id: int, note_id: int, data: RepairOrderNoteUpdateInput, user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.update_repair_order_note(user, repair_order_id, note_id, data))
+
+
+@app.delete("/api/repair-orders/{repair_order_id}/notes/{note_id}")
+def delete_repair_order_note(repair_order_id: int, note_id: int, data: RepairOrderNoteDeleteInput, user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.delete_repair_order_note(user, repair_order_id, note_id, data))
 
 
 @app.post("/api/repair-orders/{repair_order_id}/engineer-close")

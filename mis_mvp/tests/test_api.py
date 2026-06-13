@@ -75,3 +75,39 @@ def test_api_upload_repair_order_photo(client: TestClient) -> None:
     detail = client.get(f"/api/repair-workbench/{repair_id}", headers={"X-User": "staff"})
     assert detail.status_code == 200
     assert any(row["title"] == "上传维修前照片" for row in detail.json()["events"])
+def test_api_save_repair_order_inspection_logs_event(client: TestClient) -> None:
+    created = client.post(
+        "/api/repair-orders",
+        headers={"X-User": "staff"},
+        json={"machine": {"imei": "860000000007777", "model": "iPhone 16"}, "fault_description": "检测异常"},
+    )
+    assert created.status_code == 200
+    repair_id = created.json()["repair_order_id"]
+
+    saved = client.post(
+        f"/api/repair-orders/{repair_id}/inspections",
+        headers={"X-User": "staff"},
+        json={
+            "stage": "pre",
+            "items": [
+                {"item": "屏幕显示", "abnormal": True},
+                {"item": "其他异常", "abnormal": True},
+            ],
+            "note": "边框变形",
+        },
+    )
+    assert saved.status_code == 200
+    assert saved.json()["stage"] == "pre"
+
+    detail = client.get(f"/api/repair-workbench/{repair_id}", headers={"X-User": "staff"})
+    assert detail.status_code == 200
+    payload = detail.json()
+    assert any(row["stage"] == "pre" and row["item"] == "其他异常" for row in payload["inspections"])
+    assert any(row["title"] == "更新维修前检测" for row in payload["events"])
+
+    invalid = client.post(
+        f"/api/repair-orders/{repair_id}/inspections",
+        headers={"X-User": "staff"},
+        json={"stage": "post", "items": [{"item": "其他异常", "abnormal": True}], "note": ""},
+    )
+    assert invalid.status_code == 400

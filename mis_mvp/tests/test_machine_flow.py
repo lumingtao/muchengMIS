@@ -7,6 +7,7 @@ import pytest
 from backend.db import connect, migrate
 from backend.models import (
     CustomerInput,
+    DeviceModelInput,
     MachineInput,
     MachineNoteInput,
     MachineStatus,
@@ -28,12 +29,19 @@ from backend.models import (
     RepairAssignInput,
     RepairDeliverInput,
     RepairEngineerCloseInput,
+    RepairInspectionInput,
+    RepairInspectionItemInput,
     RepairItemInput,
     RepairOrderInput,
+    RepairOrderNoteDeleteInput,
+    RepairOrderNoteInput,
+    RepairOrderNoteUpdateInput,
+    RepairRemarkInput,
     RepairOrderStatusInput,
     RepairQuoteConfirmInput,
     RepairQuoteInput,
     RepairFaultMaterialInput,
+    RepairSkuInput,
     Role,
     SalesOrderInput,
     StockInInput,
@@ -81,6 +89,44 @@ def test_machine_unique_imei_and_temp_no(service: MisService) -> None:
     assert temp["machine_no"].startswith("TMP-")
     with pytest.raises(BusinessError):
         service.create_machine(user(), MachineInput(imei="861111111111111", model="重复机器"))
+
+
+def test_device_model_master_data_upsert_search_and_enabled_filter(service: MisService) -> None:
+    created = service.upsert_device_model(
+        user(Role.staff),
+        DeviceModelInput(
+            brand="Apple",
+            model_name="iPhone Test Pro",
+            colors=["黑色", "白色"],
+            capacities=["128GB", "256GB"],
+            sort_order=1,
+            remark="测试机型",
+        ),
+    )
+    assert created["device_model_id"] > 0
+    assert created["colors"] == ["黑色", "白色"]
+    assert created["capacities"] == ["128GB", "256GB"]
+
+    searched = service.list_device_models(user(Role.frontdesk), keyword="Test Pro")
+    assert [row["device_model_id"] for row in searched] == [created["device_model_id"]]
+
+    updated = service.upsert_device_model(
+        user(Role.staff),
+        DeviceModelInput(
+            device_model_id=created["device_model_id"],
+            brand="Apple",
+            model_name="iPhone Test Pro",
+            colors=["蓝色"],
+            capacities=["512GB"],
+            enabled=False,
+            sort_order=2,
+        ),
+    )
+    assert updated["colors"] == ["蓝色"]
+    assert updated["capacities"] == ["512GB"]
+    assert updated["enabled"] == 0
+    enabled_rows = service.list_device_models(user(Role.frontdesk), enabled_only=True)
+    assert all(row["device_model_id"] != created["device_model_id"] for row in enabled_rows)
 
 
 def test_machine_update_writes_timeline_event(service: MisService) -> None:
@@ -155,6 +201,259 @@ def test_repair_lifecycle_and_payment_timeline(service: MisService) -> None:
     assert timeline["machine"]["current_status"] == "已结单"
     assert any(event["event_type"] == "payment" for event in timeline["events"])
     assert timeline["repair_items"][0]["charge_amount"] == 580
+
+
+def test_frontdesk_repair_order_creation_defaults_and_order_no(service: MisService) -> None:
+    order = service.create_repair_order(
+        user(Role.frontdesk),
+        RepairOrderInput(
+            machine=MachineInput(imei="862222222222225", model="iPhone 15 Pro"),
+            customer=CustomerInput(name="开单客户", phone="13800000005"),
+            fault_description="客户描述无法充电",
+        ),
+    )
+
+    assert order["status"] == "已开单"
+    assert order["workflow_status"] == "待指派工程师"
+    assert order["assigned_to"] == ""
+    assert order["order_no"] == f"RO-{order['repair_order_id']}"
+
+    timeline = service.machine_timeline(user(Role.frontdesk), order["machine_id"])
+    assert timeline["machine"]["current_status"] == "检测中"
+    assert timeline["machine"]["source_type"] == "维修"
+    assert any(event["title"] == "维修开单" for event in timeline["events"])
+
+    workbench = service.repair_workbench(user(Role.frontdesk))
+    row = next(item for item in workbench["orders"] if item["repair_order_id"] == order["repair_order_id"])
+    assert row["order_no"] == order["order_no"]
+
+
+def test_engineer_can_create_repair_order_and_is_auto_assigned(service: MisService) -> None:
+    order = service.create_repair_order(
+        user(Role.engineer),
+        RepairOrderInput(
+            machine=MachineInput(imei="862222222222226", model="iPhone 14 Pro"),
+            customer=CustomerInput(name="工程师开单客户"),
+            fault_description="屏幕异常",
+        ),
+    )
+
+    assert order["status"] == "已开单"
+    assert order["workflow_status"] == "工程师待检测"
+    assert order["assigned_to"] == "engineer"
+    assert order["order_no"] == f"RO-{order['repair_order_id']}"
+
+    visible = service.search_machines(user(Role.engineer), "862222222222226")
+    assert [row["machine_id"] for row in visible] == [order["machine_id"]]
+
+    timeline = service.machine_timeline(user(Role.engineer), order["machine_id"])
+    assert timeline["machine"]["assigned_to"] == "engineer"
+    assert any(event["title"] == "指派工程师" for event in timeline["events"])
+
+
+def test_repair_order_creation_can_reuse_customer_and_machine(service: MisService) -> None:
+    machine = service.create_machine(
+        user(Role.frontdesk),
+        MachineInput(
+            imei="862222222222227",
+            model="iPhone 13",
+            customer=CustomerInput(name="复用客户", phone="13800000007"),
+        ),
+    )
+    customer_id = machine["customer_id"]
+
+    order = service.create_repair_order(
+        user(Role.frontdesk),
+        RepairOrderInput(
+            machine_id=machine["machine_id"],
+            customer_id=customer_id,
+            fault_description="复用机器开单",
+        ),
+    )
+
+    assert order["machine_id"] == machine["machine_id"]
+    assert order["customer_id"] == customer_id
+    assert order["order_no"] == f"RO-{order['repair_order_id']}"
+    assert len(service.search_machines(user(Role.frontdesk), "862222222222227")) == 1
+
+
+def test_repair_order_creation_validation_errors(service: MisService) -> None:
+    service.create_machine(user(Role.frontdesk), MachineInput(imei="862222222222228", model="iPhone 12"))
+
+    with pytest.raises(BusinessError, match="必须提供机器档案或 machine_id"):
+        service.create_repair_order(user(Role.frontdesk), RepairOrderInput(fault_description="缺少机器"))
+
+    with pytest.raises(BusinessError, match="机器档案不存在"):
+        service.create_repair_order(user(Role.frontdesk), RepairOrderInput(machine_id=9999))
+
+    with pytest.raises(BusinessError, match="IMEI 已存在"):
+        service.create_repair_order(
+            user(Role.frontdesk),
+            RepairOrderInput(machine=MachineInput(imei="862222222222228", model="iPhone 12")),
+        )
+
+
+def test_repair_sku_model_filter_and_upsert(service: MisService) -> None:
+    common = service.upsert_repair_sku(
+        user(Role.staff),
+        RepairSkuInput(sku_code="COMMON-DIAG", fault_name="通用检测", solution_name="基础检测", charge_amount=99),
+    )
+    specific = service.upsert_repair_sku(
+        user(Role.staff),
+        RepairSkuInput(model="iPhone 15 Pro", sku_code="IP15P-SCREEN", fault_name="屏幕损坏", solution_name="更换屏幕总成", cost_amount=500, charge_amount=880),
+    )
+    other = service.upsert_repair_sku(
+        user(Role.staff),
+        RepairSkuInput(model="iPhone 14", sku_code="IP14-BATTERY", fault_name="电池老化", solution_name="更换电池", charge_amount=220),
+    )
+
+    rows = service.list_repair_skus(user(Role.frontdesk), model="iPhone 15 Pro")
+    ids = {row["sku_id"] for row in rows}
+    assert common["sku_id"] in ids
+    assert specific["sku_id"] in ids
+    assert other["sku_id"] not in ids
+    assert service.list_repair_skus(user(Role.frontdesk), keyword="屏幕")[0]["model"] == "iPhone 15 Pro"
+
+    updated = service.upsert_repair_sku(
+        user(Role.staff),
+        RepairSkuInput(model="iPhone 15 Pro", sku_code="IP15P-SCREEN", fault_name="屏幕损坏", solution_name="更换原彩屏幕总成", cost_amount=520, charge_amount=920, enabled=False),
+    )
+    assert updated["sku_id"] == specific["sku_id"]
+    assert updated["model"] == "iPhone 15 Pro"
+    assert updated["enabled"] == 0
+
+
+def test_create_repair_order_with_initial_repair_items(service: MisService) -> None:
+    sku = service.upsert_repair_sku(
+        user(Role.staff),
+        RepairSkuInput(model="iPhone 13 Pro", sku_code="IP13P-SCR", fault_name="屏幕总成更换", solution_name="更换屏幕总成", cost_amount=680, charge_amount=980),
+    )
+
+    order = service.create_repair_order(
+        user(Role.frontdesk),
+        RepairOrderInput(
+            machine=MachineInput(imei="862222222222229", model="iPhone 13 Pro"),
+            customer=CustomerInput(name="带明细客户"),
+            fault_description="屏幕损坏",
+            repair_items=[RepairItemInput(sku_id=sku["sku_id"], item_name=sku["solution_name"], quantity=2)],
+        ),
+    )
+
+    assert order["status"] == "已开单"
+    assert order["quoted_amount"] == 3320
+    assert len(order["items"]) == 1
+    assert order["items"][0]["sku_code"] == "IP13P-SCR"
+    assert order["items"][0]["cost_amount"] == 680
+    assert order["items"][0]["charge_amount"] == 980
+    timeline = service.machine_timeline(user(Role.frontdesk), order["machine_id"])
+    assert any(event["title"] == "维修项目" for event in timeline["events"])
+
+
+def test_create_repair_order_keeps_explicit_zero_service_fee(service: MisService) -> None:
+    sku = service.upsert_repair_sku(
+        user(Role.staff),
+        RepairSkuInput(model="iPhone 16 Pro", sku_code="IP16P-BAT", fault_name="电池老化", solution_name="更换电池", cost_amount=80, charge_amount=260),
+    )
+
+    order = service.create_repair_order(
+        user(Role.frontdesk),
+        RepairOrderInput(
+            machine=MachineInput(imei="862222222222232", model="iPhone 16 Pro"),
+            customer=CustomerInput(name="零工时客户"),
+            fault_description="电池老化",
+            repair_items=[RepairItemInput(sku_id=sku["sku_id"], item_name="电池老化", quantity=1, cost_amount=80, charge_amount=0)],
+        ),
+    )
+
+    assert order["quoted_amount"] == 80
+    assert order["items"][0]["cost_amount"] == 80
+    assert order["items"][0]["charge_amount"] == 0
+
+
+def test_create_repair_order_with_initial_inspection(service: MisService) -> None:
+    order = service.create_repair_order(
+        user(Role.frontdesk),
+        RepairOrderInput(
+            machine=MachineInput(imei="862222222222231", model="iPhone 16 Pro"),
+            customer=CustomerInput(name="带检测客户"),
+            fault_description="屏幕触摸异常",
+            inspections=[
+                RepairInspectionInput(
+                    stage="pre",
+                    items=[
+                        RepairInspectionItemInput(item="屏幕显示", abnormal=True),
+                        RepairInspectionItemInput(item="触摸功能", abnormal=True),
+                        RepairInspectionItemInput(item="摄像头", abnormal=False),
+                    ],
+                    note="入库前检测",
+                )
+            ],
+        ),
+    )
+
+    detail = service.repair_workbench_detail(user(Role.frontdesk), order["repair_order_id"])
+    inspections = detail["inspections"]
+    assert any(row["stage"] == "pre" and row["item"] == "屏幕显示" and row["abnormal"] == 1 for row in inspections)
+    assert any(row["stage"] == "pre" and row["note"] == "入库前检测" for row in inspections)
+    assert any(event["title"] == "更新维修前检测" for event in detail["events"])
+
+
+def test_append_repair_order_remark_preserves_existing_remark(service: MisService) -> None:
+    order = service.create_repair_order(
+        user(Role.frontdesk),
+        RepairOrderInput(
+            machine=MachineInput(imei="862222222222233", model="iPhone 16"),
+            customer=CustomerInput(name="备注客户"),
+            remark="【内部备注】原备注",
+            notes=[RepairOrderNoteInput(note_type="内部备注", content="原备注")],
+        ),
+    )
+
+    updated = service.append_repair_order_remark(
+        user(Role.frontdesk),
+        order["repair_order_id"],
+        RepairRemarkInput(remark="【交付说明】新备注"),
+    )
+
+    assert "【内部备注】原备注" in updated["remark"]
+    assert "【交付说明】新备注" in updated["remark"]
+    assert len(updated["notes"]) == 2
+    assert updated["notes"][0]["created_by"] == "frontdesk"
+    assert any(event["title"] == "新增工单备注" for event in updated["events"])
+
+    note_id = updated["notes"][0]["note_id"]
+    edited = service.update_repair_order_note(
+        user(Role.frontdesk),
+        order["repair_order_id"],
+        note_id,
+        RepairOrderNoteUpdateInput(note_type="内部备注", content="修改后备注"),
+    )
+    assert any(note["content"] == "修改后备注" and note["updated_by"] == "frontdesk" for note in edited["notes"])
+    assert any(event["title"] == "修改工单备注" for event in edited["events"])
+
+    deleted = service.delete_repair_order_note(
+        user(Role.frontdesk),
+        order["repair_order_id"],
+        note_id,
+        RepairOrderNoteDeleteInput(reason="误填"),
+    )
+    assert all(note["note_id"] != note_id for note in deleted["notes"])
+    assert any(event["title"] == "删除工单备注" and "误填" in event["detail"] for event in deleted["events"])
+
+
+def test_create_repair_order_rejects_bad_initial_repair_item_without_order(service: MisService) -> None:
+    with pytest.raises(BusinessError, match="维修 SKU 不存在或已停用"):
+        service.create_repair_order(
+            user(Role.frontdesk),
+            RepairOrderInput(
+                machine=MachineInput(imei="862222222222230", model="iPhone 13 Pro"),
+                customer=CustomerInput(name="坏明细客户"),
+                repair_items=[RepairItemInput(sku_id=999999, item_name="不存在故障")],
+            ),
+        )
+
+    assert service.repair_workbench(user(Role.frontdesk))["orders"] == []
+    assert service.search_machines(user(Role.frontdesk), "862222222222230") == []
 
 
 def test_frontdesk_engineer_repair_handoff_and_visibility(service: MisService) -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from typing import Any
 
@@ -339,6 +340,87 @@ class Repository:
             ),
         )
 
+    def _device_model_row(self, row: sqlite3.Row) -> dict[str, Any]:
+        data = dict(row)
+        for source, target in (("colors_json", "colors"), ("capacities_json", "capacities")):
+            try:
+                data[target] = json.loads(data.get(source) or "[]")
+            except json.JSONDecodeError:
+                data[target] = []
+        return data
+
+    def list_device_models(self, keyword: str = "", enabled_only: bool = False) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if enabled_only:
+            clauses.append("enabled=1")
+        if keyword:
+            like = f"%{keyword}%"
+            clauses.append("(brand LIKE ? OR model_name LIKE ? OR remark LIKE ?)")
+            params.extend([like, like, like])
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self.conn.execute(
+            f"SELECT * FROM device_models {where} ORDER BY enabled DESC, sort_order, brand, model_name",
+            params,
+        ).fetchall()
+        return [self._device_model_row(row) for row in rows]
+
+    def get_device_model(self, device_model_id: int) -> dict[str, Any] | None:
+        row = self.conn.execute("SELECT * FROM device_models WHERE device_model_id=?", (device_model_id,)).fetchone()
+        return self._device_model_row(row) if row else None
+
+    def upsert_device_model(self, data: dict[str, Any]) -> int:
+        brand = str(data.get("brand") or "Apple").strip()
+        model_name = str(data.get("model_name") or "").strip()
+        colors = [str(item).strip() for item in data.get("colors", []) if str(item).strip()]
+        capacities = [str(item).strip() for item in data.get("capacities", []) if str(item).strip()]
+        payload = (
+            brand,
+            model_name,
+            json.dumps(colors, ensure_ascii=False),
+            json.dumps(capacities, ensure_ascii=False),
+            1 if data.get("enabled", True) else 0,
+            int(data.get("sort_order") or 100),
+            str(data.get("remark") or ""),
+        )
+        if data.get("device_model_id"):
+            device_model_id = int(data["device_model_id"])
+            self.conn.execute(
+                """
+                UPDATE device_models
+                SET brand=?, model_name=?, colors_json=?, capacities_json=?,
+                    enabled=?, sort_order=?, remark=?, updated_at=CURRENT_TIMESTAMP
+                WHERE device_model_id=?
+                """,
+                (*payload, device_model_id),
+            )
+            return device_model_id
+        existing = self.conn.execute(
+            "SELECT device_model_id FROM device_models WHERE brand=? AND model_name=?",
+            (brand, model_name),
+        ).fetchone()
+        if existing:
+            device_model_id = int(existing["device_model_id"])
+            self.conn.execute(
+                """
+                UPDATE device_models
+                SET colors_json=?, capacities_json=?, enabled=?, sort_order=?,
+                    remark=?, updated_at=CURRENT_TIMESTAMP
+                WHERE device_model_id=?
+                """,
+                (payload[2], payload[3], payload[4], payload[5], payload[6], device_model_id),
+            )
+            return device_model_id
+        cur = self.conn.execute(
+            """
+            INSERT INTO device_models
+            (brand, model_name, colors_json, capacities_json, enabled, sort_order, remark)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            payload,
+        )
+        return int(cur.lastrowid)
+
     def add_machine_note(self, machine_id: int, content: str, operator: str) -> int:
         cur = self.conn.execute(
             """
@@ -404,16 +486,31 @@ class Repository:
         ).fetchall()
         return [dict(row) for row in rows]
 
-    def create_repair_order(self, machine_id: int, customer_id: int | None, status: str, fault_description: str, remark: str, created_by: str) -> int:
+    def create_repair_order(
+        self,
+        machine_id: int,
+        customer_id: int | None,
+        status: str,
+        fault_description: str,
+        remark: str,
+        created_by: str,
+        workflow_status: str = "待指派工程师",
+        assigned_to: str = "",
+    ) -> int:
         cur = self.conn.execute(
             """
             INSERT INTO repair_orders
-            (machine_id, customer_id, status, workflow_status, fault_description, remark, created_by)
-            VALUES (?, ?, ?, '待指派工程师', ?, ?, ?)
+            (machine_id, customer_id, status, workflow_status, assigned_to, fault_description, remark, created_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (machine_id, customer_id, status, fault_description, remark, created_by),
+            (machine_id, customer_id, status, workflow_status, assigned_to, fault_description, remark, created_by),
         )
-        return int(cur.lastrowid)
+        repair_order_id = int(cur.lastrowid)
+        self.conn.execute(
+            "UPDATE repair_orders SET order_no=? WHERE repair_order_id=?",
+            (f"RO-{repair_order_id}", repair_order_id),
+        )
+        return repair_order_id
 
     def get_repair_order(self, repair_order_id: int) -> dict[str, Any] | None:
         return row_to_dict(self.conn.execute("SELECT * FROM repair_orders WHERE repair_order_id=?", (repair_order_id,)).fetchone())
@@ -484,6 +581,12 @@ class Repository:
             (quoted_amount, repair_order_id),
         )
 
+    def update_repair_order_remark(self, repair_order_id: int, remark: str) -> None:
+        self.conn.execute(
+            "UPDATE repair_orders SET remark=?, updated_at=CURRENT_TIMESTAMP WHERE repair_order_id=?",
+            (remark, repair_order_id),
+        )
+
     def add_repair_item(self, repair_order_id: int, item_name: str, quantity: int, cost_amount: float, charge_amount: float, remark: str, sku_id: int | None = None) -> int:
         cur = self.conn.execute(
             """
@@ -495,11 +598,23 @@ class Repository:
         )
         return int(cur.lastrowid)
 
-    def list_repair_skus(self, include_disabled: bool = False) -> list[dict[str, Any]]:
-        if include_disabled:
-            rows = self.conn.execute("SELECT * FROM repair_skus ORDER BY enabled DESC, sku_id").fetchall()
-        else:
-            rows = self.conn.execute("SELECT * FROM repair_skus WHERE enabled=1 ORDER BY sku_id").fetchall()
+    def list_repair_skus(self, include_disabled: bool = False, model: str = "", keyword: str = "") -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if not include_disabled:
+            clauses.append("enabled=1")
+        if model:
+            clauses.append("(model='' OR model=?)")
+            params.append(model)
+        if keyword:
+            like = f"%{keyword}%"
+            clauses.append("(sku_code LIKE ? OR fault_name LIKE ? OR solution_name LIKE ? OR remark LIKE ?)")
+            params.extend([like, like, like, like])
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self.conn.execute(
+            f"SELECT * FROM repair_skus {where} ORDER BY enabled DESC, CASE WHEN model='' THEN 1 ELSE 0 END, model, sku_id",
+            params,
+        ).fetchall()
         return [dict(row) for row in rows]
 
     def get_repair_sku(self, sku_id: int) -> dict[str, Any] | None:
@@ -512,11 +627,12 @@ class Repository:
             self.conn.execute(
                 """
                 UPDATE repair_skus
-                SET fault_name=?, solution_name=?, cost_amount=?, charge_amount=?,
+                SET model=?, fault_name=?, solution_name=?, cost_amount=?, charge_amount=?,
                     enabled=?, remark=?, updated_at=CURRENT_TIMESTAMP
                 WHERE sku_id=?
                 """,
                 (
+                    data.get("model", ""),
                     data["fault_name"],
                     data["solution_name"],
                     data["cost_amount"],
@@ -530,10 +646,11 @@ class Repository:
         cur = self.conn.execute(
             """
             INSERT INTO repair_skus
-            (sku_code, fault_name, solution_name, cost_amount, charge_amount, enabled, remark)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            (model, sku_code, fault_name, solution_name, cost_amount, charge_amount, enabled, remark)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                data.get("model", ""),
                 data["sku_code"],
                 data["fault_name"],
                 data["solution_name"],
@@ -547,7 +664,13 @@ class Repository:
 
     def list_repair_items(self, repair_order_id: int) -> list[dict[str, Any]]:
         rows = self.conn.execute(
-            "SELECT * FROM repair_items WHERE repair_order_id=? ORDER BY repair_item_id",
+            """
+            SELECT ri.*, rs.sku_code, rs.fault_name, rs.solution_name, rs.model
+            FROM repair_items ri
+            LEFT JOIN repair_skus rs ON rs.sku_id=ri.sku_id
+            WHERE ri.repair_order_id=?
+            ORDER BY ri.repair_item_id
+            """,
             (repair_order_id,),
         ).fetchall()
         return [dict(row) for row in rows]
@@ -747,19 +870,27 @@ class Repository:
 
     def repair_order_events(self, machine_id: int, repair_order_id: int) -> list[dict[str, Any]]:
         item_ids = [int(item["repair_item_id"]) for item in self.list_repair_items(repair_order_id)]
+        note_ids = [int(note["note_id"]) for note in self.list_repair_order_notes(repair_order_id, include_deleted=True)]
         item_filter = ""
         params: list[Any] = [machine_id, repair_order_id]
         if item_ids:
             placeholders = ",".join("?" for _ in item_ids)
             item_filter = f" OR (related_type='repair_item' AND related_id IN ({placeholders}))"
             params.extend(item_ids)
+        note_filter = ""
+        if note_ids:
+            placeholders = ",".join("?" for _ in note_ids)
+            note_filter = f" OR (related_type='repair_note' AND related_id IN ({placeholders}))"
+            params.extend(note_ids)
         rows = self.conn.execute(
             f"""
             SELECT * FROM machine_events
             WHERE machine_id=? AND (
                 (related_type='repair' AND related_id=?)
                 {item_filter}
+                {note_filter}
                 OR related_type='payment'
+                OR (related_type='machine' AND title IN ('编辑订单', '缂栬緫璁㈠崟'))
             )
             ORDER BY event_id
             """,
@@ -778,6 +909,8 @@ class Repository:
         order["items"] = self.list_repair_items(repair_order_id)
         order["payments"] = self.payments_for_source("repair", repair_order_id)
         order["events"] = self.repair_order_events(machine_id, repair_order_id)
+        order["inspections"] = self.list_repair_order_inspections(repair_order_id)
+        order["notes"] = self.list_repair_order_notes(repair_order_id)
         return order
 
     def add_repair_order_photo(self, repair_order_id: int, stage: str, filename: str, url: str, uploaded_by: str) -> int:
@@ -796,6 +929,76 @@ class Repository:
             (repair_order_id,),
         ).fetchall()
         return [dict(row) for row in rows]
+
+    def list_repair_order_inspections(self, repair_order_id: int) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            "SELECT * FROM repair_order_inspections WHERE repair_order_id=? ORDER BY stage, inspection_id",
+            (repair_order_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_repair_order_notes(self, repair_order_id: int, include_deleted: bool = False) -> list[dict[str, Any]]:
+        clause = "" if include_deleted else " AND is_deleted=0"
+        rows = self.conn.execute(
+            f"SELECT * FROM repair_order_notes WHERE repair_order_id=?{clause} ORDER BY note_id",
+            (repair_order_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_repair_order_note(self, note_id: int) -> dict[str, Any] | None:
+        row = self.conn.execute("SELECT * FROM repair_order_notes WHERE note_id=?", (note_id,)).fetchone()
+        return dict(row) if row else None
+
+    def add_repair_order_note(self, repair_order_id: int, note_type: str, content: str, created_by: str) -> int:
+        cur = self.conn.execute(
+            """
+            INSERT INTO repair_order_notes (repair_order_id, note_type, content, created_by)
+            VALUES (?, ?, ?, ?)
+            """,
+            (repair_order_id, note_type, content, created_by),
+        )
+        return int(cur.lastrowid)
+
+    def update_repair_order_note(self, note_id: int, note_type: str, content: str, updated_by: str) -> None:
+        self.conn.execute(
+            """
+            UPDATE repair_order_notes
+            SET note_type=?, content=?, updated_by=?, updated_at=CURRENT_TIMESTAMP
+            WHERE note_id=? AND is_deleted=0
+            """,
+            (note_type, content, updated_by, note_id),
+        )
+
+    def delete_repair_order_note(self, note_id: int, deleted_by: str, reason: str = "") -> None:
+        self.conn.execute(
+            """
+            UPDATE repair_order_notes
+            SET is_deleted=1, deleted_by=?, deleted_at=CURRENT_TIMESTAMP, deleted_reason=?
+            WHERE note_id=? AND is_deleted=0
+            """,
+            (deleted_by, reason, note_id),
+        )
+
+    def replace_repair_order_inspections(self, repair_order_id: int, stage: str, items: list[dict[str, Any]], updated_by: str) -> None:
+        self.conn.execute("DELETE FROM repair_order_inspections WHERE repair_order_id=? AND stage=?", (repair_order_id, stage))
+        self.conn.executemany(
+            """
+            INSERT INTO repair_order_inspections (repair_order_id, stage, item, abnormal, note, updated_by)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    repair_order_id,
+                    stage,
+                    str(item.get("item") or ""),
+                    1 if item.get("abnormal") else 0,
+                    str(item.get("note") or ""),
+                    updated_by,
+                )
+                for item in items
+                if str(item.get("item") or "").strip()
+            ],
+        )
 
     def add_machine_event(self, machine_id: int, event_type: str, title: str, detail: str, operator: str, related_type: str = "", related_id: int | None = None) -> None:
         self.conn.execute(

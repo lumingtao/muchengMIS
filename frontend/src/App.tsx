@@ -1,5 +1,6 @@
-import { ReactNode, useMemo, useState } from "react";
+import { ReactNode, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Input, Select } from "antd";
 import {
   BarChart3,
   Bell,
@@ -27,7 +28,6 @@ import {
   BadgeCheck,
   Camera,
   CheckCircle2,
-  ChevronDown,
   ChevronLeft,
   ChevronRight,
   CirclePlus,
@@ -43,10 +43,17 @@ import {
   Users,
 } from "lucide-react";
 import { AnyRecord, api, clearStoredUser, formPayload, getStoredUser, setStoredUser } from "./api";
+import { AppButton } from "./components/actions/AppButton";
+import { AppTable } from "./components/data/AppTable";
+import { QueryState as AntdQueryState } from "./components/data/QueryState";
+import { StatusTag } from "./components/data/StatusTag";
+import { AppModal } from "./components/feedback/AppModal";
+import { notify as feedbackNotify } from "./components/feedback/notify";
+import { AppFormSection } from "./components/forms/AppFormSection";
+import { AppPanel } from "./components/layout/AppPanel";
 
 type ViewKey = "dashboard" | "repairPool" | "orderDetail" | "recyclePool" | "repair" | "recycle" | "warehouse" | "inventory" | "sales" | "customers" | "payments" | "reports" | "audit";
 type OrderMode = "new" | "view" | "edit" | "cancel";
-type Toast = { message: string; error?: boolean } | null;
 type SortState = { key: string; direction: "asc" | "desc" };
 
 const viewMeta: Record<ViewKey, { label: string; subtitle: string }> = {
@@ -75,10 +82,112 @@ const primaryNav: Array<{ key: ViewKey; label: string; icon: ReactNode }> = [
 
 const moneyKeys = new Set(["quoted_amount", "cost_amount", "charge_amount", "paid_amount", "pay_amount", "sale_price", "amount", "inventory_cost", "avg_cost", "unit_cost", "total_cost", "refund_amount"]);
 const modelOptions = ["iPhone 16", "iPhone 16 Pro", "iPhone 16 Pro Max", "iPhone 15", "iPhone 15 Pro", "iPhone 15 Pro Max", "iPhone 14", "iPhone 14 Pro", "iPhone 14 Pro Max", "iPhone 13", "iPhone 13 Pro", "iPhone 13 Pro Max", "iPhone 12"];
+const memoryOptions = ["64GB", "128GB", "256GB", "512GB", "1TB"];
+const colorOptions = ["黑色", "白色", "蓝色", "绿色", "粉色", "黄色", "紫色", "红色", "银色", "金色", "深空灰", "午夜色", "星光色", "原色钛金属", "黑色钛金属", "白色钛金属"];
+const conditionOptions = ["外观良好", "轻微磕碰", "屏幕破损", "进水", "不开机", "待检测"];
 
 function formatMoney(input: unknown) {
   const amount = Number(input || 0);
   return `¥${amount.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function uniqueStrings(values: unknown[]) {
+  return Array.from(new Set(values.flatMap(value => Array.isArray(value) ? value : [value]).map(value => String(value || "").trim()).filter(Boolean)));
+}
+
+function optionArray(value: unknown) {
+  return Array.isArray(value) ? value.map(item => String(item || "")).filter(Boolean) : [];
+}
+
+function hasTextValue(value: unknown) {
+  return String(value ?? "").trim().length > 0;
+}
+
+function digitsOnly(value: unknown) {
+  return String(value ?? "").replace(/\D/g, "");
+}
+
+function normalizeLookupText(value: unknown) {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function nameMatches(row: AnyRecord, query: string) {
+  const needle = normalizeLookupText(query);
+  if (!needle) return false;
+  return normalizeLookupText(row.name || row.customer_name).includes(needle);
+}
+
+function phoneMatches(row: AnyRecord, query: string) {
+  const rawQuery = String(query ?? "");
+  const rawPhone = String(row.phone || row.customer_phone || "");
+  const needle = digitsOnly(rawQuery);
+  const phone = digitsOnly(rawPhone);
+  if (!needle || !phone) return false;
+  if (phone.includes(needle)) return true;
+
+  const queryChunks = rawQuery.split(/\*+/).map(digitsOnly).filter(Boolean);
+  if (queryChunks.length > 1 && chunksMatch(phone, queryChunks)) return true;
+
+  const storedChunks = rawPhone.split(/\*+/).map(digitsOnly).filter(Boolean);
+  return storedChunks.length > 1 && chunksMatch(needle, storedChunks);
+}
+
+function chunksMatch(target: string, chunks: string[]) {
+  let cursor = 0;
+  return chunks.every(chunk => {
+    if (!chunk) return true;
+    if (chunk.length > target.length) return false;
+    const next = target.indexOf(chunk, cursor);
+    if (next === -1) return false;
+    cursor = next + chunk.length;
+    return true;
+  });
+}
+
+function customerLookupRequestKeyword(anchor: "name" | "phone", keyword: string) {
+  if (anchor !== "phone") return keyword;
+  const digits = digitsOnly(keyword);
+  return digits.length >= 7 ? digits.slice(0, 3) : keyword;
+}
+
+function firstNumber(...values: unknown[]) {
+  const found = values.find(value => value !== null && value !== undefined && value !== "");
+  return Number(found ?? 0);
+}
+
+function hasValue(row: AnyRecord, key: string) {
+  return row[key] !== null && row[key] !== undefined && row[key] !== "";
+}
+
+function repairLineAmounts(row: AnyRecord) {
+  const unitCost = firstNumber(row.cost_amount, row.total_cost, row.unit_cost);
+  const hasSplitAmounts = hasValue(row, "cost_amount") || hasValue(row, "charge_amount");
+  const serviceFee = hasSplitAmounts ? firstNumber(row.charge_amount) : Math.max(firstNumber(row.amount, row.price) - unitCost, 0);
+  const lineAmount = hasSplitAmounts ? unitCost + serviceFee : firstNumber(row.amount, row.price, unitCost);
+  return { unitCost, serviceFee, lineAmount };
+}
+
+function formatOrderNote(type: string, content: string) {
+  return `【${type || "内部备注"}】${content.trim()}`;
+}
+
+function parseOrderNotes(remark: unknown) {
+  return String(remark || "")
+    .split(/\n+/)
+    .map(line => line.trim())
+    .filter(Boolean)
+    .map(line => {
+      const match = line.match(/^【(.+?)】(.+)$/);
+      return { type: match?.[1] || "内部备注", content: match?.[2] || line };
+    });
+}
+
+function nowText() {
+  return new Date().toLocaleString("zh-CN", { hour12: false });
+}
+
+function splitOptionText(value: unknown) {
+  return String(value || "").split(/[\n,，、]/).map(item => item.trim()).filter(Boolean);
 }
 
 function displayValue(row: AnyRecord, key: string) {
@@ -89,80 +198,28 @@ function displayValue(row: AnyRecord, key: string) {
   return String(raw);
 }
 
-function badgeClass(input: unknown) {
-  const text = String(input || "");
-  if (["已交付", "已完结", "已结单", "成功", "财务已确认", "已售出", "已完成"].includes(text)) return "done";
-  if (["维修中", "待检测", "待报价确认", "待交付检测", "检测中", "已报价", "待分配", "待备料"].includes(text)) return "pending";
-  if (["同行挂账", "财务待确认", "未收款", "待支付"].includes(text)) return "warning";
-  if (["回收库存", "在库可用"].includes(text)) return "success";
-  return "neutral";
+
+function Panel({ title, note, action, children }: { title: string; note?: string; action?: ReactNode; children: ReactNode }) {
+  return <AppPanel title={title} note={note} action={action}>{children}</AppPanel>;
 }
 
-function sortRows(rows: AnyRecord[], sort: SortState) {
-  return [...rows].sort((a, b) => {
-    const av = a[sort.key];
-    const bv = b[sort.key];
-    const an = Number(av);
-    const bn = Number(bv);
-    const result = !Number.isNaN(an) && !Number.isNaN(bn)
-      ? an - bn
-      : String(av ?? "").localeCompare(String(bv ?? ""), "zh-CN", { numeric: true, sensitivity: "base" });
-    return sort.direction === "asc" ? result : -result;
-  });
-}
-
-function DataTable({
-  rows,
-  columns,
-  empty = "暂无数据",
-  onRowClick,
-  defaultSort,
-}: {
-  rows?: AnyRecord[];
-  columns: Array<[string, string]>;
-  empty?: string;
-  onRowClick?: (row: AnyRecord) => void;
-  defaultSort?: SortState;
-}) {
-  const [sort, setSort] = useState<SortState>(defaultSort || { key: columns[0]?.[0] || "", direction: "asc" });
-  const sorted = useMemo(() => sort.key ? sortRows(rows || [], sort) : rows || [], [rows, sort]);
-  if (!rows || rows.length === 0) return <div className="empty-state"><strong>{empty}</strong><span>调整筛选条件或新增业务单据后会显示在这里。</span></div>;
+function DataTable({ rows, columns, onRowClick, empty = "暂无数据", defaultSort }: { rows?: AnyRecord[]; columns: Array<[string, string]>; onRowClick?: (row: AnyRecord) => void; empty?: string; defaultSort?: SortState }) {
   return (
-    <div className="table-wrap">
-      <table>
-        <thead>
-          <tr>{columns.map(([key, label]) => (
-            <th key={key}>
-              <button className={`sort-button ${sort.key === key ? "active" : ""}`} type="button" onClick={() => setSort({ key, direction: sort.key === key && sort.direction === "asc" ? "desc" : "asc" })}>
-                {label}<span>{sort.key === key ? (sort.direction === "asc" ? "↑" : "↓") : "↕"}</span>
-              </button>
-            </th>
-          ))}</tr>
-        </thead>
-        <tbody>
-          {sorted.map((row, index) => (
-            <tr key={String(row.id || row.machine_id || row.repair_order_id || row.unit_id || index)} onClick={() => onRowClick?.(row)} className={onRowClick ? "clickable" : ""}>
-              {columns.map(([key]) => {
-                const cell = displayValue(row, key);
-                const isStatus = ["status", "current_status", "payment_status", "direction", "result", "priority"].includes(key);
-                return <td key={key}>{isStatus ? <span className={`badge ${badgeClass(cell)}`}>{cell}</span> : cell}</td>;
-              })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <AppTable
+      rows={rows}
+      columns={columns}
+      empty={empty}
+      onRowClick={onRowClick}
+      defaultSort={defaultSort}
+      formatValue={displayValue}
+      isStatusKey={(key) => key.includes("status") || key === "state"}
+    />
   );
 }
 
-function Panel({ title, note, action, children }: { title: string; note?: string; action?: ReactNode; children: ReactNode }) {
-  return <section className="panel"><div className="panel-header"><div><h2>{title}</h2>{note && <p>{note}</p>}</div>{action}</div>{children}</section>;
-}
-
 function QueryState({ loading, error }: { loading: boolean; error: unknown }) {
-  if (loading) return <div className="empty-state"><strong>正在加载</strong><span>正在读取业务数据。</span></div>;
-  if (error) return <div className="empty-state error"><strong>加载失败</strong><span>{error instanceof Error ? error.message : "未知错误"}</span></div>;
-  return null;
+  if (!loading && !error) return null;
+  return <AntdQueryState loading={loading} error={error} />;
 }
 
 function App() {
@@ -171,15 +228,14 @@ function App() {
   const [selectedRepairOrderId, setSelectedRepairOrderId] = useState<number | string | null>(null);
   const [detailReturnView, setDetailReturnView] = useState<ViewKey>("repairPool");
   const [orderMode, setOrderMode] = useState<OrderMode>("view");
-  const [toast, setToast] = useState<Toast>(null);
   const [modal, setModal] = useState<ReactNode | null>(null);
   const queryClient = useQueryClient();
   const current = viewMeta[view];
   const profile = useQuery({ queryKey: ["me", user], queryFn: () => api<AnyRecord>("/api/me"), enabled: Boolean(user) });
 
   function notify(message: string, error = false) {
-    setToast({ message, error });
-    window.setTimeout(() => setToast(null), 3200);
+    if (error) feedbackNotify.error(message);
+    else feedbackNotify.success(message);
   }
 
   function logout() {
@@ -232,7 +288,7 @@ function App() {
       </aside>
       <main>
         <header className="topbar">
-          <div className="top-search"><Search size={22} /><input placeholder="快捷搜索工单、机型或零件..." /></div>
+          <div className="top-search"><Search size={22} /><Input variant="borderless" placeholder="快捷搜索工单、机型或零件..." /></div>
           <div className="top-links">
             <button type="button" onClick={() => setView("warehouse")}>设备入库</button>
             <button type="button" onClick={() => setView("sales")}>快速卖机</button>
@@ -249,8 +305,7 @@ function App() {
         {view !== "dashboard" && view !== "orderDetail" && view !== "repairPool" && view !== "repair" && <div className="page-title"><h1>{current.label}</h1><p>{current.subtitle}</p></div>}
         <ViewRouter view={view} notify={notify} openModal={setModal} setView={setView} openNewOrder={openNewOrder} openOrderDetail={openOrderDetail} selectedRepairOrderId={selectedRepairOrderId} orderMode={orderMode} setSelectedRepairOrderId={setSelectedRepairOrderId} setOrderMode={setOrderMode} onLeaveOrderDetail={leaveOrderDetail} />
       </main>
-      {toast && <div className={`toast ${toast.error ? "error" : ""}`}>{toast.message}</div>}
-      {modal && <div className="modal"><div className="modal-backdrop" onClick={() => setModal(null)} /><section className="modal-panel">{modal}<div className="modal-footer"><button type="button" className="ghost-button" onClick={() => setModal(null)}>关闭</button></div></section></div>}
+      <AppModal open={Boolean(modal)} onClose={() => setModal(null)}>{modal}</AppModal>
     </div>
   );
 }
@@ -266,9 +321,9 @@ function LoginScreen({ onLogin, notify }: { onLogin: (username: string) => void;
       <form className="auth-card" onSubmit={(event) => { event.preventDefault(); mutation.mutate(formPayload(event.currentTarget)); }}>
         <div className="brand auth-brand"><div className="brand-mark">M</div><div><strong>沐辰科技 MIS</strong><span>机器生命周期工作台</span></div></div>
         <div><h1>登录工作台</h1><p>进入维修、回收、仓库、销售与财务的一体化操作界面。</p></div>
-        <label><span>账号</span><input name="username" defaultValue="admin" autoComplete="username" /></label>
-        <label><span>密码</span><input name="password" type="password" defaultValue="admin" autoComplete="current-password" /></label>
-        <button type="submit" disabled={mutation.isPending}>{mutation.isPending ? "登录中..." : "登录"}</button>
+        <label><span>账号</span><Input name="username" defaultValue="admin" autoComplete="username" /></label>
+        <label><span>密码</span><Input.Password name="password" defaultValue="admin" autoComplete="current-password" /></label>
+        <AppButton type="primary" htmlType="submit" loading={mutation.isPending} block>{mutation.isPending ? "登录中..." : "登录"}</AppButton>
         <p className="auth-hint">演示账号：admin/admin、frontdesk/frontdesk、engineer/engineer、finance/finance、boss/boss</p>
       </form>
     </section>
@@ -309,7 +364,7 @@ function ViewRouter({
   if (view === "customers") return <CustomersPage />;
   if (view === "payments") return <PaymentsPage notify={notify} />;
   if (view === "reports") return <ReportsPage />;
-  if (view === "audit") return <AuditPage />;
+  if (view === "audit") return <AuditPage notify={notify} />;
   if (view === "repair") return <OrderDetailPage orderId={null} mode="new" notify={notify} onBack={() => setView("repairPool")} onCreated={(id) => { setSelectedRepairOrderId(id); setOrderMode("view"); setView("orderDetail"); }} onModeChange={setOrderMode} />;
   if (view === "recycle") return <RecycleOpenPage notify={notify} />;
   return <SalesPage notify={notify} />;
@@ -405,25 +460,36 @@ function DashboardHome({ notify, setView, openOrderDetail }: { notify: (message:
 
 function TodoOrders({ rows, onOpen }: { rows: AnyRecord[]; onOpen: (row: AnyRecord) => void }) {
   const fallback: AnyRecord[] = [
-    { order_no: "#MC-20231024-01", model: "iPhone 15 Pro Max (原装屏更换)", status: "维修中", priority: "紧急" },
-    { order_no: "#MC-20231024-05", model: "MacBook Air M2 (进水清洗)", status: "待分配", priority: "普通" },
-    { order_no: "#MC-20231023-12", model: "Huawei Mate 60 Pro (后盖维修)", status: "维修中", priority: "延期" },
-    { order_no: "#MC-20231024-09", model: "iPad Pro 12.9 (电池更换)", status: "待备料", priority: "普通" },
+    { order_no: "#MC-20231024-01", model: "iPhone 15 Pro Max", status: "\u7ef4\u4fee\u4e2d", priority: "\u7d27\u6025" },
+    { order_no: "#MC-20231024-05", model: "MacBook Air M2", status: "\u5f85\u5206\u914d", priority: "\u666e\u901a" },
+    { order_no: "#MC-20231023-12", model: "Huawei Mate 60 Pro", status: "\u7ef4\u4fee\u4e2d", priority: "\u5ef6\u671f" },
+    { order_no: "#MC-20231024-09", model: "iPad Pro 12.9", status: "\u5f85\u5907\u6599", priority: "\u666e\u901a" },
   ];
   const data = rows.length ? rows : fallback;
   return (
-    <table className="home-table">
-      <thead><tr><th>工单编号</th><th>维修机型</th><th>状态</th><th>紧急程度</th><th>操作</th></tr></thead>
-      <tbody>{data.map((row, index) => (
-        <tr key={String(row.repair_order_id || row.order_no || index)}>
-          <td>{String(row.order_no || row.machine_no || "-")}</td>
-          <td>{String(row.model || row.fault_description || "-")}</td>
-          <td><span className={`badge ${badgeClass(row.status)}`}>{String(row.status || "待处理")}</span></td>
-          <td><span className={`priority ${String(row.priority || "").includes("紧急") ? "danger-text" : String(row.priority || "").includes("延期") ? "muted-text" : "warning-text"}`}>{String(row.priority || "普通")}</span></td>
-          <td><button type="button" className="link-button" onClick={() => onOpen(row)}>{index === 1 ? "处理" : index === 3 ? "备料" : "详情"}</button></td>
-        </tr>
-      ))}</tbody>
-    </table>
+    <AppTable
+      rows={data}
+      columns={[["order_no", "\u5de5\u5355\u7f16\u53f7"], ["model", "\u7ef4\u4fee\u673a\u578b"], ["status", "\u72b6\u6001"], ["priority", "\u7d27\u6025\u7a0b\u5ea6"]]}
+      formatValue={(row, key) => {
+        if (key === "order_no") return String(row.order_no || row.machine_no || "-");
+        if (key === "model") return String(row.model || row.fault_description || "-");
+        if (key === "status") return String(row.status || "\u5f85\u5904\u7406");
+        if (key === "priority") return String(row.priority || "\u666e\u901a");
+        return displayValue(row, key);
+      }}
+      isStatusKey={(key) => key === "status"}
+      renderers={{
+        priority: (row) => {
+          const value = String(row.priority || "\u666e\u901a");
+          const tone = value.includes("\u7d27\u6025") ? "danger-text" : value.includes("\u5ef6\u671f") ? "muted-text" : "warning-text";
+          return <span className={'priority ' + tone}>{value}</span>;
+        },
+      }}
+      actions={{
+        title: "\u64cd\u4f5c",
+        render: (row, index) => <AppButton type="link" className="link-button" onClick={() => onOpen(row)}>{index === 1 ? "\u5904\u7406" : index === 3 ? "\u5907\u6599" : "\u8be6\u60c5"}</AppButton>,
+      }}
+    />
   );
 }
 
@@ -483,7 +549,7 @@ function RepairPool({ notify, openOrderDetail, openNewOrder }: { notify: (messag
   return (
     <div className="repair-pool-page">
       <header className="pool-topbar">
-        <div className="pool-global-search"><Search size={23} /><input placeholder="全局搜索 (订单号, 配件, IMEI)..." /></div>
+        <div className="pool-global-search"><Search size={23} /><Input variant="borderless" placeholder="全局搜索 (订单号, 配件, IMEI)..." /></div>
         <div className="pool-top-actions">
           <button type="button" className="pool-icon-button"><Bell size={23} /><span /></button>
           <button type="button" className="pool-icon-button"><HelpCircle size={23} /></button>
@@ -503,13 +569,13 @@ function RepairPool({ notify, openOrderDetail, openNewOrder }: { notify: (messag
 
         <section className="pool-actionbar">
           <div className="pool-filter-left">
-            <div className="pool-search-field"><Search size={20} /><input value={keyword} onChange={e => setKeyword(e.target.value)} placeholder="搜索订单号、IMEI 或客户手机..." /></div>
-            <label className="pool-select"><select value={status} onChange={event => setStatus(event.target.value)}><option>全部状态</option><option>维修中</option><option>待支付</option><option>已完结</option><option>已取消</option></select><ChevronDown size={18} /></label>
-            <button type="button" className="pool-ghost-button" onClick={() => notify("高级筛选已按设计预留，当前可用搜索和状态筛选。")}><Filter size={20} />高级筛选</button>
+            <Input className="pool-search-input" prefix={<Search size={20} />} value={keyword} onChange={e => setKeyword(e.target.value)} placeholder="搜索订单号、IMEI 或客户手机..." allowClear />
+            <Select className="pool-status-select" value={status} onChange={setStatus} options={["全部状态", "维修中", "待支付", "已完结", "已取消"].map(value => ({ value, label: value }))} />
+            <AppButton className="pool-ghost-button" onClick={() => notify("高级筛选已按设计预留，当前可用搜索和状态筛选。")}><Filter size={20} />高级筛选</AppButton>
           </div>
           <div className="pool-filter-right">
-            <button type="button" className="pool-ghost-button" onClick={() => notify("导出数据入口已预留。")}><Download size={20} />导出数据</button>
-            <button type="button" className="pool-primary-button" onClick={() => openNewOrder?.()}><Plus size={22} />新建工单</button>
+            <AppButton className="pool-ghost-button" onClick={() => notify("导出数据入口已预留。")}><Download size={20} />导出数据</AppButton>
+            <AppButton className="pool-primary-button" type="primary" onClick={() => openNewOrder?.()}><Plus size={22} />新建工单</AppButton>
           </div>
         </section>
 
@@ -554,7 +620,7 @@ function PoolOrderRow({ row, onOpen, notify }: { row: AnyRecord; onOpen: (row: A
       <td><button type="button" className="pool-order-link" onClick={() => onOpen(row, "view")}>{String(row.order_no || row.repair_order_id || "-")}</button></td>
       <td><div className="pool-device-cell"><b>{String(row.model || "待补机型")}</b><span>IMEI: {maskCode(imei)}</span></div></td>
       <td><div className="pool-customer-cell"><b>{String(row.customer_name || "未关联客户")}</b><span>{maskPhone(phone)}</span></div></td>
-      <td><span className={`pool-status ${statusClass(status)}`}>{status}</span></td>
+      <td><StatusTag value={status} /></td>
       <td>{String(row.assigned_to || row.engineer_user || "--")}</td>
       <td className="muted">{String(row.updated_at || row.created_at || "--")}</td>
       <td className="align-right"><b>{poolMoney(row.quoted_amount || row.charge_amount || row.amount || 0)}</b></td>
@@ -569,13 +635,6 @@ function normalizeRepairStatus(input: unknown) {
   if (text.includes("完") || text.includes("结") || text.includes("交付")) return "已完结";
   if (text.includes("支付") || text.includes("收款") || text.includes("财务") || text.includes("挂账")) return "待支付";
   return "维修中";
-}
-
-function statusClass(status: string) {
-  if (status === "已完结") return "done";
-  if (status === "待支付") return "pay";
-  if (status === "已取消") return "cancel";
-  return "repairing";
 }
 
 function maskCode(value: string) {
@@ -595,6 +654,7 @@ function poolMoney(input: unknown) {
   return `¥${amount.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+
 function LegacyRepairPool({ notify, openOrderDetail }: { notify: (message: string, error?: boolean) => void; openOrderDetail: (row: AnyRecord) => void }) {
   const [keyword, setKeyword] = useState("");
   const query = useQuery({ queryKey: ["repair-workbench"], queryFn: () => api<AnyRecord>("/api/repair-workbench") });
@@ -608,7 +668,18 @@ function LegacyRepairPool({ notify, openOrderDetail }: { notify: (message: strin
   }
 
   if (query.isLoading || query.error) return <QueryState loading={query.isLoading} error={query.error} />;
-  return <Panel title="维修订单池" note="按订单号、机型、客户、工程师快速定位维修工单。" action={<button type="button" onClick={() => query.refetch()}><RefreshCw size={16} />刷新</button>}><div className="toolbar filters"><input value={keyword} onChange={e => setKeyword(e.target.value)} placeholder="搜索订单号、IMEI、客户手机..." /></div><DataTable rows={rows} onRowClick={openDetail} defaultSort={{ key: "updated_at", direction: "desc" }} columns={[["order_no", "订单编号"], ["model", "设备信息"], ["customer_name", "客户"], ["status", "状态"], ["assigned_to", "技术员"], ["updated_at", "最后更新"], ["quoted_amount", "预估金额"]]} /></Panel>;
+  return (
+    <Panel
+      title="?????"
+      note="???????????????????????"
+      action={<AppButton onClick={() => query.refetch()}><RefreshCw size={16} />取消</AppButton>}
+    >
+      <div className="toolbar filters">
+        <Input allowClear value={keyword} onChange={event => setKeyword(event.target.value)} placeholder="??????IMEI?????..." />
+      </div>
+      <DataTable rows={rows} onRowClick={openDetail} defaultSort={{ key: "updated_at", direction: "desc" }} columns={[["order_no", "????"], ["model", "????"], ["customer_name", "??"], ["status", "??"], ["assigned_to", "???"], ["updated_at", "????"], ["quoted_amount", "????"]]} />
+    </Panel>
+  );
 }
 
 function RepairDetail({ detail, notify, onChanged }: { detail: AnyRecord; notify: (message: string, error?: boolean) => void; onChanged: () => void }) {
@@ -671,7 +742,24 @@ function OrderDetailPage({
   const [itemForm, setItemForm] = useState<AnyRecord>({ quantity: 1 });
   const [preInspectionState, setPreInspectionState] = useState<Record<string, boolean>>({});
   const [postInspectionState, setPostInspectionState] = useState<Record<string, boolean>>({});
+  const [preInspectionEditing, setPreInspectionEditing] = useState(false);
+  const [postInspectionEditing, setPostInspectionEditing] = useState(false);
+  const [preInspectionSaved, setPreInspectionSaved] = useState(false);
+  const [preInspectionNote, setPreInspectionNote] = useState("");
+  const [postInspectionNote, setPostInspectionNote] = useState("");
+  const [noteFormOpen, setNoteFormOpen] = useState(false);
+  const [noteForm, setNoteForm] = useState<AnyRecord>({ type: "内部备注" });
+  const [newOrderNotes, setNewOrderNotes] = useState<AnyRecord[]>([]);
+  const [newOrderNoteLogs, setNewOrderNoteLogs] = useState<AnyRecord[]>([]);
+  const [selectedPhoto, setSelectedPhoto] = useState<AnyRecord | null>(null);
   const [logsExpanded, setLogsExpanded] = useState(false);
+  const [customerLookupOpen, setCustomerLookupOpen] = useState(false);
+  const [customerLookupAnchor, setCustomerLookupAnchor] = useState<"name" | "phone">("name");
+  const [machineLookupOpen, setMachineLookupOpen] = useState(false);
+  const [machineLookupAnchor, setMachineLookupAnchor] = useState<"imei" | "serial">("imei");
+  const [newRepairItems, setNewRepairItems] = useState<AnyRecord[]>([]);
+  const [selectedCustomer, setSelectedCustomer] = useState<AnyRecord | null>(null);
+  const [selectedMachine, setSelectedMachine] = useState<AnyRecord | null>(null);
   const query = useQuery({
     queryKey: ["repair-workbench-detail", orderId],
     queryFn: () => api<AnyRecord>(`/api/repair-workbench/${orderId}`),
@@ -689,7 +777,32 @@ function OrderDetailPage({
     queryFn: () => api<AnyRecord[]>(`/api/repair-orders/${orderId}/photos`),
     enabled: Boolean(orderId) && mode !== "new",
   });
+  const customerLookupKeyword = customerLookupAnchor === "phone" ? String(form.phone || "") : String(form.customer_name || "");
+  const customerRequestKeyword = customerLookupRequestKeyword(customerLookupAnchor, customerLookupKeyword);
+  const machineLookupKeyword = machineLookupAnchor === "imei" ? String(form.imei || "") : String(form.serial || "");
+  const customerSearchQuery = useQuery({
+    queryKey: ["order-create-customers", customerLookupAnchor, customerRequestKeyword],
+    queryFn: () => api<AnyRecord[]>(`/api/customers?q=${encodeURIComponent(customerRequestKeyword)}`),
+    enabled: mode === "new" && customerLookupOpen && hasTextValue(customerLookupKeyword),
+  });
+  const machineSearchQuery = useQuery({
+    queryKey: ["order-create-machines", machineLookupAnchor, machineLookupKeyword],
+    queryFn: () => api<AnyRecord[]>(`/api/machines?q=${encodeURIComponent(machineLookupKeyword)}`),
+    enabled: mode === "new" && machineLookupOpen && hasTextValue(machineLookupKeyword),
+  });
+  const repairSkuQuery = useQuery({
+    queryKey: ["repair-skus", form.model || ""],
+    queryFn: () => api<AnyRecord[]>(`/api/repair-skus?model=${encodeURIComponent(String(form.model || ""))}`),
+    enabled: mode === "new" && showItemForm,
+  });
+  const deviceModelsQuery = useQuery({
+    queryKey: ["device-models", "enabled"],
+    queryFn: () => api<AnyRecord[]>("/api/device-models?enabled_only=true"),
+    enabled: mode === "new" || profileEditing,
+  });
+  const currentUserQuery = useQuery({ queryKey: ["me", "order-detail"], queryFn: () => api<AnyRecord>("/api/me") });
   const events = ((data.events as AnyRecord[] | undefined) || []);
+  const savedInspections = useMemo(() => ((data.inspections as AnyRecord[] | undefined) || []), [data.inspections]);
   const incomeItems = ((data.income_items as AnyRecord[] | undefined) || []);
   const costItems = ((data.cost_items as AnyRecord[] | undefined) || []);
   const payments = ((data.payments as AnyRecord[] | undefined) || []);
@@ -697,27 +810,32 @@ function OrderDetailPage({
   const createdAt = String(order.created_at || order.opened_at || "保存后生成");
   const owner = String(display.assigned_to || order.assigned_to || "未指派");
   const statusText = mode === "new" ? "待创建" : mode === "cancel" ? "取消确认" : normalizeRepairStatus(order.status);
-  const model = String(display.model || order.model || "iPhone 13 Pro");
-  const colorCapacity = [display.color || order.color || "远峰蓝", display.memory || order.memory || order.capacity || "128GB"].filter(Boolean).join(" / ");
-  const imei = String(display.imei || order.imei || order.serial || "869123456789012");
-  const customer = String(display.customer_name || order.customer_name || "张先生");
-  const phone = String(display.phone || order.phone || order.customer_phone || "138-0000-0000");
+  const model = String(display.model || order.model || (mode === "new" ? "" : "iPhone 13 Pro"));
+  const colorCapacity = [display.color || order.color || (mode === "new" ? "" : "远峰蓝"), display.memory || order.memory || order.capacity || (mode === "new" ? "" : "128GB")].filter(Boolean).join(" / ");
+  const imei = String(display.imei || order.imei || order.serial || (mode === "new" ? "" : "869123456789012"));
+  const customer = String(display.customer_name || order.customer_name || (mode === "new" ? "" : "张先生"));
+  const phone = String(display.phone || order.phone || order.customer_phone || (mode === "new" ? "" : "138-0000-0000"));
   const profileDisplay = profileEditing ? { ...display, ...profileForm } : display;
-  const profileModel = String(profileDisplay.model || "iPhone 13 Pro");
-  const profileImei = String(profileDisplay.imei || profileDisplay.serial || "869123456789012");
-  const profileColor = String(profileDisplay.color || "远峰蓝");
-  const profileMemory = String(profileDisplay.memory || profileDisplay.capacity || "128GB");
-  const profileCustomer = String(profileDisplay.customer_name || "张先生");
-  const profilePhone = String(profileDisplay.phone || profileDisplay.customer_phone || "138-0000-0000");
-  const profileCustomerType = String(profileDisplay.customer_type || order.customer_type || "零售客户");
-  const quoted = Number(display.quoted_amount || order.quoted_amount || incomeItems.reduce((sum, row) => sum + Number(row.amount || 0), 0));
+  const profileModel = String(profileDisplay.model || (mode === "new" ? "" : "iPhone 13 Pro"));
+  const profileImei = String(profileDisplay.imei || profileDisplay.serial || (mode === "new" ? "" : "869123456789012"));
+  const profileColor = String(profileDisplay.color || (mode === "new" ? "" : "远峰蓝"));
+  const profileMemory = String(profileDisplay.memory || profileDisplay.capacity || (mode === "new" ? "" : "128GB"));
+  const profileCustomer = String(profileDisplay.customer_name || (mode === "new" ? "" : "张先生"));
+  const profilePhone = String(profileDisplay.phone || profileDisplay.customer_phone || (mode === "new" ? "" : "138-0000-0000"));
+  const profileCustomerType = String(profileDisplay.customer_type || order.customer_type || (mode === "new" ? "个人客户" : "零售客户"));
+  const newQuoted = newRepairItems.reduce((sum, row) => {
+    const { lineAmount } = repairLineAmounts(row);
+    return sum + lineAmount * firstNumber(row.quantity, row.qty, 1);
+  }, 0);
+  const quoted = mode === "new" ? newQuoted : Number(display.quoted_amount || order.quoted_amount || incomeItems.reduce((sum, row) => sum + Number(row.amount || 0), 0));
   const cost = Number(order.cost_amount || costItems.reduce((sum, row) => sum + Number(row.total_cost || row.unit_cost || 0), 0));
   const paid = Number(order.paid_amount || payments.reduce((sum, row) => sum + Number(row.amount || 0), 0));
-  const detailRows = costItems.length ? costItems : [
+  const detailRows = mode === "new" ? newRepairItems : costItems.length ? costItems : [
     { item_name: "屏幕总成更换", sku: "IP13P-SCR-OLED", unit_cost: cost || 680, amount: quoted || 980, qty: 1 },
     { item_name: "维修服务费", sku: "SERVICE-PREMIUM", unit_cost: 0, amount: Math.max((quoted || 1280) - (cost || 680), 0), qty: 1 },
   ];
   const inspections = ["屏幕显示", "触摸功能", "摄像头", "电池健康", "生物识别", "无线网络", "蜂窝网络", "音频模块", "指南针", "扬声器", "听筒", "充电"];
+  const inspectionItems = ["屏幕显示", "触摸功能", "摄像头", "电池健康", "生物识别", "无线网络", "蜂窝网络", "音频模块", "指南针", "扬声器", "听筒", "充电", "其他异常"];
   const canAddRepairItem = mode !== "new" && canModifyRepairItems(statusText);
   const historyOrders = (((timelineQuery.data?.repair_orders as AnyRecord[] | undefined) || []))
     .filter(row => String(row.repair_order_id) !== String(order.repair_order_id || orderId))
@@ -725,7 +843,46 @@ function OrderDetailPage({
   const photos = ((photosQuery.data as AnyRecord[] | undefined) || []);
   const prePhotos = photos.filter(row => row.stage === "pre");
   const postPhotos = photos.filter(row => row.stage === "post");
-  const visibleLogs = logsExpanded ? events : events.slice(0, 3);
+  const combinedLogs = mode === "new" ? newOrderNoteLogs : events;
+  const visibleLogs = logsExpanded ? combinedLogs : combinedLogs.slice(0, 3);
+  const customerOptions = ((customerSearchQuery.data as AnyRecord[] | undefined) || [])
+    .filter(row => customerLookupAnchor === "phone" ? phoneMatches(row, customerLookupKeyword) : nameMatches(row, customerLookupKeyword))
+    .slice(0, 8);
+  const machineOptions = ((machineSearchQuery.data as AnyRecord[] | undefined) || []).slice(0, 8);
+  const deviceModels = ((deviceModelsQuery.data as AnyRecord[] | undefined) || []);
+  const deviceModelNames = deviceModels.length ? deviceModels.map(row => String(row.model_name || "")).filter(Boolean) : modelOptions;
+  const selectedDeviceModel = deviceModels.find(row => String(row.model_name || "") === profileModel);
+  const colorChoices = selectedDeviceModel ? optionArray(selectedDeviceModel.colors) : uniqueStrings([colorOptions, ...deviceModels.map(row => optionArray(row.colors))]);
+  const memoryChoices = selectedDeviceModel ? optionArray(selectedDeviceModel.capacities) : uniqueStrings([memoryOptions, ...deviceModels.map(row => optionArray(row.capacities))]);
+  const persistedNotes = ((data.notes as AnyRecord[] | undefined) || []);
+  const orderNotes = mode === "new" ? newOrderNotes : persistedNotes.length ? persistedNotes : parseOrderNotes(order.remark);
+  const visibleOrderNotes: AnyRecord[] = orderNotes.length ? orderNotes : [{ type: "内部备注", content: "客户要求尽量保留原厂原色原彩，维修后请务必同步写入数据。", readonly: true }, { type: "交付说明", content: "告知客户外壳磕碰处无法复原，仅保证屏幕功能完好。", readonly: true }];
+  const currentOperator = String(currentUserQuery.data?.username || "当前用户");
+
+  useEffect(() => {
+    if (mode === "new") return;
+    const nextPre: Record<string, boolean> = {};
+    const nextPost: Record<string, boolean> = {};
+    let nextPreNote = "";
+    let nextPostNote = "";
+    savedInspections.forEach(row => {
+      const item = String(row.item || "");
+      const stage = String(row.stage || "");
+      if (!item) return;
+      if (stage === "pre") {
+        nextPre[item] = Boolean(row.abnormal);
+        nextPreNote = String(row.note || nextPreNote);
+      }
+      if (stage === "post") {
+        nextPost[item] = Boolean(row.abnormal);
+        nextPostNote = String(row.note || nextPostNote);
+      }
+    });
+    setPreInspectionState(nextPre);
+    setPostInspectionState(nextPost);
+    setPreInspectionNote(nextPreNote || String(order.diagnosis || ""));
+    setPostInspectionNote(nextPostNote);
+  }, [mode, order.diagnosis, savedInspections]);
 
   const createMutation = useMutation({
     mutationFn: (payload: AnyRecord) => api<AnyRecord>("/api/repair-orders", { method: "POST", body: JSON.stringify(payload) }),
@@ -733,6 +890,17 @@ function OrderDetailPage({
       const next = ((data.order || data) as AnyRecord);
       const id = next.repair_order_id || data.repair_order_id;
       notify("维修工单已创建");
+      setForm({});
+      setSelectedCustomer(null);
+      setSelectedMachine(null);
+      setNewRepairItems([]);
+      setNewOrderNotes([]);
+      setNewOrderNoteLogs([]);
+      setPreInspectionSaved(false);
+      setNoteFormOpen(false);
+      setNoteForm({ type: "内部备注" });
+      setCustomerLookupOpen(false);
+      setMachineLookupOpen(false);
       queryClient.invalidateQueries({ queryKey: ["repair-workbench"] });
       if (id) onCreated(id as number | string);
     },
@@ -837,6 +1005,23 @@ function OrderDetailPage({
     },
     onError: error => notify(error instanceof Error ? error.message : "上传失败", true),
   });
+  const inspectionMutation = useMutation({
+    mutationFn: ({ stage, state, note }: { stage: "pre" | "post"; state: Record<string, boolean>; note: string }) => {
+      if (!orderId) throw new Error("缺少工单 ID");
+      const items = inspectionItems.map(item => ({ item, abnormal: Boolean(state[item]) }));
+      return api<AnyRecord>(`/api/repair-orders/${orderId}/inspections`, {
+        method: "POST",
+        body: JSON.stringify({ stage, items, note }),
+      });
+    },
+    onSuccess: (_, payload) => {
+      notify(payload.stage === "pre" ? "维修前检测已保存" : "维修后检测已保存");
+      payload.stage === "pre" ? setPreInspectionEditing(false) : setPostInspectionEditing(false);
+      query.refetch();
+      queryClient.invalidateQueries({ queryKey: ["repair-workbench-detail", orderId] });
+    },
+    onError: error => notify(error instanceof Error ? error.message : "检测保存失败", true),
+  });
   const cancelMutation = useMutation({
     mutationFn: (payload: AnyRecord) => api<AnyRecord>(`/api/repair-orders/${orderId}/status`, { method: "POST", body: JSON.stringify({ status: "已作废", remark: payload.cancel_reason || "取消工单" }) }),
     onSuccess: () => {
@@ -848,9 +1033,69 @@ function OrderDetailPage({
     },
     onError: error => notify(error instanceof Error ? error.message : "取消失败", true),
   });
+  const remarkMutation = useMutation({
+    mutationFn: (payload: AnyRecord) => {
+      if (!orderId) throw new Error("缺少工单 ID");
+      return api<AnyRecord>(`/api/repair-orders/${orderId}/remark`, {
+        method: "POST",
+        body: JSON.stringify({ remark: payload.remark || "" }),
+      });
+    },
+    onSuccess: () => {
+      notify("备注已添加");
+      setNoteFormOpen(false);
+      setNoteForm({ type: "内部备注" });
+      query.refetch();
+      queryClient.invalidateQueries({ queryKey: ["repair-workbench-detail", orderId] });
+    },
+    onError: error => notify(error instanceof Error ? error.message : "备注添加失败", true),
+  });
+  const updateNoteMutation = useMutation({
+    mutationFn: (payload: AnyRecord) => {
+      if (!orderId) throw new Error("缺少工单 ID");
+      return api<AnyRecord>(`/api/repair-orders/${orderId}/notes/${payload.note_id}`, {
+        method: "PUT",
+        body: JSON.stringify({ note_type: payload.type || "内部备注", content: payload.content || "" }),
+      });
+    },
+    onSuccess: () => {
+      notify("备注已修改");
+      setNoteFormOpen(false);
+      setNoteForm({ type: "内部备注" });
+      query.refetch();
+      queryClient.invalidateQueries({ queryKey: ["repair-workbench-detail", orderId] });
+    },
+    onError: error => notify(error instanceof Error ? error.message : "备注修改失败", true),
+  });
+  const deleteNoteMutation = useMutation({
+    mutationFn: (payload: AnyRecord) => {
+      if (!orderId) throw new Error("缺少工单 ID");
+      return api<AnyRecord>(`/api/repair-orders/${orderId}/notes/${payload.note_id}`, {
+        method: "DELETE",
+        body: JSON.stringify({ reason: payload.reason || "" }),
+      });
+    },
+    onSuccess: () => {
+      notify("备注已删除");
+      query.refetch();
+      queryClient.invalidateQueries({ queryKey: ["repair-workbench-detail", orderId] });
+    },
+    onError: error => notify(error instanceof Error ? error.message : "备注删除失败", true),
+  });
 
   function setField(key: string, value: unknown) {
-    setForm(prev => ({ ...prev, [key]: value }));
+    setForm(prev => {
+      const next = { ...prev, [key]: value };
+      if (["customer_name", "phone"].includes(key)) {
+        setSelectedCustomer(null);
+        setCustomerLookupOpen(hasTextValue(value));
+      }
+      if (["imei", "serial"].includes(key)) {
+        setSelectedMachine(null);
+        setMachineLookupOpen(hasTextValue(value));
+      }
+      return next;
+    });
   }
   function beginProfileEdit() {
     if (!order.machine_id && mode !== "new") {
@@ -884,6 +1129,16 @@ function OrderDetailPage({
     setItemForm(prev => ({ ...prev, [key]: value }));
   }
   function submitRepairItem() {
+    if (mode === "new") {
+      if (!itemForm.sku_id) {
+        notify("请选择故障代码", true);
+        return;
+      }
+      setNewRepairItems(prev => [...prev, { ...itemForm, quantity: Number(itemForm.quantity || 1) }]);
+      setItemForm({ quantity: 1 });
+      setShowItemForm(false);
+      return;
+    }
     if (!canAddRepairItem) {
       notify("当前订单状态不可添加维修故障", true);
       return;
@@ -895,9 +1150,26 @@ function OrderDetailPage({
     addItemMutation.mutate(itemForm);
   }
   function toggleInspection(kind: "pre" | "post", item: string) {
-    if (mode !== "new" && mode !== "edit") return;
+    if (mode !== "new" && mode !== "edit" && !(kind === "pre" ? preInspectionEditing : postInspectionEditing)) return;
     const setter = kind === "pre" ? setPreInspectionState : setPostInspectionState;
     setter(prev => ({ ...prev, [item]: !prev[item] }));
+  }
+  function saveInspection(stage: "pre" | "post") {
+    const state = stage === "pre" ? preInspectionState : postInspectionState;
+    const note = stage === "pre" ? preInspectionNote : postInspectionNote;
+    if (state["其他异常"] && !String(note || "").trim()) {
+      notify("选择其他异常后必须填写备注", true);
+      return;
+    }
+    if (mode === "new") {
+      if (stage === "pre") {
+        setPreInspectionSaved(true);
+        setPreInspectionEditing(false);
+      }
+      notify(stage === "pre" ? "维修前检测已暂存，创建工单时一并保存" : "维修后检测已暂存，创建工单时一并保存");
+      return;
+    }
+    inspectionMutation.mutate({ stage, state, note });
   }
   function uploadPhoto(stage: "pre" | "post", file: File | null) {
     if (!file) return;
@@ -907,18 +1179,145 @@ function OrderDetailPage({
     }
     photoMutation.mutate({ stage, file });
   }
-  function submitNew() {
-    if (!String(display.customer_name || "").trim() || !String(display.model || "").trim()) {
-      notify("请填写客户姓名和设备型号", true);
+  function selectCustomer(row: AnyRecord) {
+    setSelectedCustomer(row);
+    setCustomerLookupOpen(false);
+    setForm(prev => ({
+      ...prev,
+      customer_id: row.customer_id,
+      customer_name: row.name || "",
+      phone: row.phone || "",
+      wechat: row.wechat || "",
+      customer_type: row.category || "",
+      customer_remark: row.remark || "",
+    }));
+  }
+  function selectMachine(row: AnyRecord) {
+    setSelectedMachine(row);
+    setMachineLookupOpen(false);
+    setForm(prev => ({
+      ...prev,
+      machine_id: row.machine_id,
+      imei: row.imei || "",
+      serial: row.serial || "",
+      model: row.model || "",
+      memory: row.memory || row.storage || "",
+      color: row.color || "",
+      condition: row.condition || "",
+      customer_id: row.customer_id || prev.customer_id || null,
+      customer_name: row.customer_name || prev.customer_name || "",
+    }));
+  }
+  function selectRepairSku(row: AnyRecord) {
+    setItemForm({
+      sku_id: row.sku_id,
+      item_name: row.solution_name || row.fault_name || "",
+      quantity: 1,
+      cost_amount: firstNumber(row.cost_amount),
+      charge_amount: firstNumber(row.charge_amount),
+      remark: row.remark || "",
+      sku_code: row.sku_code || "",
+      fault_name: row.fault_name || "",
+    });
+  }
+  function removeNewRepairItem(index: number) {
+    setNewRepairItems(prev => prev.filter((_, i) => i !== index));
+  }
+  function inspectionPayload(stage: "pre" | "post", state: Record<string, boolean>, note: string) {
+    return {
+      stage,
+      items: inspectionItems.map(item => ({ item, abnormal: Boolean(state[item]) })),
+      note,
+    };
+  }
+  function setNoteField(key: string, value: unknown) {
+    setNoteForm(prev => ({ ...prev, [key]: value }));
+  }
+  function addLocalNoteLog(title: string, detail: string) {
+    setNewOrderNoteLogs(prev => [...prev, { title, detail, operator: currentOperator, created_at: nowText() }]);
+  }
+  function submitNote() {
+    const content = String(noteForm.content || "").trim();
+    const type = String(noteForm.type || "内部备注");
+    if (!content) {
+      notify("请填写备注内容", true);
       return;
     }
-    createMutation.mutate({
-      machine_id: null,
-      machine: machinePayload({ imei: display.imei, serial: display.serial, model: display.model, memory: display.memory, color: display.color, condition: display.condition }),
-      customer: customerPayload({ customer_name: display.customer_name, phone: display.phone }),
-      fault_description: display.fault_description || "",
-      remark: display.remark || "",
+    if (noteForm.editing) {
+      if (mode === "new") {
+        const index = Number(noteForm.index);
+        const old = newOrderNotes[index];
+        setNewOrderNotes(prev => prev.map((row, i) => i === index ? { ...row, type, content, updated_by: currentOperator, updated_at: nowText() } : row));
+        addLocalNoteLog("修改工单备注", `${String(old?.type || "内部备注")}：${String(old?.content || "")} -> ${type}：${content}`);
+        setNoteForm({ type: "内部备注" });
+        setNoteFormOpen(false);
+        notify("备注已修改");
+        return;
+      }
+      updateNoteMutation.mutate({ note_id: noteForm.note_id, type, content });
+      return;
+    }
+    const remark = formatOrderNote(type, content);
+    if (mode === "new") {
+      setNewOrderNotes(prev => [...prev, { temp_id: `note-${Date.now()}`, type, content, created_by: currentOperator, created_at: nowText() }]);
+      setNoteForm({ type: "内部备注" });
+      setNoteFormOpen(false);
+      notify("备注已添加");
+      return;
+    }
+    remarkMutation.mutate({ remark });
+  }
+  function editNote(row: AnyRecord, index: number) {
+    setNoteForm({
+      editing: true,
+      index,
+      note_id: row.note_id,
+      type: row.note_type || row.type || "内部备注",
+      content: row.content || "",
     });
+    setNoteFormOpen(true);
+  }
+  function deleteNote(row: AnyRecord, index: number) {
+    const label = `${String(row.note_type || row.type || "内部备注")}：${String(row.content || "")}`;
+    if (mode === "new") {
+      setNewOrderNotes(prev => prev.filter((_, i) => i !== index));
+      addLocalNoteLog("删除工单备注", label);
+      notify("备注已删除");
+      return;
+    }
+    if (row.note_id) {
+      deleteNoteMutation.mutate({ note_id: row.note_id });
+    }
+  }
+  function submitNew() {
+    if (!selectedCustomer?.customer_id && !String(display.customer_name || "").trim()) {
+      notify("请填写客户姓名", true);
+      return;
+    }
+    if (!selectedMachine?.machine_id && !String(display.model || "").trim()) {
+      notify("请填写设备型号", true);
+      return;
+    }
+    const payload: AnyRecord = {
+      machine_id: selectedMachine?.machine_id || null,
+      machine: selectedMachine?.machine_id ? null : machinePayload({ imei: display.imei, serial: display.serial, model: display.model, memory: display.memory, color: display.color, condition: display.condition, remark: "" }),
+      customer_id: selectedCustomer?.customer_id || null,
+      customer: selectedCustomer?.customer_id ? null : customerPayload({ customer_name: display.customer_name, phone: display.phone, wechat: display.wechat, customer_type: display.customer_type, customer_remark: display.customer_remark }),
+      fault_description: display.fault_description || "",
+      remark: newOrderNotes.map(row => formatOrderNote(String(row.type || "内部备注"), String(row.content || ""))).join("\n"),
+      notes: newOrderNotes.map(row => ({ note_type: row.type || "内部备注", content: row.content || "" })),
+      note_logs: newOrderNoteLogs.map(row => ({ title: row.title || "", detail: row.detail || "" })),
+      repair_items: newRepairItems.map(row => ({
+        sku_id: row.sku_id || null,
+        item_name: row.item_name || row.fault_name || "",
+        quantity: Number(row.quantity || 1),
+        cost_amount: Number(row.cost_amount || 0),
+        charge_amount: Number(row.charge_amount || 0),
+        remark: row.remark || "",
+      })),
+      inspections: [inspectionPayload("pre", preInspectionState, preInspectionNote)],
+    };
+    createMutation.mutate(payload);
   }
   function submitCancel() {
     if (!String(form.cancel_reason || "").trim()) {
@@ -934,7 +1333,7 @@ function OrderDetailPage({
     <div className={`order-detail-page order-mode-${mode}`}>
       <header className="order-detail-topbar">
         <div className="order-detail-title"><button type="button" className="back-button" onClick={onBack}><ArrowLeft size={24} /></button><h1>{mode === "new" ? "新建工单" : mode === "edit" ? "编辑工单" : mode === "cancel" ? "取消工单" : "工单详情"}</h1></div>
-        <div className="order-detail-search"><Search size={22} /><input placeholder="搜索工单、IMEI、客户..." /></div>
+        <div className="order-detail-search"><Search size={22} /><Input allowClear placeholder="?????IMEI???..." /></div>
         <div className="order-detail-icons"><button type="button" className="icon-button"><Bell size={23} /><span /></button><button type="button" className="icon-button"><UserRound size={23} /></button></div>
       </header>
 
@@ -944,69 +1343,128 @@ function OrderDetailPage({
           {mode === "view" && canModifyOrderStatus(statusText) && <button type="button" onClick={() => onModeChange("edit")}><Edit3 size={20} />编辑</button>}
           {mode === "view" && canModifyOrderStatus(statusText) && <button type="button" onClick={() => onModeChange("cancel")}><CirclePlus size={20} />取消订单</button>}
           {mode === "edit" && <button type="button" onClick={() => editMutation.mutate(form)} disabled={editMutation.isPending}><Edit3 size={20} />保存修改</button>}
-          {mode === "new" && <button type="button" onClick={submitNew} disabled={createMutation.isPending}><Plus size={20} />创建工单</button>}
           {mode === "cancel" && <button type="button" className="danger-action" onClick={submitCancel} disabled={cancelMutation.isPending}>确认取消</button>}
-          {mode !== "view" && <button type="button" onClick={() => { setForm({}); mode === "new" ? onBack() : onModeChange("view"); }}>放弃</button>}
+          {mode !== "view" && mode !== "new" && <button type="button" onClick={() => { setForm({}); onModeChange("view"); }}>放弃</button>}
         </div>
       </section>
 
       <div className="order-detail-layout">
         <div className="order-main-column">
+          <section className="order-card customer-card">
+            <div className="repair-card-head">
+              <h3><Users size={24} />客户信息</h3>
+            </div>
+            <div className="order-info-grid compact">
+              <OrderEditableLine label="客户姓名" value={profileCustomer} editable={mode === "new" || profileEditing} tag={profileCustomerType} onFocus={() => { if (mode === "new") { setCustomerLookupAnchor("name"); setCustomerLookupOpen(hasTextValue(form.customer_name)); } }} onChange={v => { if (mode === "new") { setCustomerLookupAnchor("name"); setCustomerLookupOpen(hasTextValue(v)); } profileEditing ? setProfileField("customer_name", v) : setField("customer_name", v); }} />
+              <OrderEditableLine label="联系方式" value={profilePhone} editable={mode === "new" || profileEditing} highlight onFocus={() => { if (mode === "new") { setCustomerLookupAnchor("phone"); setCustomerLookupOpen(hasTextValue(form.phone)); } }} onChange={v => { if (mode === "new") { setCustomerLookupAnchor("phone"); setCustomerLookupOpen(hasTextValue(v)); } profileEditing ? setProfileField("phone", v) : setField("phone", v); }} />
+            {mode === "new" && customerLookupOpen && <SuggestionList className={`customer-suggestions ${customerLookupAnchor === "phone" ? "lookup-anchor-right" : "lookup-anchor-left"} lookup-row-1` } loading={customerSearchQuery.isLoading} rows={customerOptions} selectedId={selectedCustomer?.customer_id} idKey="customer_id" primaryKey="name" secondaryKeys={["phone", "category", "shop_name"]} onSelect={selectCustomer} empty="没有找到已有客户" />}
+              <OrderEditableLine label="微信" value={String(display.wechat || order.wechat || (mode === "new" ? "" : "待补"))} editable={mode === "new"} onChange={v => setField("wechat", v)} />
+              <OrderChoiceLine label="客户类型" value={profileCustomerType} editable={mode === "new" || profileEditing} options={["个人客户", "同行客户", "企业客户", "VIP客户"]} onChange={v => profileEditing ? setProfileField("customer_type", v) : setField("customer_type", v)} />
+              {mode === "new" && <OrderField label="客户备注" value={display.customer_remark} editable area onChange={v => setField("customer_remark", v)} />}
+            </div>
+          </section>
+
           <section className="order-card device-card">
             <div className="repair-card-head">
-              <h3><Smartphone size={24} />设备详细信息</h3>
+              <h3><Smartphone size={24} />设备信息</h3>
               <div className="inline-actions">
-                {profileEditing ? (
+                {mode !== "new" && (profileEditing ? (
                   <>
                     <button type="button" className="mini-add-button" onClick={submitProfile} disabled={profileMutation.isPending}>保存</button>
                     <button type="button" className="ghost-mini-button" onClick={() => { setProfileEditing(false); setProfileForm({}); }}>取消</button>
                   </>
                 ) : (
-                  <button type="button" className="ghost-mini-button" onClick={beginProfileEdit} disabled={!order.machine_id && mode !== "new"}><Edit3 size={15} />编辑</button>
-                )}
+                  <button type="button" className="ghost-mini-button" onClick={beginProfileEdit} disabled={!order.machine_id}><Edit3 size={15} />编辑</button>
+                ))}
               </div>
             </div>
             <div className="order-info-grid">
-              <OrderEditableLine label="手机型号" value={profileModel} editable={mode === "new" || profileEditing} onChange={v => profileEditing ? setProfileField("model", v) : setField("model", v)} />
-              <OrderEditableLine label="IMEI / 序列号" value={profileImei} editable={mode === "new" || profileEditing} onChange={v => profileEditing ? setProfileField("imei", v) : setField("imei", v)} />
-              <OrderEditableLine label="颜色" value={profileColor} editable={mode === "new" || profileEditing} onChange={v => profileEditing ? setProfileField("color", v) : setField("color", v)} />
-              <OrderEditableLine label="容量" value={profileMemory} editable={mode === "new" || profileEditing} onChange={v => profileEditing ? setProfileField("memory", v) : setField("memory", v)} />
-              <OrderEditableLine label="机况" value={String(profileDisplay.condition || "待补")} editable={profileEditing} onChange={v => setProfileField("condition", v)} />
-            </div>
-          </section>
-          <section className="order-card customer-card">
-            <div className="order-info-grid compact">
-              <OrderEditableLine label="客户姓名" value={profileCustomer} editable={mode === "new" || profileEditing} tag={profileCustomerType} onChange={v => profileEditing ? setProfileField("customer_name", v) : setField("customer_name", v)} />
-              <OrderEditableLine label="联系方式" value={profilePhone} editable={mode === "new" || profileEditing} highlight onChange={v => profileEditing ? setProfileField("phone", v) : setField("phone", v)} />
-              <OrderEditableLine label="客户类型" value={profileCustomerType} editable={profileEditing} onChange={v => setProfileField("customer_type", v)} />
+              <OrderChoiceLine label="手机型号" value={profileModel} editable={mode === "new" || profileEditing} options={deviceModelNames} onChange={v => profileEditing ? setProfileField("model", v) : setField("model", v)} />
+              <OrderEditableLine label="IMEI" value={String(profileDisplay.imei || "")} editable={mode === "new" || profileEditing} onFocus={() => { if (mode === "new") { setMachineLookupAnchor("imei"); setMachineLookupOpen(hasTextValue(form.imei)); } }} onChange={v => { if (mode === "new") { setMachineLookupAnchor("imei"); setMachineLookupOpen(hasTextValue(v)); } profileEditing ? setProfileField("imei", v) : setField("imei", v); }} />
+              <OrderEditableLine label="序列号" value={String(profileDisplay.serial || "")} editable={mode === "new" || profileEditing} onFocus={() => { if (mode === "new") { setMachineLookupAnchor("serial"); setMachineLookupOpen(hasTextValue(form.serial)); } }} onChange={v => { if (mode === "new") { setMachineLookupAnchor("serial"); setMachineLookupOpen(hasTextValue(v)); } profileEditing ? setProfileField("serial", v) : setField("serial", v); }} />
+            {mode === "new" && machineLookupOpen && <SuggestionList className={`machine-suggestions ${machineLookupAnchor === "imei" ? "lookup-anchor-right lookup-row-1" : "lookup-anchor-left lookup-row-2"}` } loading={machineSearchQuery.isLoading} rows={machineOptions} selectedId={selectedMachine?.machine_id} idKey="machine_id" primaryKey="model" secondaryKeys={["machine_no", "imei", "serial", "customer_name"]} onSelect={selectMachine} empty="没有找到已有机器" />}
+              <OrderChoiceLine label="颜色" value={profileColor} editable={mode === "new" || profileEditing} options={colorChoices} onChange={v => profileEditing ? setProfileField("color", v) : setField("color", v)} />
+              <OrderChoiceLine label="容量/内存" value={profileMemory} editable={mode === "new" || profileEditing} options={memoryChoices} onChange={v => profileEditing ? setProfileField("memory", v) : setField("memory", v)} />
+              <OrderChoiceLine label="机况" value={String(profileDisplay.condition || "")} editable={mode === "new" || profileEditing} options={conditionOptions} onChange={v => profileEditing ? setProfileField("condition", v) : setField("condition", v)} />
             </div>
           </section>
 
-          <InspectionCard title="维修前检测 (Pre-Repair)" inspections={inspections} note={String(order.diagnosis || "其他检测备注...")} mode={mode} state={preInspectionState} photos={prePhotos} stage="pre" onToggle={item => toggleInspection("pre", item)} onUpload={uploadPhoto} uploading={photoMutation.isPending} />
+          <EditableInspectionCard title="维修前检测 (Pre-Repair)" inspections={inspectionItems} note={preInspectionNote} mode={mode} state={preInspectionState} photos={prePhotos} stage="pre" editing={preInspectionEditing} saved={mode === "new" && preInspectionSaved} onStart={() => { setPreInspectionSaved(false); setPreInspectionEditing(true); }} onSave={() => saveInspection("pre")} onCancel={() => { setPreInspectionSaved(true); setPreInspectionEditing(false); }} onToggle={item => toggleInspection("pre", item)} onNoteChange={setPreInspectionNote} onUpload={uploadPhoto} onOpenPhoto={setSelectedPhoto} uploading={photoMutation.isPending || inspectionMutation.isPending} />
 
           <section className="order-card">
             <div className="repair-card-head">
               <h3><FileText size={24} />故障与维修详情</h3>
-              {mode === "edit" && <button type="button" className="mini-add-button" onClick={() => canAddRepairItem ? setShowItemForm(true) : notify("当前订单状态不可添加维修故障", true)} disabled={!canAddRepairItem}><Plus size={16} />添加故障</button>}
+              {(mode === "new" || mode === "edit") && <button type="button" className="mini-add-button" onClick={() => mode === "new" || canAddRepairItem ? setShowItemForm(true) : notify("当前订单状态不可添加维修故障", true)} disabled={mode !== "new" && !canAddRepairItem}><Plus size={16} />添加故障</button>}
             </div>
-            <p className="order-muted">{mode === "new" ? "保存后生成维修明细，可在编辑态继续添加配件和收费项目。" : String(order.fault_description || "客户反馈设备异常，需要检测并维修。")}</p>
-            {mode === "edit" && showItemForm && <div className="inline-item-editor repair-item-editor"><OrderField label="故障名称" value={itemForm.item_name} editable onChange={v => setItemField("item_name", v)} /><OrderField label="数量" value={itemForm.quantity || 1} editable type="number" onChange={v => setItemField("quantity", v)} /><OrderField label="配件成本" value={itemForm.cost_amount} editable type="number" onChange={v => setItemField("cost_amount", v)} /><OrderField label="工时/服务费" value={itemForm.charge_amount} editable type="number" onChange={v => setItemField("charge_amount", v)} /><OrderField label="备注" value={itemForm.remark} editable area onChange={v => setItemField("remark", v)} /><div className="inline-editor-actions"><button type="button" className="mini-add-button" onClick={submitRepairItem} disabled={addItemMutation.isPending}>保存故障</button><button type="button" className="ghost-mini-button" onClick={() => { setShowItemForm(false); setItemForm({ quantity: 1 }); }}>取消</button></div></div>}
-            <div className="repair-lines"><table><thead><tr><th>故障名称</th><th>更换配件/SKU</th><th>配件单价</th><th>工时/服务费</th><th>小计</th><th className="align-right">操作</th></tr></thead><tbody>{detailRows.map((row, index) => { const unitCost = Number(row.total_cost || row.unit_cost || 0); const amount = Number(row.amount || row.charge_amount || row.price || 0); return <tr key={String(row.cost_item_id || row.item_name || index)}><td>{String(row.item_name || row.material_name || "维修项目")}</td><td>{String(row.sku || row.material_code || "-")}</td><td>{poolMoney(unitCost)}</td><td>{poolMoney(Math.max(amount - unitCost, 0))}</td><td><b>{poolMoney(amount || unitCost)}</b></td><td className="align-right">{mode === "edit" ? <button type="button" className="table-link danger">删除</button> : "-"}</td></tr>; })}</tbody></table></div>
-            <div className="order-fee-summary stacked-fee-summary"><span>费用总计 <b>{poolMoney(quoted || 1430)}</b></span><span>折扣优惠 <b className="danger-text">- {poolMoney(30)}</b></span><span>应收总额 <b>{poolMoney(Math.max((quoted || 1430) - 30, 0))}</b></span>{mode === "edit" && <OrderField label="修改报价" value={form.quoted_amount ?? order.quoted_amount} editable type="number" onChange={v => setField("quoted_amount", v)} />}</div>
+            <p className="order-muted">{mode === "new" ? "可按当前机型添加故障代码，系统会带出配件/SKU、成本和服务费。" : String(order.fault_description || "客户反馈设备异常，需要检测并维修。")}</p>
+            {showItemForm && (mode === "new" || mode === "edit") && <div className="inline-item-editor repair-item-editor">
+              {mode === "new" && <div className="sku-picker">
+                {repairSkuQuery.isLoading && <div className="lookup-empty">正在读取故障代码...</div>}
+                {!repairSkuQuery.isLoading && ((repairSkuQuery.data as AnyRecord[] | undefined) || []).map(row => <button type="button" key={String(row.sku_id)} className={String(itemForm.sku_id || "") === String(row.sku_id) ? "selected" : ""} onClick={() => selectRepairSku(row)}><b>{String(row.fault_name || row.solution_name)}</b><span>{String(row.sku_code)} · {String(row.model || "通用")} · {poolMoney(row.charge_amount)}</span></button>)}
+                {!repairSkuQuery.isLoading && !((repairSkuQuery.data as AnyRecord[] | undefined) || []).length && <div className="lookup-empty">当前机型暂无可用故障代码</div>}
+              </div>}
+              <OrderField label="故障名称" value={itemForm.item_name} editable onChange={v => setItemField("item_name", v)} />
+              <OrderField label="数量" value={itemForm.quantity || 1} editable type="number" onChange={v => setItemField("quantity", v)} />
+              <OrderField label="配件成本" value={itemForm.cost_amount} editable type="number" onChange={v => setItemField("cost_amount", v)} />
+              <OrderField label="工时/服务费" value={itemForm.charge_amount} editable type="number" onChange={v => setItemField("charge_amount", v)} />
+              <OrderField label="备注" value={itemForm.remark} editable area onChange={v => setItemField("remark", v)} />
+              <div className="inline-editor-actions"><button type="button" className="mini-add-button" onClick={submitRepairItem} disabled={addItemMutation.isPending}>{mode === "new" ? "加入明细" : "保存故障"}</button><button type="button" className="ghost-mini-button" onClick={() => { setShowItemForm(false); setItemForm({ quantity: 1 }); }}>取消</button></div>
+            </div>}
+            
+<div className="repair-lines">
+  <AppTable
+    rows={detailRows}
+    columns={[["fault_name", "故障名称"], ["sku_code", "更换配件/SKU"], ["unit_cost", "配件单价"], ["service_fee", "工时/服务费"], ["line_total", "小计"]]}
+    formatValue={(row, key) => {
+      const { unitCost, serviceFee, lineAmount } = repairLineAmounts(row);
+      const quantity = firstNumber(row.quantity, row.qty, 1);
+      if (key === "fault_name") return String(row.fault_name || row.item_name || row.material_name || "维修项目");
+      if (key === "sku_code") return String(row.sku_code || row.sku || row.material_code || "-");
+      if (key === "unit_cost") return poolMoney(unitCost);
+      if (key === "service_fee") return poolMoney(serviceFee);
+      if (key === "line_total") return poolMoney(lineAmount * quantity);
+      return displayValue(row, key);
+    }}
+    isStatusKey={() => false}
+    actions={{ title: "操作", render: (_row, index) => mode === "new" ? <AppButton className="table-link danger" type="link" danger onClick={() => removeNewRepairItem(index)}>删除</AppButton> : mode === "edit" ? <AppButton className="table-link danger" type="link" danger>删除</AppButton> : "-" }}
+  />
+</div>
+            <div className="order-fee-summary stacked-fee-summary"><span>费用总计 <b>{poolMoney(quoted)}</b></span><span>折扣优惠 <b className="danger-text">- {poolMoney(0)}</b></span><span>应收总额 <b>{poolMoney(quoted)}</b></span>{mode === "edit" && <OrderField label="修改报价" value={form.quoted_amount ?? order.quoted_amount} editable type="number" onChange={v => setField("quoted_amount", v)} />}</div>
           </section>
 
-          <InspectionCard title="维修后检测 (Post-Repair)" inspections={inspections.slice(0, 8)} note="质检备注..." compact={false} mode={mode} state={postInspectionState} photos={postPhotos} stage="post" onToggle={item => toggleInspection("post", item)} onUpload={uploadPhoto} uploading={photoMutation.isPending} />
+          {mode !== "new" && <EditableInspectionCard title="维修后检测 (Post-Repair)" inspections={inspectionItems} note={postInspectionNote} compact={false} mode={mode} state={postInspectionState} photos={postPhotos} stage="post" editing={postInspectionEditing} onStart={() => setPostInspectionEditing(true)} onSave={() => saveInspection("post")} onCancel={() => setPostInspectionEditing(false)} onToggle={item => toggleInspection("post", item)} onNoteChange={setPostInspectionNote} onUpload={uploadPhoto} onOpenPhoto={setSelectedPhoto} uploading={photoMutation.isPending || inspectionMutation.isPending} />}
           <section className="order-card"><h3><ClipboardList size={24} />维修历史</h3><div className="history-list">{historyOrders.length ? historyOrders.slice(0, 5).map(row => <button type="button" className="history-order-row" key={String(row.repair_order_id)} onClick={() => { onCreated(row.repair_order_id as number | string); onModeChange("view"); }}><b>{String(row.order_no || `RO-${row.repair_order_id}`)}</b><span>{String(row.status || "待确认")} · {String(row.fault_description || "无故障描述")}</span><em>{poolMoney(row.quoted_amount || row.paid_amount || 0)} · {String(row.created_at || "")}</em></button>) : <div className="history-empty">无</div>}</div></section>
         </div>
 
         <aside className="order-side-column">
+          {mode === "new" && <section className="order-card create-action-card"><button type="button" className="primary-create-button" onClick={submitNew} disabled={createMutation.isPending}><Plus size={20} />创建工单</button><button type="button" className="discard-order-button" onClick={() => { setForm({}); onBack(); }}>放弃</button></section>}
           <section className="order-card"><h3>订单状态</h3><div className="detail-timeline">{buildStitchTimeline(mode, statusText, createdAt, owner).map(item => <div className={`timeline-step ${item.done ? "done" : ""} ${item.active ? "active" : ""}`} key={item.title}><span>{item.done ? <CheckCircle2 size={18} /> : item.active ? <Users size={18} /> : <Flag size={18} />}</span><div><b>{item.title}</b><p>{item.note}</p></div></div>)}</div></section>
           {mode === "cancel" && <section className="order-card cancel-warning-card"><h3>取消确认</h3><p>取消订单会将业务状态改为已作废，不会删除数据库记录。若订单已有未闭环领料，后端会提示先退料或报损。</p><OrderField label="取消原因" value={form.cancel_reason} editable area onChange={v => setField("cancel_reason", v)} /></section>}
           {mode === "edit" && <section className="order-card"><h3>订单转派</h3><OrderField label="负责人账号" value={form.assigned_to ?? order.assigned_to} editable onChange={v => setField("assigned_to", v)} /><OrderField label="修改备注" value={form.remark} editable area onChange={v => setField("remark", v)} /></section>}
-          <section className="order-card notes-card"><div className="side-title-row"><h3>备注信息</h3><CirclePlus size={22} /></div><div className="note-box warning"><b>内部备注</b><p>{String(order.remark || "客户要求尽量保留原厂原色原彩，维修后请务必同步写入数据。")}</p></div><div className="note-box muted"><b>交付说明</b><p>告知客户外壳磕碰处无法复原，仅保证屏幕功能完好。</p></div></section>
-          <section className="order-card log-card"><div className="side-title-row"><h3>订单日志</h3>{events.length > 3 && <button type="button" className="table-link" onClick={() => setLogsExpanded(value => !value)}>{logsExpanded ? "收起" : "更多"}</button>}</div>{visibleLogs.length ? visibleLogs.map((event, index) => <div className="log-item" key={String(event.event_id || event.created_at || index)}><b>{String(event.title || "订单维护")}</b><p>{String(event.detail || "工单信息已更新")}</p><span>{String(event.created_at || "")}</span></div>) : <div className="history-empty">暂无订单日志</div>}</section>
+          
+<section className="order-card notes-card">
+  <div className="side-title-row"><h3>备注信息</h3><button type="button" className="icon-mini-button" onClick={() => { setNoteFormOpen(value => !value); setNoteForm({ type: "内部备注" }); }}><CirclePlus size={22} /></button></div>
+  {noteFormOpen && (
+    <div className="note-editor">
+      <Select value={String(noteForm.type || "内部备注")} onChange={value => setNoteField("type", value)} options={[{ value: "内部备注", label: "内部备注" }, { value: "交付说明", label: "交付说明" }]} />
+      <Input.TextArea value={String(noteForm.content || "")} placeholder="填写备注内容..." onChange={event => setNoteField("content", event.target.value)} />
+      <div><AppButton className="mini-add-button" onClick={submitNote} disabled={remarkMutation.isPending || updateNoteMutation.isPending}>{noteForm.editing ? "保存修改" : "保存备注"}</AppButton><AppButton className="ghost-mini-button" onClick={() => { setNoteFormOpen(false); setNoteForm({ type: "内部备注" }); }}>取消</AppButton></div>
+    </div>
+  )}
+  {visibleOrderNotes.map((row, index) => { const noteType = String(row.note_type || row.type || "内部备注"); const createdBy = String(row.created_by || row.operator || currentOperator); const createdAt = String(row.created_at || "待创建"); return <div className={'note-box note-entry ' + (noteType === "交付说明" ? "muted" : "warning")} key={String(row.note_id || row.temp_id || noteType + '-' + index)}><div className="note-entry-head"><b>{noteType}</b><span>{createdBy} ? {createdAt}</span></div><p>{String(row.content || "")}</p>{!row.readonly && <div className="note-entry-actions"><AppButton type="link" onClick={() => editNote(row, index)}>修改</AppButton><AppButton type="link" danger onClick={() => deleteNote(row, index)} disabled={deleteNoteMutation.isPending}>删除</AppButton></div>}</div>; })}
+</section>
+          <section className="order-card log-card"><div className="side-title-row"><h3>订单日志</h3>{combinedLogs.length > 3 && <button type="button" className="table-link" onClick={() => setLogsExpanded(value => !value)}>{logsExpanded ? "收起" : "更多"}</button>}</div>{visibleLogs.length ? visibleLogs.map((event, index) => <div className="log-item" key={String(event.event_id || event.created_at || index)}><b>{String(event.title || "订单维护")}</b><p>{String(event.detail || "工单信息已更新")}</p><span>{String(event.created_at || "")} {String(event.operator || "")}</span></div>) : <div className="history-empty">暂无订单日志</div>}</section>
         </aside>
       </div>
+      {selectedPhoto && (
+        <div className="photo-preview-backdrop" role="dialog" aria-modal="true" onClick={() => setSelectedPhoto(null)}>
+          <div className="photo-preview-dialog" onClick={event => event.stopPropagation()}>
+            <button type="button" className="photo-preview-close" onClick={() => setSelectedPhoto(null)}>×</button>
+            <img src={String(selectedPhoto.url || "")} alt={String(selectedPhoto.filename || "维修照片")} />
+            <p>{String(selectedPhoto.filename || "维修照片")}</p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1139,7 +1597,7 @@ function FlowOrderDetailPage({
           <button type="button" className="back-button" onClick={onBack}><ArrowLeft size={24} /></button>
           <h1>{mode === "new" ? "新建工单" : mode === "edit" ? "编辑工单" : mode === "cancel" ? "取消工单" : "工单详情"}</h1>
         </div>
-        <div className="order-detail-search"><Search size={22} /><input placeholder="搜索工单、IMEI、客户..." /></div>
+        <div className="order-detail-search"><Search size={22} /><Input allowClear placeholder="?????IMEI???..." /></div>
         <div className="order-detail-icons"><button type="button" className="icon-button"><Bell size={23} /><span /></button><button type="button" className="icon-button"><UserRound size={23} /></button></div>
       </header>
 
@@ -1223,12 +1681,110 @@ function FlowOrderDetailPage({
   );
 }
 
-function OrderField({ label, value, editable, onChange, area, type = "text" }: { label: string; value: unknown; editable?: boolean; onChange?: (value: string) => void; area?: boolean; type?: string }) {
-  return <label className={`order-flow-field ${area ? "wide" : ""}`}><span>{label}</span>{editable ? (area ? <textarea value={String(value || "")} onChange={event => onChange?.(event.target.value)} /> : <input type={type} value={String(value || "")} onChange={event => onChange?.(event.target.value)} />) : <strong>{String(value || "待补")}</strong>}</label>;
+function SegmentedSwitch({ value, onChange, leftLabel, rightLabel }: { value: "new" | "existing"; onChange: (value: "new" | "existing") => void; leftLabel: string; rightLabel: string }) {
+  return (
+    <div className="mode-segmented">
+      <button type="button" className={value === "new" ? "active" : ""} onClick={() => onChange("new")}>{leftLabel}</button>
+      <button type="button" className={value === "existing" ? "active" : ""} onClick={() => onChange("existing")}>{rightLabel}</button>
+    </div>
+  );
 }
 
-function OrderEditableLine({ label, value, editable, onChange, pill, tag, highlight }: { label: string; value: unknown; editable?: boolean; onChange?: (value: string) => void; pill?: boolean; tag?: string; highlight?: boolean }) {
-  return <div className={`info-line order-editable-line ${pill ? "pill-value" : ""}`}><span>{label}</span>{editable ? <input value={String(value || "")} onChange={event => onChange?.(event.target.value)} /> : <strong className={highlight ? "highlight" : ""}>{String(value || "待补")}{tag && <em>{tag}</em>}</strong>}</div>;
+function LookupPanel({
+  keyword,
+  onKeyword,
+  placeholder,
+  loading,
+  rows,
+  selectedId,
+  idKey,
+  primaryKey,
+  secondaryKeys,
+  onSelect,
+  empty,
+}: {
+  keyword: string;
+  onKeyword: (value: string) => void;
+  placeholder: string;
+  loading: boolean;
+  rows: AnyRecord[];
+  selectedId: unknown;
+  idKey: string;
+  primaryKey: string;
+  secondaryKeys: string[];
+  onSelect: (row: AnyRecord) => void;
+  empty: string;
+}) {
+  return (
+    <div className="lookup-panel">
+      <div className="lookup-search"><Search size={18} /><Input allowClear value={keyword} onChange={event => onKeyword(event.target.value)} placeholder={placeholder} /></div>
+      <div className="lookup-results">
+        {loading && <div className="lookup-empty">搜索中...</div>}
+        {!loading && rows.map(row => {
+          const id = row[idKey];
+          const secondary = secondaryKeys.map(key => row[key]).filter(Boolean).join(" · ");
+          return (
+            <button type="button" key={String(id)} className={String(selectedId || "") === String(id || "") ? "selected" : ""} onClick={() => onSelect(row)}>
+              <b>{String(row[primaryKey] || id || "未命名")}</b>
+              <span>{secondary || "无补充信息"}</span>
+            </button>
+          );
+        })}
+        {!loading && !rows.length && <div className="lookup-empty">{empty}</div>}
+      </div>
+    </div>
+  );
+}
+
+function SuggestionList({ loading, rows, selectedId, idKey, primaryKey, secondaryKeys, onSelect, empty, className = "" }: { loading: boolean; rows: AnyRecord[]; selectedId: unknown; idKey: string; primaryKey: string; secondaryKeys: string[]; onSelect: (row: AnyRecord) => void; empty: string; className?: string }) {
+  return (
+    <div className={`inline-suggestion-list ${className}`} onMouseDown={event => event.preventDefault()}>
+      {loading && <div className="lookup-empty">搜索中...</div>}
+      {!loading && rows.map(row => {
+        const id = row[idKey];
+        const secondary = secondaryKeys.map(key => row[key]).filter(Boolean).join(" · ");
+        return <button type="button" key={String(id)} className={String(selectedId || "") === String(id || "") ? "selected" : ""} onClick={() => onSelect(row)}><b>{String(row[primaryKey] || id || "未命名")}</b><span>{secondary || "无补充信息"}</span></button>;
+      })}
+      {!loading && !rows.length && <div className="lookup-empty">{empty}</div>}
+    </div>
+  );
+}
+
+
+function OrderField({ label, value, editable, onChange, area, type = "text" }: { label: string; value: unknown; editable?: boolean; onChange?: (value: string) => void; area?: boolean; type?: string }) {
+  return (
+    <label className={'order-flow-field ' + (area ? 'wide' : '')}>
+      <span>{label}</span>
+      {editable ? (
+        area ? <Input.TextArea value={String(value || "")} onChange={event => onChange?.(event.target.value)} /> : <Input type={type} value={String(value || "")} onChange={event => onChange?.(event.target.value)} />
+      ) : (
+        <strong>{String(value || "??")}</strong>
+      )}
+    </label>
+  );
+}
+
+function OrderChoiceLine({ label, value, editable, onChange, options }: { label: string; value: unknown; editable?: boolean; onChange?: (value: string) => void; options: string[] }) {
+  const [open, setOpen] = useState(false);
+  const text = String(value || "");
+  const filtered = uniqueStrings(options).filter(option => !text || option.toLowerCase().includes(text.toLowerCase())).slice(0, 12);
+  return (
+    <div className="info-line order-editable-line order-choice-line">
+      <span>{label}</span>
+      {editable ? (
+        <div className="choice-input-wrap">
+          <Input value={text} onFocus={() => setOpen(true)} onChange={event => { onChange?.(event.target.value); setOpen(true); }} onBlur={() => window.setTimeout(() => setOpen(false), 120)} />
+          {open && filtered.length > 0 && <div className="choice-popover">{filtered.map(option => <button type="button" key={option} onMouseDown={event => event.preventDefault()} onClick={() => { onChange?.(option); setOpen(false); }}>{option}</button>)}</div>}
+        </div>
+      ) : (
+        <strong>{String(value || "??")}</strong>
+      )}
+    </div>
+  );
+}
+
+function OrderEditableLine({ label, value, editable, onChange, onFocus, pill, tag, highlight }: { label: string; value: unknown; editable?: boolean; onChange?: (value: string) => void; onFocus?: () => void; pill?: boolean; tag?: string; highlight?: boolean }) {
+  return <div className={'info-line order-editable-line ' + (pill ? 'pill-value' : '')}><span>{label}</span>{editable ? <Input value={String(value || "")} onFocus={onFocus} onChange={event => onChange?.(event.target.value)} /> : <strong className={highlight ? "highlight" : ""}>{String(value || "??")}{tag && <em>{tag}</em>}</strong>}</div>;
 }
 
 function buildStitchTimeline(mode: OrderMode, status: string, createdAt: string, owner: string) {
@@ -1350,7 +1906,7 @@ function LegacyOrderDetailPage({ orderId, notify, onBack }: { orderId: number | 
           <button type="button" className="back-button" onClick={onBack}><ArrowLeft size={24} /></button>
           <h1>工单详情</h1>
         </div>
-        <div className="order-detail-search"><Search size={22} /><input placeholder="搜索工单、IMEI、客户..." /></div>
+        <div className="order-detail-search"><Search size={22} /><Input allowClear placeholder="?????IMEI???..." /></div>
         <div className="order-detail-icons">
           <button type="button" className="icon-button"><Bell size={23} /><span /></button>
           <button type="button" className="icon-button"><UserRound size={23} /></button>
@@ -1392,16 +1948,21 @@ function LegacyOrderDetailPage({ orderId, notify, onBack }: { orderId: number | 
             <h3><FileText size={24} />故障与维修详情</h3>
             <p className="order-muted">{String(order.fault_description || "客户反馈设备异常，需要检测并维修。")}</p>
             <div className="repair-lines">
-              <table>
-                <thead><tr><th>维修项目</th><th>SKU</th><th>物料成本</th><th>服务金额</th><th>小计</th></tr></thead>
-                <tbody>
-                  {detailRows.map((row, index) => {
-                    const unitCost = Number(row.total_cost || row.unit_cost || 0);
-                    const amount = Number(row.amount || row.charge_amount || row.price || 0);
-                    return <tr key={String(row.cost_item_id || row.item_name || index)}><td>{String(row.item_name || row.material_name || "维修项目")}</td><td>{String(row.sku || row.material_code || "-")}</td><td>{formatMoney(unitCost)}</td><td>{formatMoney(Math.max(amount - unitCost, 0))}</td><td>{formatMoney(amount || unitCost)}</td></tr>;
-                  })}
-                </tbody>
-              </table>
+              <AppTable
+                rows={detailRows}
+                columns={[["item_name", "????"], ["sku", "SKU"], ["unit_cost", "????"], ["service_fee", "????"], ["line_total", "??"]]}
+                formatValue={(row, key) => {
+                  const unitCost = Number(row.total_cost || row.unit_cost || 0);
+                  const amount = Number(row.amount || row.charge_amount || row.price || 0);
+                  if (key === "item_name") return String(row.item_name || row.material_name || "????");
+                  if (key === "sku") return String(row.sku || row.material_code || "-");
+                  if (key === "unit_cost") return formatMoney(unitCost);
+                  if (key === "service_fee") return formatMoney(Math.max(amount - unitCost, 0));
+                  if (key === "line_total") return formatMoney(amount || unitCost);
+                  return displayValue(row, key);
+                }}
+                isStatusKey={() => false}
+              />
             </div>
             <div className="order-fee-summary">
               <span>报价金额 <b>{formatMoney(quoted || 1280)}</b></span>
@@ -1452,6 +2013,28 @@ function InfoLine({ label, value, pill, tag, highlight }: { label: string; value
   return <div className={`info-line ${pill ? "pill-value" : ""}`}><span>{label}</span><strong className={highlight ? "highlight" : ""}>{String(value || "待补")}{tag && <em>{tag}</em>}</strong></div>;
 }
 
+
+function EditableInspectionCard({ title, inspections, note, compact, mode = "view", state = {}, photos = [], stage, editing = false, saved = false, onStart, onSave, onCancel, onToggle, onNoteChange, onUpload, onOpenPhoto, uploading }: { title: string; inspections: string[]; note: string; compact?: boolean; mode?: OrderMode; state?: Record<string, boolean>; photos?: AnyRecord[]; stage?: "pre" | "post"; editing?: boolean; saved?: boolean; onStart?: () => void; onSave?: () => void; onCancel?: () => void; onToggle?: (item: string) => void; onNoteChange?: (value: string) => void; onUpload?: (stage: "pre" | "post", file: File | null) => void; onOpenPhoto?: (photo: AnyRecord) => void; uploading?: boolean }) {
+  const editable = saved ? false : mode === "new" || mode === "edit" || editing;
+  const visibleInspections = editable ? inspections : inspections.filter(item => state[item]);
+  const needsOtherNote = editable && Boolean(state["其他异常"]);
+  return (
+    <section className={'order-card inspection-card ' + (compact ? 'compact' : '')}>
+      <div className="inspection-head">
+        <h3><span />{title}</h3>
+        <div className="inspection-actions">
+          {!editable && <AppButton className="ghost-mini-button" onClick={onStart}>{saved ? "修改检测结果" : "开始检测"}</AppButton>}
+          {editable && stage && <AppButton className="mini-add-button" onClick={onSave} disabled={uploading}>保存检测</AppButton>}
+          {editing && <AppButton className="ghost-mini-button" onClick={onCancel}>??</AppButton>}
+        </div>
+      </div>
+      {visibleInspections.length ? <div className="inspection-grid">{visibleInspections.map(item => <button type="button" className={state[item] ? "abnormal" : ""} key={item} disabled={!editable} onClick={() => onToggle?.(item)}><b>{item}</b><span>{state[item] ? "异常" : "正常"}</span></button>)}</div> : <div className="inspection-empty">{saved ? "无异常项目" : "无异常功能"}</div>}
+      <Input.TextArea className={'inspection-note ' + (needsOtherNote && !String(note || "").trim() ? 'required' : '')} value={note} readOnly={!editable} placeholder={needsOtherNote ? "请填写其他异常说明..." : "检测备注..."} onChange={event => onNoteChange?.(event.currentTarget.value)} />
+      {!compact && <div className="photo-strip">{photos.length ? photos.map(photo => <button type="button" className="photo-thumb-button" key={String(photo.photo_id || photo.url)} onClick={() => onOpenPhoto?.(photo)}><img className="photo-thumb" src={String(photo.url || "")} alt={String(photo.filename || "维修照片")} /></button>) : <div className="photo-thumb" />}{stage && <label className={'upload-tile ' + (uploading ? 'disabled' : '')}><Camera size={24} />{uploading ? "上传中" : "上传"}<input type="file" accept="image/jpeg,image/png,image/webp" disabled={uploading} onChange={event => { onUpload?.(stage, event.currentTarget.files?.[0] || null); event.currentTarget.value = ""; }} /></label>}</div>}
+    </section>
+  );
+}
+
 function InspectionCard({ title, inspections, note, compact, mode = "view", state = {}, photos = [], stage, onToggle, onUpload, uploading }: { title: string; inspections: string[]; note: string; compact?: boolean; mode?: OrderMode; state?: Record<string, boolean>; photos?: AnyRecord[]; stage?: "pre" | "post"; onToggle?: (item: string) => void; onUpload?: (stage: "pre" | "post", file: File | null) => void; uploading?: boolean }) {
   const editable = mode === "new" || mode === "edit";
   const visibleInspections = editable ? inspections : inspections.filter(item => state[item]);
@@ -1459,7 +2042,7 @@ function InspectionCard({ title, inspections, note, compact, mode = "view", stat
     <section className={`order-card inspection-card ${compact ? "compact" : ""}`}>
       <div className="inspection-head"><h3><span />{title}</h3></div>
       {visibleInspections.length ? <div className="inspection-grid">{visibleInspections.map(item => <button type="button" className={state[item] ? "abnormal" : ""} key={item} disabled={!editable} onClick={() => onToggle?.(item)}><b>{item}</b><span>{state[item] ? "异常" : "正常"}</span></button>)}</div> : <div className="inspection-empty">无异常功能</div>}
-      <input className="inspection-note" value={note} readOnly />
+      <Input className="inspection-note" value={note} readOnly />
       {!compact && <div className="photo-strip">{photos.length ? photos.map(photo => <img className="photo-thumb" key={String(photo.photo_id || photo.url)} src={String(photo.url || "")} alt={String(photo.filename || "维修照片")} />) : <div className="photo-thumb" />}{stage && <label className={`upload-tile ${uploading ? "disabled" : ""}`}><Camera size={24} />{uploading ? "上传中" : "上传"}<input type="file" accept="image/jpeg,image/png,image/webp" disabled={uploading} onChange={event => { onUpload?.(stage, event.currentTarget.files?.[0] || null); event.currentTarget.value = ""; }} /></label>}</div>}
     </section>
   );
@@ -1473,16 +2056,22 @@ function DetailSection({ title, rows, columns }: { title: string; rows?: AnyReco
   return <section className="detail-section"><h3>{title}</h3><DataTable rows={rows || []} columns={columns} /></section>;
 }
 
+
 function RecyclePool({ openModal }: { openModal: (node: ReactNode | null) => void }) {
   const [keyword, setKeyword] = useState("");
-  const query = useQuery({ queryKey: ["machines", keyword], queryFn: () => api<AnyRecord[]>(`/api/machines?q=${encodeURIComponent(keyword)}`) });
-  const rows = (query.data || []).filter(row => row.source_type === "回收");
+  const query = useQuery({ queryKey: ["machines", keyword], queryFn: () => api<AnyRecord[]>("/api/machines?q=" + encodeURIComponent(keyword)) });
+  const rows = (query.data || []).filter(row => row.source_type === "??");
   async function open(row: AnyRecord) {
-    const timeline = await api<AnyRecord>(`/api/machines/${row.machine_id}/timeline`);
+    const timeline = await api<AnyRecord>("/api/machines/" + row.machine_id + "/timeline");
     openModal(<MachineTimeline timeline={timeline} />);
   }
   if (query.isLoading || query.error) return <QueryState loading={query.isLoading} error={query.error} />;
-  return <Panel title="回收订单池"><div className="toolbar filters"><input value={keyword} onChange={e => setKeyword(e.target.value)} placeholder="机器编号、IMEI、机型、客户" /></div><DataTable rows={rows} onRowClick={open} columns={[["machine_no", "机器编号"], ["imei", "IMEI"], ["model", "机型"], ["customer_name", "客户"], ["current_status", "当前状态"], ["updated_at", "更新时间"]]} /></Panel>;
+  return (
+    <Panel title="?????">
+      <div className="toolbar filters"><Input allowClear value={keyword} onChange={event => setKeyword(event.target.value)} placeholder="?????IMEI??????" /></div>
+      <DataTable rows={rows} onRowClick={open} columns={[["machine_no", "????"], ["imei", "IMEI"], ["model", "??"], ["customer_name", "??"], ["current_status", "????"], ["updated_at", "????"]]} />
+    </Panel>
+  );
 }
 
 function MachineTimeline({ timeline }: { timeline: AnyRecord }) {
@@ -1491,28 +2080,35 @@ function MachineTimeline({ timeline }: { timeline: AnyRecord }) {
   return <><header className="modal-header"><div><h2>{String(machine.machine_no)} / {String(machine.model)}</h2><p>机器 ID {String(machine.machine_id)} · {String(machine.current_status)}</p></div></header><div className="modal-content"><div className="repair-detail-grid"><InfoBlock label="IMEI" text={machine.imei} /><InfoBlock label="序列号" text={machine.serial} /><InfoBlock label="客户" text={customer.name || machine.customer_name} /><InfoBlock label="电话" text={customer.phone} /></div><DetailSection title="维修记录" rows={timeline.repair_orders as AnyRecord[]} columns={[["repair_order_id", "维修单"], ["status", "状态"], ["assigned_to", "工程师"], ["fault_description", "故障"], ["quoted_amount", "报价"]]} /><DetailSection title="回收记录" rows={timeline.recycle_orders as AnyRecord[]} columns={[["recycle_order_id", "回收单"], ["status", "状态"], ["inspection_result", "验机结论"], ["quoted_amount", "报价"], ["paid_amount", "已付"]]} /></div></>;
 }
 
-function SimpleForm({ title, fields, onSubmit }: { title: string; fields: ReactNode; onSubmit: (payload: AnyRecord, form: HTMLFormElement) => void }) {
-  return <form className="panel form-grid compact" onSubmit={(event) => { event.preventDefault(); onSubmit(formPayload(event.currentTarget), event.currentTarget); }}><div className="panel-header"><div><h2>{title}</h2></div></div>{fields}<button type="submit"><Plus size={16} />保存</button></form>;
-}
+const customerMachineFields = [
+  { name: "customer_name", label: "客户姓名", placeholder: "客户姓名" },
+  { name: "phone", label: "联系电话", placeholder: "联系电话" },
+  { name: "imei", label: "IMEI", placeholder: "IMEI" },
+  { name: "serial", label: "序列号", placeholder: "序列号" },
+  { name: "model", label: "机型", required: true, options: modelOptions.map(value => ({ value, label: value })) },
+  { name: "memory", label: "内存", placeholder: "内存" },
+  { name: "color", label: "颜色", placeholder: "颜色" },
+  { name: "condition", label: "机况", placeholder: "机况" },
+];
 
 function RepairOpenPage({ notify }: { notify: (message: string, error?: boolean) => void }) {
   const queryClient = useQueryClient();
   const mutation = useMutation({ mutationFn: (payload: AnyRecord) => api<AnyRecord>("/api/repair-orders", { method: "POST", body: JSON.stringify(payload) }), onSuccess: data => { notify(`维修单已创建：${String(data.repair_order_id)}`); queryClient.invalidateQueries({ queryKey: ["repair-workbench"] }); }, onError: e => notify(e instanceof Error ? e.message : "创建失败", true) });
-  return <SimpleForm title="维修到店开单" onSubmit={(data, form) => { mutation.mutate({ machine_id: data.machine_id || null, machine: data.machine_id ? null : machinePayload(data), customer: customerPayload(data), fault_description: data.fault_description || "" }); form.reset(); }} fields={<><input name="customer_name" placeholder="客户姓名" /><input name="phone" placeholder="联系电话" /><input name="imei" placeholder="IMEI" /><input name="serial" placeholder="序列号" /><select name="model" required><option value="">选择机型 *</option>{modelOptions.map(x => <option key={x}>{x}</option>)}</select><input name="memory" placeholder="内存" /><input name="color" placeholder="颜色" /><input name="condition" placeholder="机况" /><textarea name="fault_description" placeholder="故障描述" /></>} />;
+  return <AppFormSection title="维修到店开单" loading={mutation.isPending} onSubmit={(data, helpers) => { mutation.mutate({ machine_id: data.machine_id || null, machine: data.machine_id ? null : machinePayload(data), customer: customerPayload(data), fault_description: data.fault_description || "" }); helpers.reset(); }} fields={[...customerMachineFields, { name: "fault_description", label: "故障描述", placeholder: "故障描述", area: true }]} />;
 }
 
 function RecycleOpenPage({ notify }: { notify: (message: string, error?: boolean) => void }) {
   const mutation = useMutation({ mutationFn: (payload: AnyRecord) => api<AnyRecord>("/api/recycle-orders", { method: "POST", body: JSON.stringify(payload) }), onSuccess: data => notify(`回收单已创建：${String(data.recycle_order_id)}`), onError: e => notify(e instanceof Error ? e.message : "创建失败", true) });
-  return <SimpleForm title="回收到店开单" onSubmit={(data, form) => { mutation.mutate({ machine_id: data.machine_id || null, machine: data.machine_id ? null : machinePayload(data), customer: customerPayload(data), inspection_note: data.inspection_note || "" }); form.reset(); }} fields={<><input name="customer_name" placeholder="客户姓名" /><input name="phone" placeholder="联系电话" /><input name="imei" placeholder="IMEI" /><input name="serial" placeholder="序列号" /><select name="model" required><option value="">选择机型 *</option>{modelOptions.map(x => <option key={x}>{x}</option>)}</select><input name="memory" placeholder="内存" /><input name="color" placeholder="颜色" /><input name="condition" placeholder="机况" /><textarea name="inspection_note" placeholder="验机记录" /></>} />;
+  return <AppFormSection title="回收到店开单" loading={mutation.isPending} onSubmit={(data, helpers) => { mutation.mutate({ machine_id: data.machine_id || null, machine: data.machine_id ? null : machinePayload(data), customer: customerPayload(data), inspection_note: data.inspection_note || "" }); helpers.reset(); }} fields={[...customerMachineFields, { name: "inspection_note", label: "验机记录", placeholder: "验机记录", area: true }]} />;
 }
 
 function machinePayload(data: AnyRecord) {
-  return { imei: data.imei || "", serial: data.serial || "", model: data.model, memory: data.memory || "", color: data.color || "", condition: data.condition || "" };
+  return { imei: data.imei || "", serial: data.serial || "", model: data.model, memory: data.memory || "", color: data.color || "", condition: data.condition || "", remark: data.remark || "" };
 }
 
 function customerPayload(data: AnyRecord) {
   if (!data.customer_name) return null;
-  return { name: data.customer_name, phone: data.phone || "" };
+  return { name: data.customer_name, phone: data.phone || "", wechat: data.wechat || "", category: data.customer_type || "个人客户", remark: data.customer_remark || "" };
 }
 
 function WarehousePage({ notify }: { notify: (message: string, error?: boolean) => void }) {
@@ -1521,7 +2117,20 @@ function WarehousePage({ notify }: { notify: (message: string, error?: boolean) 
   const post = useMutation({ mutationFn: ({ path, payload }: { path: string; payload: AnyRecord }) => api(path, { method: "POST", body: JSON.stringify(payload) }), onSuccess: () => { notify("仓库单据已保存"); queryClient.invalidateQueries({ queryKey: ["warehouse"] }); }, onError: e => notify(e instanceof Error ? e.message : "保存失败", true) });
   const data = query.data || {};
   if (query.isLoading || query.error) return <QueryState loading={query.isLoading} error={query.error} />;
-  return <div className="stack"><Panel title="库存管理" note="物料编码、批次、单件码、申领发放、退料退货和库存流水。" action={<button type="button" onClick={() => query.refetch()}><RefreshCw size={16} />刷新</button>}><DataTable rows={data.materials as AnyRecord[]} columns={[["material_id", "ID"], ["material_code", "物料代码"], ["sku", "SKU"], ["name", "物料"], ["category_code", "类别"], ["compatible_range", "适配"], ["current_qty", "可用"], ["min_qty", "低库存"]]} /></Panel><div className="dashboard-grid"><SimpleForm title="采购/临采入库" onSubmit={(payload, form) => { const kind = String(payload.batch_kind || "purchase"); delete payload.batch_kind; post.mutate({ path: `/api/material-batches/${kind}`, payload }); form.reset(); }} fields={<><select name="batch_kind"><option value="purchase">采购入库</option><option value="ad-hoc">临采入库</option></select><input name="material_id" type="number" placeholder="物料 ID *" required /><input name="supplier" placeholder="供应商" defaultValue="待确认" /><input name="qty" type="number" min="1" placeholder="数量 *" required /><input name="unit_cost" type="number" step="0.01" placeholder="单价" /><textarea name="remark" placeholder="备注" /></>} /><SimpleForm title="申领发放" onSubmit={(payload, form) => { post.mutate({ path: "/api/material-requests", payload: { repair_order_id: payload.repair_order_id || null, engineer_user: payload.engineer_user || "", items: [{ material_id: payload.material_id, repair_sku_id: payload.repair_sku_id, qty: payload.qty || 1, remark: payload.remark || "" }], remark: payload.remark || "" } }); form.reset(); }} fields={<><input name="repair_order_id" type="number" placeholder="维修工单 ID" /><input name="engineer_user" placeholder="工程师账号" /><input name="material_id" type="number" placeholder="物料 ID *" required /><input name="qty" type="number" min="1" defaultValue="1" placeholder="数量" /><textarea name="remark" placeholder="申领备注" /></>} /></div><div className="dashboard-grid"><Panel title="申领单"><DataTable rows={data.requests as AnyRecord[]} columns={[["request_id", "ID"], ["request_no", "申领单"], ["status", "状态"], ["engineer_user", "工程师"], ["repair_order_id", "工单"], ["created_at", "时间"], ["remark", "备注"]]} /></Panel><Panel title="库存流水"><DataTable rows={data.movements as AnyRecord[]} columns={[["happened_at", "时间"], ["movement_type", "类型"], ["direction", "方向"], ["material_code", "物料代码"], ["name", "物料"], ["qty", "数量"], ["actor", "操作人"]]} /></Panel></div></div>;
+  return <div className="stack"><Panel title="库存管理" note="物料编码、批次、单件码、申领发放、退料退货和库存流水。" action={<AppButton onClick={() => query.refetch()}><RefreshCw size={16} />刷新</AppButton>}><DataTable rows={data.materials as AnyRecord[]} columns={[["material_id", "ID"], ["material_code", "物料代码"], ["sku", "SKU"], ["name", "物料"], ["category_code", "类别"], ["compatible_range", "适配"], ["current_qty", "可用"], ["min_qty", "低库存"]]} /></Panel><div className="dashboard-grid"><AppFormSection title="采购/临采入库" loading={post.isPending} onSubmit={(payload, helpers) => { const kind = String(payload.batch_kind || "purchase"); const { batch_kind, ...rest } = payload; post.mutate({ path: `/api/material-batches/${kind}`, payload: rest }); helpers.reset(); }} fields={[
+    { name: "batch_kind", label: "入库类型", initialValue: "purchase", options: [{ value: "purchase", label: "采购入库" }, { value: "ad-hoc", label: "临采入库" }] },
+    { name: "material_id", label: "物料 ID", placeholder: "物料 ID", required: true, type: "number" },
+    { name: "supplier", label: "供应商", placeholder: "供应商", initialValue: "待确认" },
+    { name: "qty", label: "数量", min: 1, placeholder: "数量", required: true, type: "number" },
+    { name: "unit_cost", label: "单价", placeholder: "单价", step: "0.01", type: "number" },
+    { name: "remark", label: "备注", placeholder: "备注", area: true },
+  ]} /><AppFormSection title="申领发放" loading={post.isPending} onSubmit={(payload, helpers) => { post.mutate({ path: "/api/material-requests", payload: { repair_order_id: payload.repair_order_id || null, engineer_user: payload.engineer_user || "", items: [{ material_id: payload.material_id, repair_sku_id: payload.repair_sku_id, qty: payload.qty || 1, remark: payload.remark || "" }], remark: payload.remark || "" } }); helpers.reset(); }} fields={[
+    { name: "repair_order_id", label: "维修工单 ID", placeholder: "维修工单 ID", type: "number" },
+    { name: "engineer_user", label: "工程师账号", placeholder: "工程师账号" },
+    { name: "material_id", label: "物料 ID", placeholder: "物料 ID", required: true, type: "number" },
+    { name: "qty", label: "数量", defaultValue: "1", min: 1, placeholder: "数量", type: "number" },
+    { name: "remark", label: "申领备注", placeholder: "申领备注", area: true },
+  ]} /></div><div className="dashboard-grid"><Panel title="申领单"><DataTable rows={data.requests as AnyRecord[]} columns={[["request_id", "ID"], ["request_no", "申领单"], ["status", "状态"], ["engineer_user", "工程师"], ["repair_order_id", "工单"], ["created_at", "时间"], ["remark", "备注"]]} /></Panel><Panel title="库存流水"><DataTable rows={data.movements as AnyRecord[]} columns={[["happened_at", "时间"], ["movement_type", "类型"], ["direction", "方向"], ["material_code", "物料代码"], ["name", "物料"], ["qty", "数量"], ["actor", "操作人"]]} /></Panel></div></div>;
 }
 
 function InventoryPage() {
@@ -1531,22 +2140,48 @@ function InventoryPage() {
   return <div className="stack"><Panel title="维修物料库存"><DataTable rows={materials.data?.materials as AnyRecord[]} columns={[["sku", "SKU"], ["name", "物料"], ["compatible_range", "适配范围"], ["current_qty", "库存"], ["avg_cost", "均价"], ["status", "状态"]]} /></Panel><Panel title="回收机器库存"><DataTable rows={inventory.data} columns={[["inventory_item_id", "库存ID"], ["machine_id", "机器ID"], ["imei", "IMEI"], ["model", "机型"], ["status", "库存状态"], ["cost_amount", "成本"], ["sale_price", "销售定价"]]} /></Panel></div>;
 }
 
+
 function CustomersPage() {
   const [q, setQ] = useState("");
-  const query = useQuery({ queryKey: ["customers", q], queryFn: () => api<AnyRecord[]>(`/api/customers?q=${encodeURIComponent(q)}`) });
-  return <Panel title="客户查询"><div className="toolbar filters"><input value={q} onChange={e => setQ(e.target.value)} placeholder="姓名、电话、店铺、标签" /><button type="button" onClick={() => query.refetch()}><Search size={16} />查询</button></div><QueryState loading={query.isLoading} error={query.error} /><DataTable rows={query.data} columns={[["customer_id", "ID"], ["name", "姓名"], ["phone", "电话"], ["category", "类别"], ["shop_name", "店铺"], ["tags", "标签"]]} empty="没有找到客户" /></Panel>;
+  const query = useQuery({ queryKey: ["customers", q], queryFn: () => api<AnyRecord[]>("/api/customers?q=" + encodeURIComponent(q)) });
+  return (
+    <Panel title="????">
+      <div className="toolbar filters">
+        <Input allowClear value={q} onChange={event => setQ(event.target.value)} placeholder="???????????" />
+        <AppButton onClick={() => query.refetch()}><Search size={16} />??</AppButton>
+      </div>
+      <QueryState loading={query.isLoading} error={query.error} />
+      <DataTable rows={query.data} columns={[["customer_id", "ID"], ["name", "??"], ["phone", "??"], ["category", "??"], ["shop_name", "??"], ["tags", "??"]]} empty="??????" />
+    </Panel>
+  );
 }
 
 function PaymentsPage({ notify }: { notify: (message: string, error?: boolean) => void }) {
   const queryClient = useQueryClient();
   const query = useQuery({ queryKey: ["payments"], queryFn: () => api<AnyRecord[]>("/api/payments") });
   const mutation = useMutation({ mutationFn: (payload: AnyRecord) => api("/api/payments", { method: "POST", body: JSON.stringify(payload) }), onSuccess: () => { notify("流水已登记"); queryClient.invalidateQueries({ queryKey: ["payments"] }); }, onError: e => notify(e instanceof Error ? e.message : "登记失败", true) });
-  return <div className="split"><SimpleForm title="登记收支流水" onSubmit={(payload, form) => { mutation.mutate(payload); form.reset(); }} fields={<><select name="source_type"><option value="repair">维修单</option><option value="sale">销售单</option><option value="recycle">回收单</option></select><input name="source_id" type="number" placeholder="单据 ID *" required /><select name="direction"><option>收入</option><option>支出</option></select><input name="amount" type="number" step="0.01" placeholder="金额 *" required /><input name="method" placeholder="方式" /><input name="payer" placeholder="付款方" /><input name="payee" placeholder="收款方" /><textarea name="remark" placeholder="备注" /></>} /><Panel title="流水列表"><QueryState loading={query.isLoading} error={query.error} /><DataTable rows={query.data} columns={[["payment_id", "ID"], ["source_type", "来源"], ["source_id", "单据"], ["direction", "方向"], ["amount", "金额"], ["method", "方式"], ["transaction_no", "流水号"], ["status", "状态"], ["received_by", "收款人"], ["confirmed_by", "确认人"], ["created_at", "时间"]]} /></Panel></div>;
+  return <div className="split"><AppFormSection title="登记收支流水" loading={mutation.isPending} onSubmit={(payload, helpers) => { mutation.mutate(payload); helpers.reset(); }} fields={[
+    { name: "source_type", label: "来源", initialValue: "repair", options: [{ value: "repair", label: "维修单" }, { value: "sale", label: "销售单" }, { value: "recycle", label: "回收单" }] },
+    { name: "source_id", label: "单据 ID", placeholder: "单据 ID", required: true, type: "number" },
+    { name: "direction", label: "方向", initialValue: "收入", options: [{ value: "收入", label: "收入" }, { value: "支出", label: "支出" }] },
+    { name: "amount", label: "金额", placeholder: "金额", required: true, step: "0.01", type: "number" },
+    { name: "method", label: "方式", placeholder: "方式" },
+    { name: "payer", label: "付款方", placeholder: "付款方" },
+    { name: "payee", label: "收款方", placeholder: "收款方" },
+    { name: "remark", label: "备注", placeholder: "备注", area: true },
+  ]} /><Panel title="流水列表"><QueryState loading={query.isLoading} error={query.error} /><DataTable rows={query.data} columns={[["payment_id", "ID"], ["source_type", "来源"], ["source_id", "单据"], ["direction", "方向"], ["amount", "金额"], ["method", "方式"], ["transaction_no", "流水号"], ["status", "状态"], ["received_by", "收款人"], ["confirmed_by", "确认人"], ["created_at", "时间"]]} /></Panel></div>;
 }
 
 function SalesPage({ notify }: { notify: (message: string, error?: boolean) => void }) {
   const mutation = useMutation({ mutationFn: (payload: AnyRecord) => api<AnyRecord>("/api/sales-orders", { method: "POST", body: JSON.stringify(payload) }), onSuccess: data => notify(`销售单已创建：${String(data.sales_order_id)}`), onError: e => notify(e instanceof Error ? e.message : "创建失败", true) });
-  return <SimpleForm title="销售开单" onSubmit={(data, form) => { mutation.mutate({ inventory_item_id: data.inventory_item_id, customer: customerPayload(data), sale_price: data.sale_price, salesperson: data.salesperson, remark: data.remark || "" }); form.reset(); }} fields={<><input name="inventory_item_id" type="number" placeholder="库存 ID *" required /><input name="customer_name" placeholder="客户姓名" /><input name="phone" placeholder="联系电话" /><input name="sale_price" type="number" step="0.01" placeholder="销售价格 *" required /><input name="salesperson" placeholder="销售人 *" required /><textarea name="remark" placeholder="备注" /></>} />;
+  return <AppFormSection title="销售开单" loading={mutation.isPending} onSubmit={(data, helpers) => { mutation.mutate({ inventory_item_id: data.inventory_item_id, customer: customerPayload(data), sale_price: data.sale_price, salesperson: data.salesperson, remark: data.remark || "" }); helpers.reset(); }} fields={[
+    { name: "inventory_item_id", label: "库存 ID", placeholder: "库存 ID", required: true, type: "number" },
+    { name: "customer_name", label: "客户姓名", placeholder: "客户姓名" },
+    { name: "phone", label: "联系电话", placeholder: "联系电话" },
+    { name: "sale_price", label: "销售价格", placeholder: "销售价格", required: true, step: "0.01", type: "number" },
+    { name: "salesperson", label: "销售人", placeholder: "销售人", required: true },
+    { name: "remark", label: "备注", placeholder: "备注", area: true },
+  ]} />;
 }
 
 function ReportsPage() {
@@ -1556,9 +2191,128 @@ function ReportsPage() {
   return <div className="stack"><QueryState loading={query.isLoading} error={query.error} /><div className="metric-grid"><div className="metric"><span>在售库存</span><strong>{String(query.data?.inventory_count || 0)}</strong></div><div className="metric"><span>库存成本</span><strong>{formatMoney(query.data?.inventory_cost || 0)}</strong></div><div className="metric"><span>收入流水</span><strong>{formatMoney(income)}</strong></div><div className="metric"><span>支出流水</span><strong>{formatMoney(expense)}</strong></div></div><Panel title="库存明细"><DataTable rows={query.data?.inventory as AnyRecord[]} columns={[["inventory_item_id", "库存ID"], ["machine_no", "机器编号"], ["imei", "IMEI"], ["model", "机型"], ["status", "状态"], ["cost_amount", "成本"], ["sale_price", "销售定价"]]} /></Panel></div>;
 }
 
-function AuditPage() {
+function DeviceModelSettings({ notify }: { notify: (message: string, error?: boolean) => void }) {
+  const queryClient = useQueryClient();
+  const emptyModelForm = { brand: "Apple", enabled: "true", sort_order: 100 };
+  const [modelForm, setModelForm] = useState<AnyRecord>(emptyModelForm);
+  const [keyword, setKeyword] = useState("");
+  const query = useQuery({ queryKey: ["device-models-settings", keyword], queryFn: () => api<AnyRecord[]>(`/api/device-models?q=${encodeURIComponent(keyword)}`) });
+  const mutation = useMutation({
+    mutationFn: (payload: AnyRecord) => api<AnyRecord>("/api/device-models", {
+      method: "POST",
+      body: JSON.stringify({
+        ...payload,
+        colors: splitOptionText(payload.colors_text ?? payload.colors),
+        capacities: splitOptionText(payload.capacities_text ?? payload.capacities),
+        enabled: payload.enabled !== false && payload.enabled !== "false",
+        sort_order: Number(payload.sort_order || 100),
+      }),
+    }),
+    onSuccess: () => {
+      notify("设备型号已保存");
+      setModelForm(emptyModelForm);
+      queryClient.invalidateQueries({ queryKey: ["device-models-settings"] });
+      queryClient.invalidateQueries({ queryKey: ["device-models"] });
+    },
+    onError: error => notify(error instanceof Error ? error.message : "保存失败", true),
+  });
+  const rows = query.data || [];
+  return (
+    <Panel title="设备型号管理" note="维护开单页可选的设备型号、颜色和容量。颜色/容量可用逗号、顿号或换行分隔。">
+      <AppFormSection
+        clearText="清空"
+        fields={[
+          { name: "brand", label: "品牌", placeholder: "Apple", initialValue: "Apple" },
+          { name: "model_name", label: "型号名称", placeholder: "iPhone 16 Pro", required: true },
+          { name: "sort_order", label: "排序", initialValue: 100, type: "number" },
+          { name: "enabled", label: "状态", initialValue: "true", options: [{ value: "true", label: "启用" }, { value: "false", label: "停用" }] },
+          { name: "colors_text", label: "颜色", placeholder: "黑色、白色、蓝色", area: true },
+          { name: "capacities_text", label: "容量/内存", placeholder: "128GB、256GB、512GB", area: true },
+          { name: "remark", label: "备注", placeholder: "备注", area: true },
+        ]}
+        loading={mutation.isPending}
+        values={modelForm}
+        onClear={() => setModelForm(emptyModelForm)}
+        onSubmit={(payload, helpers) => { mutation.mutate(payload); helpers.reset(); }}
+        submitText="保存设备型号"
+        title="设备型号"
+      />
+      <div className="toolbar filters"><Input value={keyword} onChange={event => setKeyword(event.target.value)} placeholder="搜索品牌、型号" allowClear /></div>
+      <QueryState loading={query.isLoading} error={query.error} />
+      <AppTable
+        rows={rows}
+        columns={[["brand", "品牌"], ["model_name", "型号"], ["colors", "颜色"], ["capacities", "容量/内存"], ["sort_order", "排序"], ["enabled", "状态"]]}
+        formatValue={(row, key) => {
+          if (key === "colors" || key === "capacities") return optionArray(row[key]).join("、") || "-";
+          if (key === "enabled") return row.enabled ? "启用" : "停用";
+          return displayValue(row, key);
+        }}
+        isStatusKey={(key) => key === "enabled"}
+        actions={{ render: row => <AppButton onClick={() => setModelForm({ ...row, enabled: row.enabled ? "true" : "false", colors_text: optionArray(row.colors).join("、"), capacities_text: optionArray(row.capacities).join("、") })}>编辑</AppButton> }}
+      />
+    </Panel>
+  );
+}
+
+function RepairSkuSettings({ notify }: { notify: (message: string, error?: boolean) => void }) {
+  const queryClient = useQueryClient();
+  const emptySkuForm = { model: "", enabled: "true" };
+  const [skuForm, setSkuForm] = useState<AnyRecord>(emptySkuForm);
+  const [skuKeyword, setSkuKeyword] = useState("");
+  const query = useQuery({ queryKey: ["repair-skus-settings", skuKeyword], queryFn: () => api<AnyRecord[]>(`/api/repair-skus?q=${encodeURIComponent(skuKeyword)}`) });
+  const mutation = useMutation({
+    mutationFn: (payload: AnyRecord) => api<AnyRecord>("/api/repair-skus", { method: "POST", body: JSON.stringify({ ...payload, cost_amount: Number(payload.cost_amount || 0), charge_amount: Number(payload.charge_amount || 0), enabled: payload.enabled !== false && payload.enabled !== "false" }) }),
+    onSuccess: () => {
+      notify("故障代码已保存");
+      setSkuForm(emptySkuForm);
+      queryClient.invalidateQueries({ queryKey: ["repair-skus-settings"] });
+      queryClient.invalidateQueries({ queryKey: ["repair-skus"] });
+    },
+    onError: error => notify(error instanceof Error ? error.message : "保存失败", true),
+  });
+  const rows = query.data || [];
+  return (
+    <Panel title="故障代码维护" note="维护按机型匹配的维修故障代码、维修方案/SKU 和默认价格。空机型表示通用。">
+      <AppFormSection
+        clearText="清空"
+        fields={[
+          { name: "model", label: "适用机型", placeholder: "通用可留空" },
+          { name: "sku_code", label: "故障代码", placeholder: "SCREEN-OLED", required: true },
+          { name: "fault_name", label: "故障名称", placeholder: "屏幕损坏", required: true },
+          { name: "solution_name", label: "维修方案/SKU", placeholder: "更换屏幕总成", required: true },
+          { name: "cost_amount", label: "配件成本", step: "0.01", type: "number" },
+          { name: "charge_amount", label: "工时/服务费", step: "0.01", type: "number" },
+          { name: "enabled", label: "状态", initialValue: "true", options: [{ value: "true", label: "启用" }, { value: "false", label: "停用" }] },
+          { name: "remark", label: "备注", placeholder: "备注", area: true },
+        ]}
+        loading={mutation.isPending}
+        values={skuForm}
+        onClear={() => setSkuForm(emptySkuForm)}
+        onSubmit={(payload, helpers) => { mutation.mutate(payload); helpers.reset(); }}
+        submitText="保存故障代码"
+        title="故障代码"
+      />
+      <div className="toolbar filters"><Input value={skuKeyword} onChange={event => setSkuKeyword(event.target.value)} placeholder="搜索故障代码、名称、方案" allowClear /></div>
+      <QueryState loading={query.isLoading} error={query.error} />
+      <AppTable
+        rows={rows}
+        columns={[["model", "机型"], ["sku_code", "故障代码"], ["fault_name", "故障名称"], ["solution_name", "维修方案/SKU"], ["cost_amount", "配件成本"], ["charge_amount", "工时/服务费"], ["enabled", "状态"]]}
+        formatValue={(row, key) => {
+          if (key === "model") return String(row.model || "通用");
+          if (key === "cost_amount" || key === "charge_amount") return formatMoney(row[key]);
+          if (key === "enabled") return row.enabled ? "启用" : "停用";
+          return displayValue(row, key);
+        }}
+        isStatusKey={(key) => key === "enabled"}
+        actions={{ render: row => <AppButton onClick={() => setSkuForm({ ...row, enabled: row.enabled ? "true" : "false" })}>编辑</AppButton> }}
+      />
+    </Panel>
+  );
+}
+
+function AuditPage({ notify }: { notify: (message: string, error?: boolean) => void }) {
   const query = useQuery({ queryKey: ["audit"], queryFn: () => api<AnyRecord[]>("/api/audit-logs") });
-  return <Panel title="系统设置 / 操作日志"><QueryState loading={query.isLoading} error={query.error} /><DataTable rows={query.data} columns={[["time", "时间"], ["username", "用户"], ["role", "角色"], ["action", "动作"], ["target_type", "对象"], ["target_id", "ID"], ["result", "结果"]]} /></Panel>;
+  return <div className="stack"><DeviceModelSettings notify={notify} /><RepairSkuSettings notify={notify} /><Panel title="系统设置 / 操作日志"><QueryState loading={query.isLoading} error={query.error} /><DataTable rows={query.data} columns={[["time", "时间"], ["username", "用户"], ["role", "角色"], ["action", "动作"], ["target_type", "对象"], ["target_id", "ID"], ["result", "结果"]]} /></Panel></div>;
 }
 
 export default App;
