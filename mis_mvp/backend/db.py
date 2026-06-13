@@ -5,6 +5,7 @@ import sqlite3
 from pathlib import Path
 
 from .auth import hash_password
+from .order_numbers import is_repair_order_no, repair_order_date_key, repair_order_no
 
 
 SCHEMA = """
@@ -642,6 +643,7 @@ def connect(database_path: Path | str) -> sqlite3.Connection:
 def migrate(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     ensure_columns(conn)
+    backfill_repair_order_numbers(conn)
     seed_users(conn)
     seed_device_models(conn)
     seed_repair_skus(conn)
@@ -737,6 +739,29 @@ def ensure_columns(conn: sqlite3.Connection) -> None:
         for name, definition in table_columns:
             if name not in existing:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+
+
+def backfill_repair_order_numbers(conn: sqlite3.Connection) -> None:
+    rows = conn.execute(
+        """
+        SELECT repair_order_id, order_no, created_at
+        FROM repair_orders
+        ORDER BY date(COALESCE(NULLIF(created_at, ''), CURRENT_TIMESTAMP)), created_at, repair_order_id
+        """
+    ).fetchall()
+    by_date: dict[str, list[sqlite3.Row]] = {}
+    for row in rows:
+        date_key = repair_order_date_key(row["created_at"])
+        by_date.setdefault(date_key, []).append(row)
+    for date_key, date_rows in by_date.items():
+        for sequence, row in enumerate(date_rows, start=1):
+            current = str(row["order_no"] or "").strip()
+            if is_repair_order_no(current):
+                continue
+            conn.execute(
+                "UPDATE repair_orders SET order_no=? WHERE repair_order_id=?",
+                (repair_order_no(date_key, sequence), row["repair_order_id"]),
+            )
 
 
 def seed_users(conn: sqlite3.Connection) -> None:

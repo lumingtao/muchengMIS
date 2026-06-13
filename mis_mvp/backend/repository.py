@@ -5,6 +5,7 @@ import sqlite3
 from typing import Any
 
 from .models import CustomerInput, DeviceStatus, PurchaseInput, RepairInput, RepairStatus, SettlementStatus
+from .order_numbers import repair_order_date_key, repair_order_no
 
 
 def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
@@ -506,9 +507,25 @@ class Repository:
             (machine_id, customer_id, status, workflow_status, assigned_to, fault_description, remark, created_by),
         )
         repair_order_id = int(cur.lastrowid)
+        created = self.conn.execute(
+            "SELECT created_at FROM repair_orders WHERE repair_order_id=?",
+            (repair_order_id,),
+        ).fetchone()
+        date_key = repair_order_date_key(created["created_at"] if created else "")
+        sequence = int(
+            self.conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM repair_orders
+                WHERE substr(COALESCE(NULLIF(created_at, ''), CURRENT_TIMESTAMP), 1, 10) = substr(COALESCE((SELECT created_at FROM repair_orders WHERE repair_order_id=?), CURRENT_TIMESTAMP), 1, 10)
+                  AND repair_order_id <= ?
+                """,
+                (repair_order_id, repair_order_id),
+            ).fetchone()["count"]
+        )
         self.conn.execute(
             "UPDATE repair_orders SET order_no=? WHERE repair_order_id=?",
-            (f"RO-{repair_order_id}", repair_order_id),
+            (repair_order_no(date_key, sequence), repair_order_id),
         )
         return repair_order_id
 

@@ -217,6 +217,16 @@ function DataTable({ rows, columns, onRowClick, empty = "暂无数据", defaultS
   );
 }
 
+export function compactPageItems(currentPage: number, totalPages: number) {
+  if (totalPages <= 7) return Array.from({ length: totalPages }, (_, index) => index + 1);
+  const pages = new Set([1, totalPages, currentPage - 1, currentPage, currentPage + 1]);
+  const sorted = Array.from(pages).filter(page => page >= 1 && page <= totalPages).sort((a, b) => a - b);
+  return sorted.flatMap((page, index) => {
+    const previous = sorted[index - 1];
+    return previous && page - previous > 1 ? ["ellipsis", page] : [page];
+  });
+}
+
 function QueryState({ loading, error }: { loading: boolean; error: unknown }) {
   if (!loading && !error) return null;
   return <AntdQueryState loading={loading} error={error} />;
@@ -530,6 +540,8 @@ function WorkMessages({ financeCount, requestCount }: { financeCount: number; re
 function RepairPool({ notify, openOrderDetail, openNewOrder }: { notify: (message: string, error?: boolean) => void; openOrderDetail: (row: AnyRecord, mode?: OrderMode) => void; openNewOrder?: () => void; setView?: (view: ViewKey) => void }) {
   const [keyword, setKeyword] = useState("");
   const [status, setStatus] = useState("全部状态");
+  const [currentPage, setCurrentPage] = useState(1);
+  const pageSize = 15;
   const query = useQuery({ queryKey: ["repair-workbench"], queryFn: () => api<AnyRecord>("/api/repair-workbench") });
   const orders = ((query.data?.orders as AnyRecord[] | undefined) || []);
   const rows = useMemo(() => {
@@ -542,7 +554,19 @@ function RepairPool({ notify, openOrderDetail, openNewOrder }: { notify: (messag
   const repairing = orders.filter(row => normalizeRepairStatus(row.status) === "维修中").length;
   const paidWaiting = orders.filter(row => normalizeRepairStatus(row.status) === "待支付").length;
   const done = orders.filter(row => normalizeRepairStatus(row.status) === "已完结").length;
-  const visibleRows = rows.slice(0, 15);
+  const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
+  const safePage = Math.min(currentPage, totalPages);
+  const startIndex = rows.length ? (safePage - 1) * pageSize : 0;
+  const visibleRows = rows.slice(startIndex, startIndex + pageSize);
+  const pageItems = compactPageItems(safePage, totalPages);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [keyword, status]);
+
+  useEffect(() => {
+    if (currentPage > totalPages) setCurrentPage(totalPages);
+  }, [currentPage, totalPages]);
 
   if (query.isLoading || query.error) return <QueryState loading={query.isLoading} error={query.error} />;
 
@@ -590,15 +614,15 @@ function RepairPool({ notify, openOrderDetail, openNewOrder }: { notify: (messag
             </table>
           </div>
           <div className="pool-pagination">
-            <span>显示第 <b>{visibleRows.length ? 1 : 0} - {visibleRows.length}</b> 条，共 <b>{rows.length || orders.length || 0}</b> 条工单</span>
+            <span>显示第 <b>{visibleRows.length ? startIndex + 1 : 0} - {visibleRows.length ? startIndex + visibleRows.length : 0}</b> 条，共 <b>{rows.length}</b> 条工单</span>
             <div>
-              <button type="button" disabled><ChevronLeft size={22} /></button>
-              <button type="button" className="active">1</button>
-              <button type="button">2</button>
-              <button type="button">3</button>
-              <em>...</em>
-              <button type="button">321</button>
-              <button type="button"><ChevronRight size={22} /></button>
+              <button type="button" disabled={safePage <= 1} onClick={() => setCurrentPage(page => Math.max(1, page - 1))}><ChevronLeft size={22} /></button>
+              {pageItems.map((item, index) => item === "ellipsis" ? (
+                <em key={`ellipsis-${index}`}>...</em>
+              ) : (
+                <button type="button" key={item} className={safePage === item ? "active" : ""} onClick={() => setCurrentPage(Number(item))}>{item}</button>
+              ))}
+              <button type="button" disabled={safePage >= totalPages} onClick={() => setCurrentPage(page => Math.min(totalPages, page + 1))}><ChevronRight size={22} /></button>
             </div>
           </div>
         </section>
@@ -613,7 +637,7 @@ function PoolStat({ icon, tone, label, value, note }: { icon: ReactNode; tone: "
 
 function PoolOrderRow({ row, onOpen, notify }: { row: AnyRecord; onOpen: (row: AnyRecord, mode?: OrderMode) => void; notify: (message: string, error?: boolean) => void }) {
   const status = normalizeRepairStatus(row.status);
-  const phone = String(row.phone || row.customer_phone || "13800000000");
+  const phone = String(row.phone || row.customer_phone || "");
   const imei = String(row.imei || row.serial || row.machine_no || "");
   return (
     <tr>
@@ -637,15 +661,15 @@ function normalizeRepairStatus(input: unknown) {
   return "维修中";
 }
 
-function maskCode(value: string) {
-  if (!value) return "356821******821";
+export function maskCode(value: string) {
+  if (!value) return "-";
   if (value.length <= 8) return value;
   return `${value.slice(0, 6)}******${value.slice(-3)}`;
 }
 
-function maskPhone(value: string) {
+export function maskPhone(value: string) {
   const digits = value.replace(/\D/g, "");
-  if (digits.length < 7) return value || "138****8888";
+  if (digits.length < 7) return value || "-";
   return `${digits.slice(0, 3)}****${digits.slice(-4)}`;
 }
 
@@ -805,23 +829,24 @@ function OrderDetailPage({
   const savedInspections = useMemo(() => ((data.inspections as AnyRecord[] | undefined) || []), [data.inspections]);
   const incomeItems = ((data.income_items as AnyRecord[] | undefined) || []);
   const costItems = ((data.cost_items as AnyRecord[] | undefined) || []);
+  const repairItems = ((data.repair_items as AnyRecord[] | undefined) || []);
   const payments = ((data.payments as AnyRecord[] | undefined) || []);
   const display = mode === "new" ? form : { ...order, ...form };
   const createdAt = String(order.created_at || order.opened_at || "保存后生成");
   const owner = String(display.assigned_to || order.assigned_to || "未指派");
   const statusText = mode === "new" ? "待创建" : mode === "cancel" ? "取消确认" : normalizeRepairStatus(order.status);
-  const model = String(display.model || order.model || (mode === "new" ? "" : "iPhone 13 Pro"));
-  const colorCapacity = [display.color || order.color || (mode === "new" ? "" : "远峰蓝"), display.memory || order.memory || order.capacity || (mode === "new" ? "" : "128GB")].filter(Boolean).join(" / ");
-  const imei = String(display.imei || order.imei || order.serial || (mode === "new" ? "" : "869123456789012"));
-  const customer = String(display.customer_name || order.customer_name || (mode === "new" ? "" : "张先生"));
-  const phone = String(display.phone || order.phone || order.customer_phone || (mode === "new" ? "" : "138-0000-0000"));
+  const model = String(display.model || order.model || "");
+  const colorCapacity = [display.color || order.color || "", display.memory || order.memory || order.capacity || ""].filter(Boolean).join(" / ");
+  const imei = String(display.imei || order.imei || order.serial || "");
+  const customer = String(display.customer_name || order.customer_name || "");
+  const phone = String(display.phone || order.phone || order.customer_phone || "");
   const profileDisplay = profileEditing ? { ...display, ...profileForm } : display;
-  const profileModel = String(profileDisplay.model || (mode === "new" ? "" : "iPhone 13 Pro"));
-  const profileImei = String(profileDisplay.imei || profileDisplay.serial || (mode === "new" ? "" : "869123456789012"));
-  const profileColor = String(profileDisplay.color || (mode === "new" ? "" : "远峰蓝"));
-  const profileMemory = String(profileDisplay.memory || profileDisplay.capacity || (mode === "new" ? "" : "128GB"));
-  const profileCustomer = String(profileDisplay.customer_name || (mode === "new" ? "" : "张先生"));
-  const profilePhone = String(profileDisplay.phone || profileDisplay.customer_phone || (mode === "new" ? "" : "138-0000-0000"));
+  const profileModel = String(profileDisplay.model || "");
+  const profileImei = String(profileDisplay.imei || profileDisplay.serial || "");
+  const profileColor = String(profileDisplay.color || "");
+  const profileMemory = String(profileDisplay.memory || profileDisplay.capacity || "");
+  const profileCustomer = String(profileDisplay.customer_name || "");
+  const profilePhone = String(profileDisplay.phone || profileDisplay.customer_phone || "");
   const profileCustomerType = String(profileDisplay.customer_type || order.customer_type || (mode === "new" ? "个人客户" : "零售客户"));
   const newQuoted = newRepairItems.reduce((sum, row) => {
     const { lineAmount } = repairLineAmounts(row);
@@ -830,10 +855,7 @@ function OrderDetailPage({
   const quoted = mode === "new" ? newQuoted : Number(display.quoted_amount || order.quoted_amount || incomeItems.reduce((sum, row) => sum + Number(row.amount || 0), 0));
   const cost = Number(order.cost_amount || costItems.reduce((sum, row) => sum + Number(row.total_cost || row.unit_cost || 0), 0));
   const paid = Number(order.paid_amount || payments.reduce((sum, row) => sum + Number(row.amount || 0), 0));
-  const detailRows = mode === "new" ? newRepairItems : costItems.length ? costItems : [
-    { item_name: "屏幕总成更换", sku: "IP13P-SCR-OLED", unit_cost: cost || 680, amount: quoted || 980, qty: 1 },
-    { item_name: "维修服务费", sku: "SERVICE-PREMIUM", unit_cost: 0, amount: Math.max((quoted || 1280) - (cost || 680), 0), qty: 1 },
-  ];
+  const detailRows = mode === "new" ? newRepairItems : repairItems;
   const inspections = ["屏幕显示", "触摸功能", "摄像头", "电池健康", "生物识别", "无线网络", "蜂窝网络", "音频模块", "指南针", "扬声器", "听筒", "充电"];
   const inspectionItems = ["屏幕显示", "触摸功能", "摄像头", "电池健康", "生物识别", "无线网络", "蜂窝网络", "音频模块", "指南针", "扬声器", "听筒", "充电", "其他异常"];
   const canAddRepairItem = mode !== "new" && canModifyRepairItems(statusText);
@@ -970,6 +992,7 @@ function OrderDetailPage({
       return api<AnyRecord>(`/api/repair-orders/${orderId}/items`, {
         method: "POST",
         body: JSON.stringify({
+          sku_id: payload.sku_id || null,
           item_name: payload.item_name || "",
           quantity: Number(payload.quantity || 1),
           cost_amount: Number(payload.cost_amount || 0),
@@ -1211,13 +1234,14 @@ function OrderDetailPage({
   function selectRepairSku(row: AnyRecord) {
     setItemForm({
       sku_id: row.sku_id,
-      item_name: row.solution_name || row.fault_name || "",
+      item_name: row.fault_name || "",
       quantity: 1,
       cost_amount: firstNumber(row.cost_amount),
       charge_amount: firstNumber(row.charge_amount),
       remark: row.remark || "",
       sku_code: row.sku_code || "",
       fault_name: row.fault_name || "",
+      solution_name: row.solution_name || "",
     });
   }
   function removeNewRepairItem(index: number) {
@@ -1418,7 +1442,7 @@ function OrderDetailPage({
     formatValue={(row, key) => {
       const { unitCost, serviceFee, lineAmount } = repairLineAmounts(row);
       const quantity = firstNumber(row.quantity, row.qty, 1);
-      if (key === "fault_name") return String(row.fault_name || row.item_name || row.material_name || "维修项目");
+      if (key === "fault_name") return String(row.item_name || row.fault_name || row.material_name || "");
       if (key === "sku_code") return String(row.sku_code || row.sku || row.material_code || "-");
       if (key === "unit_cost") return poolMoney(unitCost);
       if (key === "service_fee") return poolMoney(serviceFee);
@@ -1433,7 +1457,7 @@ function OrderDetailPage({
           </section>
 
           {mode !== "new" && <EditableInspectionCard title="维修后检测 (Post-Repair)" inspections={inspectionItems} note={postInspectionNote} compact={false} mode={mode} state={postInspectionState} photos={postPhotos} stage="post" editing={postInspectionEditing} onStart={() => setPostInspectionEditing(true)} onSave={() => saveInspection("post")} onCancel={() => setPostInspectionEditing(false)} onToggle={item => toggleInspection("post", item)} onNoteChange={setPostInspectionNote} onUpload={uploadPhoto} onOpenPhoto={setSelectedPhoto} uploading={photoMutation.isPending || inspectionMutation.isPending} />}
-          <section className="order-card"><h3><ClipboardList size={24} />维修历史</h3><div className="history-list">{historyOrders.length ? historyOrders.slice(0, 5).map(row => <button type="button" className="history-order-row" key={String(row.repair_order_id)} onClick={() => { onCreated(row.repair_order_id as number | string); onModeChange("view"); }}><b>{String(row.order_no || `RO-${row.repair_order_id}`)}</b><span>{String(row.status || "待确认")} · {String(row.fault_description || "无故障描述")}</span><em>{poolMoney(row.quoted_amount || row.paid_amount || 0)} · {String(row.created_at || "")}</em></button>) : <div className="history-empty">无</div>}</div></section>
+          <section className="order-card"><h3><ClipboardList size={24} />维修历史</h3><div className="history-list">{historyOrders.length ? historyOrders.slice(0, 5).map(row => <button type="button" className="history-order-row" key={String(row.repair_order_id)} onClick={() => { onCreated(row.repair_order_id as number | string); onModeChange("view"); }}><b>{String(row.order_no || row.repair_order_id || "")}</b><span>{String(row.status || "待确认")} · {String(row.fault_description || "无故障描述")}</span><em>{poolMoney(row.quoted_amount || row.paid_amount || 0)} · {String(row.created_at || "")}</em></button>) : <div className="history-empty">无</div>}</div></section>
         </div>
 
         <aside className="order-side-column">
@@ -1758,7 +1782,7 @@ function OrderField({ label, value, editable, onChange, area, type = "text" }: {
       {editable ? (
         area ? <Input.TextArea value={String(value || "")} onChange={event => onChange?.(event.target.value)} /> : <Input type={type} value={String(value || "")} onChange={event => onChange?.(event.target.value)} />
       ) : (
-        <strong>{String(value || "??")}</strong>
+        <strong>{String(value || "")}</strong>
       )}
     </label>
   );
@@ -1777,14 +1801,14 @@ function OrderChoiceLine({ label, value, editable, onChange, options }: { label:
           {open && filtered.length > 0 && <div className="choice-popover">{filtered.map(option => <button type="button" key={option} onMouseDown={event => event.preventDefault()} onClick={() => { onChange?.(option); setOpen(false); }}>{option}</button>)}</div>}
         </div>
       ) : (
-        <strong>{String(value || "??")}</strong>
+        <strong>{String(value || "")}</strong>
       )}
     </div>
   );
 }
 
 function OrderEditableLine({ label, value, editable, onChange, onFocus, pill, tag, highlight }: { label: string; value: unknown; editable?: boolean; onChange?: (value: string) => void; onFocus?: () => void; pill?: boolean; tag?: string; highlight?: boolean }) {
-  return <div className={'info-line order-editable-line ' + (pill ? 'pill-value' : '')}><span>{label}</span>{editable ? <Input value={String(value || "")} onFocus={onFocus} onChange={event => onChange?.(event.target.value)} /> : <strong className={highlight ? "highlight" : ""}>{String(value || "??")}{tag && <em>{tag}</em>}</strong>}</div>;
+  return <div className={'info-line order-editable-line ' + (pill ? 'pill-value' : '')}><span>{label}</span>{editable ? <Input value={String(value || "")} onFocus={onFocus} onChange={event => onChange?.(event.target.value)} /> : <strong className={highlight ? "highlight" : ""}>{String(value || "")}{tag && <em>{tag}</em>}</strong>}</div>;
 }
 
 function buildStitchTimeline(mode: OrderMode, status: string, createdAt: string, owner: string) {
@@ -1861,21 +1885,19 @@ function LegacyOrderDetailPage({ orderId, notify, onBack }: { orderId: number | 
   const events = ((data.events as AnyRecord[] | undefined) || []).slice(0, 8);
   const incomeItems = ((data.income_items as AnyRecord[] | undefined) || []);
   const costItems = ((data.cost_items as AnyRecord[] | undefined) || []);
+  const repairItems = ((data.repair_items as AnyRecord[] | undefined) || []);
   const payments = ((data.payments as AnyRecord[] | undefined) || []);
-  const createdAt = String(order.created_at || order.opened_at || "2023-10-27 14:30");
-  const owner = String(order.assigned_to || order.engineer_user || "张工程师");
-  const model = String(order.model || "iPhone 13 Pro");
-  const colorCapacity = [order.color || "远峰蓝", order.memory || order.capacity || "128GB"].filter(Boolean).join(" / ");
-  const imei = String(order.imei || order.serial || "869123456789012");
-  const customer = String(order.customer_name || "张先生");
-  const phone = String(order.phone || order.customer_phone || "138-0000-0000");
+  const createdAt = String(order.created_at || order.opened_at || "");
+  const owner = String(order.assigned_to || order.engineer_user || "");
+  const model = String(order.model || "");
+  const colorCapacity = [order.color || "", order.memory || order.capacity || ""].filter(Boolean).join(" / ");
+  const imei = String(order.imei || order.serial || "");
+  const customer = String(order.customer_name || "");
+  const phone = String(order.phone || order.customer_phone || "");
   const quoted = Number(order.quoted_amount || incomeItems.reduce((sum, row) => sum + Number(row.amount || 0), 0));
   const cost = Number(order.cost_amount || costItems.reduce((sum, row) => sum + Number(row.total_cost || row.unit_cost || 0), 0));
   const paid = Number(order.paid_amount || payments.reduce((sum, row) => sum + Number(row.amount || 0), 0));
-  const detailRows = costItems.length ? costItems : [
-    { item_name: "屏幕总成更换", sku: "IP13P-SCR-OLED", unit_cost: cost || 680, amount: quoted || 980, qty: 1 },
-    { item_name: "维修服务费", sku: "SERVICE-PREMIUM", unit_cost: 0, amount: Math.max((quoted || 1280) - (cost || 680), 0), qty: 1 },
-  ];
+  const detailRows = repairItems;
   const inspections = ["屏幕显示", "触摸功能", "摄像头", "电池健康", "生物识别", "无线网络", "蜂窝网络", "音频模块", "指南针", "扬声器", "听筒", "充电"];
   const timeline = [
     { title: "工单创建", note: `${createdAt} | 客户前台`, done: true },
@@ -1954,7 +1976,7 @@ function LegacyOrderDetailPage({ orderId, notify, onBack }: { orderId: number | 
                 formatValue={(row, key) => {
                   const unitCost = Number(row.total_cost || row.unit_cost || 0);
                   const amount = Number(row.amount || row.charge_amount || row.price || 0);
-                  if (key === "item_name") return String(row.item_name || row.material_name || "????");
+                  if (key === "item_name") return String(row.item_name || row.fault_name || row.material_name || "");
                   if (key === "sku") return String(row.sku || row.material_code || "-");
                   if (key === "unit_cost") return formatMoney(unitCost);
                   if (key === "service_fee") return formatMoney(Math.max(amount - unitCost, 0));
@@ -2010,7 +2032,7 @@ function LegacyOrderDetailPage({ orderId, notify, onBack }: { orderId: number | 
 }
 
 function InfoLine({ label, value, pill, tag, highlight }: { label: string; value: unknown; pill?: boolean; tag?: string; highlight?: boolean }) {
-  return <div className={`info-line ${pill ? "pill-value" : ""}`}><span>{label}</span><strong className={highlight ? "highlight" : ""}>{String(value || "待补")}{tag && <em>{tag}</em>}</strong></div>;
+  return <div className={`info-line ${pill ? "pill-value" : ""}`}><span>{label}</span><strong className={highlight ? "highlight" : ""}>{String(value || "")}{tag && <em>{tag}</em>}</strong></div>;
 }
 
 
@@ -2049,7 +2071,7 @@ function InspectionCard({ title, inspections, note, compact, mode = "view", stat
 }
 
 function InfoBlock({ label, text }: { label: string; text: unknown }) {
-  return <div className="field-block"><span>{label}</span><strong>{String(text || "待补")}</strong></div>;
+  return <div className="field-block"><span>{label}</span><strong>{String(text || "")}</strong></div>;
 }
 
 function DetailSection({ title, rows, columns }: { title: string; rows?: AnyRecord[]; columns: Array<[string, string]> }) {

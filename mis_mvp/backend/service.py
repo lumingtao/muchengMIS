@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from .auth import hash_password, permissions_for, require_permission
 from .config import ROOT_DIR
+from .order_numbers import repair_order_date_key, repair_order_no
 from .models import (
     BusinessLine,
     CustomerInput,
@@ -298,6 +299,7 @@ class MisService:
         detail = self.repo.repair_order_detail(repair_order_id)
         if not detail:
             return {}
+        detail["order_no"] = detail.get("order_no") or repair_order_no(repair_order_date_key(detail.get("created_at")), 1)
         detail["available_actions"] = self._repair_available_actions(detail)
         return detail
 
@@ -466,7 +468,7 @@ class MisService:
             """
         )
         for order in orders:
-            order["order_no"] = order.get("order_no") or f"RO-{order['repair_order_id']}"
+            order["order_no"] = order.get("order_no") or repair_order_no(repair_order_date_key(order.get("created_at")), 1)
             order["customer_name"] = order.get("customer_name") or order.get("linked_customer_name") or "待补"
             order["customer_type"] = order.get("customer_type") or order.get("linked_customer_type") or "待确认"
             order["payment_status"] = order.get("payment_status") or "未收款"
@@ -528,7 +530,7 @@ class MisService:
         )
         if not order:
             raise BusinessError("维修单不存在")
-        order["order_no"] = order.get("order_no") or f"RO-{order['repair_order_id']}"
+        order["order_no"] = order.get("order_no") or repair_order_no(repair_order_date_key(order.get("created_at")), 1)
         order["customer_name"] = order.get("customer_name") or order.get("linked_customer_name") or "待补"
         order["customer_type"] = order.get("customer_type") or order.get("linked_customer_type") or "待确认"
         order["unknown_fields"] = self._repair_unknown_fields(order)

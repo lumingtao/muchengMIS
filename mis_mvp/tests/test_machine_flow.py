@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -61,6 +62,10 @@ def service(tmp_path: Path) -> MisService:
 
 def user(role: Role = Role.admin) -> User:
     return User(username=role.value, role=role)
+
+
+def assert_repair_order_no(value: str) -> None:
+    assert re.fullmatch(r"R-\d{8}-\d{3}", value)
 
 
 def warehouse_seed(service: MisService) -> tuple[dict, dict, dict, dict]:
@@ -216,7 +221,7 @@ def test_frontdesk_repair_order_creation_defaults_and_order_no(service: MisServi
     assert order["status"] == "已开单"
     assert order["workflow_status"] == "待指派工程师"
     assert order["assigned_to"] == ""
-    assert order["order_no"] == f"RO-{order['repair_order_id']}"
+    assert_repair_order_no(order["order_no"])
 
     timeline = service.machine_timeline(user(Role.frontdesk), order["machine_id"])
     assert timeline["machine"]["current_status"] == "检测中"
@@ -241,7 +246,7 @@ def test_engineer_can_create_repair_order_and_is_auto_assigned(service: MisServi
     assert order["status"] == "已开单"
     assert order["workflow_status"] == "工程师待检测"
     assert order["assigned_to"] == "engineer"
-    assert order["order_no"] == f"RO-{order['repair_order_id']}"
+    assert_repair_order_no(order["order_no"])
 
     visible = service.search_machines(user(Role.engineer), "862222222222226")
     assert [row["machine_id"] for row in visible] == [order["machine_id"]]
@@ -273,8 +278,48 @@ def test_repair_order_creation_can_reuse_customer_and_machine(service: MisServic
 
     assert order["machine_id"] == machine["machine_id"]
     assert order["customer_id"] == customer_id
-    assert order["order_no"] == f"RO-{order['repair_order_id']}"
+    assert_repair_order_no(order["order_no"])
     assert len(service.search_machines(user(Role.frontdesk), "862222222222227")) == 1
+
+
+def test_repair_order_numbers_increment_by_created_date(service: MisService) -> None:
+    first = service.create_repair_order(
+        user(Role.frontdesk),
+        RepairOrderInput(machine=MachineInput(imei="862222222222301", model="iPhone 13"), fault_description="第一单"),
+    )
+    second = service.create_repair_order(
+        user(Role.frontdesk),
+        RepairOrderInput(machine=MachineInput(imei="862222222222302", model="iPhone 14"), fault_description="第二单"),
+    )
+
+    assert first["order_no"].startswith("R-")
+    assert second["order_no"].startswith(first["order_no"][:11])
+    assert int(second["order_no"].rsplit("-", 1)[1]) == int(first["order_no"].rsplit("-", 1)[1]) + 1
+
+
+def test_migrate_backfills_legacy_repair_order_numbers(service: MisService) -> None:
+    first = service.create_repair_order(
+        user(Role.frontdesk),
+        RepairOrderInput(machine=MachineInput(imei="862222222222303", model="iPhone 13"), fault_description="旧编号一"),
+    )
+    second = service.create_repair_order(
+        user(Role.frontdesk),
+        RepairOrderInput(machine=MachineInput(imei="862222222222304", model="iPhone 14"), fault_description="旧编号二"),
+    )
+    service.conn.execute(
+        "UPDATE repair_orders SET order_no='RO-99', created_at='2026-06-05 09:00:00' WHERE repair_order_id=?",
+        (first["repair_order_id"],),
+    )
+    service.conn.execute(
+        "UPDATE repair_orders SET order_no='RO-100', created_at='2026-06-05 10:00:00' WHERE repair_order_id=?",
+        (second["repair_order_id"],),
+    )
+    service.conn.commit()
+
+    migrate(service.conn)
+
+    assert service.repo.get_repair_order(first["repair_order_id"])["order_no"] == "R-20260605-001"
+    assert service.repo.get_repair_order(second["repair_order_id"])["order_no"] == "R-20260605-002"
 
 
 def test_repair_order_creation_validation_errors(service: MisService) -> None:
@@ -366,6 +411,9 @@ def test_create_repair_order_keeps_explicit_zero_service_fee(service: MisService
     )
 
     assert order["quoted_amount"] == 80
+    assert order["items"][0]["item_name"] == "电池老化"
+    assert order["items"][0]["fault_name"] == "电池老化"
+    assert "屏幕总成更换" not in order["items"][0]["item_name"]
     assert order["items"][0]["cost_amount"] == 80
     assert order["items"][0]["charge_amount"] == 0
 
