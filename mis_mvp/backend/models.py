@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from enum import Enum
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -294,6 +296,20 @@ class RepairWorkflowActionInput(BaseModel):
     status: str = ""
     payment_status: str = ""
     settlement_status: str = ""
+    payload: dict[str, Any] = Field(default_factory=dict)
+    reason: str = ""
+    confirm: bool = False
+    idempotency_key: str = ""
+    owner_user_id: str = ""
+    approver_user_id: str = ""
+    approval_reason: str = ""
+    credit_term_days: int | None = Field(default=None, ge=0)
+    credit_limit: float | None = Field(default=None, ge=0)
+    credit_amount: float | None = Field(default=None, ge=0)
+    receivable_amount: float | None = Field(default=None, ge=0)
+    received_amount: float | None = Field(default=None, ge=0)
+    discount_amount: float | None = Field(default=None, ge=0)
+    rounding_amount: float | None = None
     amount: float | None = Field(default=None, ge=0)
     method: str = ""
     account: str = ""

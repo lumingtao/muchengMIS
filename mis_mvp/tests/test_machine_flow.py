@@ -615,11 +615,12 @@ def test_repair_order_module_flow_requires_qc_before_payment(service: MisService
     repair_id = order["repair_order_id"]
 
     detail = service.repair_workbench_detail(user(Role.staff), repair_id)
-    assert detail["modules"]["create"]["status"] == "已完成"
-    assert detail["available_actions"] == ["create.complete"]
+    assert detail["modules"]["create"]["status"] == "待开始"
+    assert "create.complete" in detail["available_actions"]
+    assert "quote.complete" not in detail["available_actions"]
 
     detail = service.apply_repair_module_action(user(Role.staff), repair_id, "create", "complete", RepairWorkflowActionInput(action="module"))
-    assert detail["modules"]["quote"]["status"] == "待检测"
+    assert detail["modules"]["quote"]["status"] == "待开始"
     assert "quote.complete" in detail["available_actions"]
 
     detail = service.apply_repair_module_action(
@@ -629,9 +630,10 @@ def test_repair_order_module_flow_requires_qc_before_payment(service: MisService
         "complete",
         RepairWorkflowActionInput(action="module", amount=680, remark="屏幕总成损坏"),
     )
-    assert detail["modules"]["quote"]["status"] == "已报价"
+    assert detail["modules"]["quote"]["status"] == "待客户确认"
     assert detail["modules"]["quote"]["amount"] == 680
-    assert detail["available_actions"] == ["quote.confirm"]
+    assert "quote.confirm" in detail["available_actions"]
+    assert "repair.start" not in detail["available_actions"]
 
     detail = service.apply_repair_module_action(user(Role.staff), repair_id, "quote", "confirm", RepairWorkflowActionInput(action="module", method="微信"))
     assert detail["modules"]["quote"]["status"] == "客户已确认"
@@ -640,7 +642,7 @@ def test_repair_order_module_flow_requires_qc_before_payment(service: MisService
 
     detail = service.apply_repair_module_action(user(Role.staff), repair_id, "repair", "start", RepairWorkflowActionInput(action="module", remark="开始更换屏幕"))
     assert detail["modules"]["repair_qc"]["status"] == "维修中"
-    assert "repair.complete" not in detail["available_actions"]
+    assert "repair.complete" in detail["available_actions"]
 
     service.add_repair_item(user(Role.staff), repair_id, RepairItemInput(item_name="更换屏幕总成", charge_amount=680))
     detail = service.repair_workbench_detail(user(Role.staff), repair_id)
@@ -648,7 +650,8 @@ def test_repair_order_module_flow_requires_qc_before_payment(service: MisService
 
     detail = service.apply_repair_module_action(user(Role.staff), repair_id, "repair", "complete", RepairWorkflowActionInput(action="module", remark="维修完成"))
     assert detail["modules"]["repair_qc"]["status"] == "待质检"
-    assert detail["available_actions"] == ["qc.complete"]
+    assert "qc.complete" in detail["available_actions"]
+    assert "payment.register" not in detail["available_actions"]
 
     detail = service.apply_repair_module_action(user(Role.staff), repair_id, "qc", "complete", RepairWorkflowActionInput(action="module", status="质检不通过", remark="触摸仍异常"))
     assert detail["modules"]["repair_qc"]["status"] == "质检不通过"
@@ -657,14 +660,18 @@ def test_repair_order_module_flow_requires_qc_before_payment(service: MisService
         service.create_payment(user(Role.finance), PaymentInput(source_type="repair", source_id=repair_id, direction=PaymentDirection.income, amount=680))
 
     service.add_repair_item(user(Role.staff), repair_id, RepairItemInput(item_name="返修排线", charge_amount=0))
+    service.apply_repair_module_action(user(Role.staff), repair_id, "repair", "start", RepairWorkflowActionInput(action="module", remark="开始返修"))
     service.apply_repair_module_action(user(Role.staff), repair_id, "repair", "complete", RepairWorkflowActionInput(action="module", remark="返修完成"))
     detail = service.apply_repair_module_action(user(Role.staff), repair_id, "qc", "complete", RepairWorkflowActionInput(action="module", status="质检通过", remark="功能正常"))
     assert detail["modules"]["repair_qc"]["status"] == "质检通过"
     assert "payment.register" in detail["available_actions"]
 
     detail = service.apply_repair_module_action(user(Role.finance), repair_id, "payment", "register", RepairWorkflowActionInput(action="module", amount=680, method="微信"))
+    assert detail["modules"]["payment"]["status"] == "已收款待确认"
+    assert detail["order"]["status"] == "财务待确认"
+    detail = service.apply_repair_module_action(user(Role.finance), repair_id, "payment", "confirm", RepairWorkflowActionInput(action="module", confirmed_by="finance"))
     assert detail["modules"]["payment"]["status"] == "已完成"
-    assert detail["order"]["status"] in {"已结单", "已完结"}
+    assert detail["order"]["status"] == "已完结"
     assert any(event["title"] == "维修后质检" for event in detail["events"])
 
 
