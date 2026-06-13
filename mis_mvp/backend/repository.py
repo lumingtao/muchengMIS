@@ -15,6 +15,16 @@ class Repository:
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
 
+    def next_customer_member_no(self) -> str:
+        row = self.conn.execute("SELECT COALESCE(MAX(customer_id), 0) + 1 AS next_id FROM customers").fetchone()
+        next_id = int(row["next_id"])
+        while True:
+            member_no = f"M{next_id:06d}"
+            exists = self.conn.execute("SELECT 1 FROM customers WHERE member_no=?", (member_no,)).fetchone()
+            if not exists:
+                return member_no
+            next_id += 1
+
     def get_user(self, username: str) -> dict[str, Any] | None:
         return row_to_dict(self.conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone())
 
@@ -32,31 +42,63 @@ class Repository:
             self.conn.execute(
                 """
                 UPDATE customers
-                SET phone=?, wechat=?, category=?, shop_name=?, address=?, tags=?,
-                    vip_level=?, discount_policy=?, remark=?, updated_at=CURRENT_TIMESTAMP
+                SET phone=CASE WHEN ? = '' THEN phone ELSE ? END,
+                    wechat=CASE WHEN ? = '' THEN wechat ELSE ? END,
+                    category=CASE WHEN ? = '' THEN category ELSE ? END,
+                    shop_name=CASE WHEN ? = '' THEN shop_name ELSE ? END,
+                    address=CASE WHEN ? = '' THEN address ELSE ? END,
+                    tags=CASE WHEN ? = '' THEN tags ELSE ? END,
+                    vip_level=CASE WHEN ? = '' THEN vip_level ELSE ? END,
+                    discount_policy=CASE WHEN ? = '' THEN discount_policy ELSE ? END,
+                    status=CASE WHEN ? = '' THEN status ELSE ? END,
+                    source=CASE WHEN ? = '' THEN source ELSE ? END,
+                    birthday=CASE WHEN ? = '' THEN birthday ELSE ? END,
+                    last_contact_at=CASE WHEN ? = '' THEN last_contact_at ELSE ? END,
+                    remark=CASE WHEN ? = '' THEN remark ELSE ? END,
+                    updated_at=CURRENT_TIMESTAMP
                 WHERE customer_id=?
                 """,
                 (
                     data.phone,
+                    data.phone,
+                    data.wechat,
                     data.wechat,
                     data.category,
+                    data.category,
+                    data.shop_name,
                     data.shop_name,
                     data.address,
+                    data.address,
+                    data.tags,
                     data.tags,
                     data.vip_level,
+                    data.vip_level,
                     data.discount_policy,
+                    data.discount_policy,
+                    data.status,
+                    data.status,
+                    data.source,
+                    data.source,
+                    data.birthday,
+                    data.birthday,
+                    data.last_contact_at,
+                    data.last_contact_at,
+                    data.remark,
                     data.remark,
                     cid,
                 ),
             )
             return cid
+        member_no = data.member_no.strip() or self.next_customer_member_no()
         cur = self.conn.execute(
             """
             INSERT INTO customers
-            (name, phone, wechat, category, shop_name, address, tags, vip_level, discount_policy, remark)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (member_no, name, phone, wechat, category, shop_name, address, tags, vip_level,
+             discount_policy, status, source, birthday, last_contact_at, remark)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                member_no,
                 data.name,
                 data.phone,
                 data.wechat,
@@ -66,6 +108,39 @@ class Repository:
                 data.tags,
                 data.vip_level,
                 data.discount_policy,
+                data.status,
+                data.source,
+                data.birthday,
+                data.last_contact_at,
+                data.remark,
+            ),
+        )
+        return int(cur.lastrowid)
+
+    def create_customer(self, data: CustomerInput) -> int:
+        member_no = data.member_no.strip() or self.next_customer_member_no()
+        cur = self.conn.execute(
+            """
+            INSERT INTO customers
+            (member_no, name, phone, wechat, category, shop_name, address, tags, vip_level,
+             discount_policy, status, source, birthday, last_contact_at, remark)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                member_no,
+                data.name,
+                data.phone,
+                data.wechat,
+                data.category,
+                data.shop_name,
+                data.address,
+                data.tags,
+                data.vip_level,
+                data.discount_policy,
+                data.status,
+                data.source,
+                data.birthday,
+                data.last_contact_at,
                 data.remark,
             ),
         )
@@ -75,14 +150,17 @@ class Repository:
         return row_to_dict(self.conn.execute("SELECT * FROM customers WHERE customer_id = ?", (customer_id,)).fetchone())
 
     def update_customer(self, customer_id: int, data: CustomerInput) -> None:
+        member_no = data.member_no.strip() or f"M{customer_id:06d}"
         self.conn.execute(
             """
             UPDATE customers
-            SET name=?, phone=?, wechat=?, category=?, shop_name=?, address=?, tags=?,
-                vip_level=?, discount_policy=?, remark=?, updated_at=CURRENT_TIMESTAMP
+            SET member_no=?, name=?, phone=?, wechat=?, category=?, shop_name=?, address=?, tags=?,
+                vip_level=?, discount_policy=?, status=?, source=?, birthday=?, last_contact_at=?,
+                remark=?, updated_at=CURRENT_TIMESTAMP
             WHERE customer_id=?
             """,
             (
+                member_no,
                 data.name,
                 data.phone,
                 data.wechat,
@@ -92,21 +170,195 @@ class Repository:
                 data.tags,
                 data.vip_level,
                 data.discount_policy,
+                data.status,
+                data.source,
+                data.birthday,
+                data.last_contact_at,
                 data.remark,
                 customer_id,
             ),
         )
 
-    def search_customers(self, keyword: str = "") -> list[dict[str, Any]]:
+    def search_customers(
+        self,
+        keyword: str = "",
+        category: str = "",
+        vip_level: str = "",
+        status: str = "",
+        tag: str = "",
+    ) -> list[dict[str, Any]]:
         like = f"%{keyword}%"
+        tag_like = f"%{tag}%"
         rows = self.conn.execute(
             """
-            SELECT * FROM customers
-            WHERE ? = '' OR name LIKE ? OR phone LIKE ? OR shop_name LIKE ? OR tags LIKE ?
-            ORDER BY updated_at DESC, customer_id DESC
-            LIMIT 50
+            SELECT c.*,
+                   COALESCE(rs.repair_total, 0) + COALESCE(ss.sale_total, 0) AS total_spent,
+                   COALESCE(rs.repair_count, 0) AS repair_count,
+                   COALESCE(rc.recycle_count, 0) AS recycle_count,
+                   COALESCE(ss.sale_count, 0) AS sale_count
+            FROM customers c
+            LEFT JOIN (
+                SELECT customer_id, COUNT(*) AS repair_count, SUM(quoted_amount) AS repair_total
+                FROM repair_orders
+                WHERE customer_id IS NOT NULL
+                GROUP BY customer_id
+            ) rs ON rs.customer_id = c.customer_id
+            LEFT JOIN (
+                SELECT customer_id, COUNT(*) AS recycle_count
+                FROM recycle_orders
+                WHERE customer_id IS NOT NULL
+                GROUP BY customer_id
+            ) rc ON rc.customer_id = c.customer_id
+            LEFT JOIN (
+                SELECT customer_id, COUNT(*) AS sale_count, SUM(sale_price) AS sale_total
+                FROM sales_orders
+                WHERE customer_id IS NOT NULL
+                GROUP BY customer_id
+            ) ss ON ss.customer_id = c.customer_id
+            WHERE (? = '' OR c.member_no LIKE ? OR c.name LIKE ? OR c.phone LIKE ? OR c.shop_name LIKE ? OR c.tags LIKE ?)
+              AND (? = '' OR c.category = ?)
+              AND (? = '' OR c.vip_level = ?)
+              AND (? = '' OR c.status = ?)
+              AND (? = '' OR c.tags LIKE ?)
+            ORDER BY c.updated_at DESC, c.customer_id DESC
+            LIMIT 100
             """,
-            (keyword, like, like, like, like),
+            (
+                keyword,
+                like,
+                like,
+                like,
+                like,
+                like,
+                category,
+                category,
+                vip_level,
+                vip_level,
+                status,
+                status,
+                tag,
+                tag_like,
+            ),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def customer_detail(self, customer_id: int) -> dict[str, Any]:
+        customer = self.get_customer(customer_id)
+        machines = self.conn.execute(
+            """
+            SELECT * FROM machines
+            WHERE customer_id=?
+            ORDER BY updated_at DESC, machine_id DESC
+            """,
+            (customer_id,),
+        ).fetchall()
+        repair_orders = self.conn.execute(
+            """
+            SELECT ro.*, m.machine_no, m.imei, m.model
+            FROM repair_orders ro
+            JOIN machines m ON m.machine_id = ro.machine_id
+            WHERE ro.customer_id=?
+            ORDER BY ro.updated_at DESC, ro.repair_order_id DESC
+            """,
+            (customer_id,),
+        ).fetchall()
+        recycle_orders = self.conn.execute(
+            """
+            SELECT ro.*, m.machine_no, m.imei, m.model
+            FROM recycle_orders ro
+            JOIN machines m ON m.machine_id = ro.machine_id
+            WHERE ro.customer_id=?
+            ORDER BY ro.updated_at DESC, ro.recycle_order_id DESC
+            """,
+            (customer_id,),
+        ).fetchall()
+        sales_orders = self.conn.execute(
+            """
+            SELECT so.*, m.machine_no, m.imei, m.model
+            FROM sales_orders so
+            JOIN machines m ON m.machine_id = so.machine_id
+            WHERE so.customer_id=?
+            ORDER BY so.sales_order_id DESC
+            """,
+            (customer_id,),
+        ).fetchall()
+        interactions = self.list_customer_interactions(customer_id)
+        repair_total = sum(float(row["quoted_amount"] or 0) for row in repair_orders)
+        sale_total = sum(float(row["sale_price"] or 0) for row in sales_orders)
+        recycle_total = sum(float(row["paid_amount"] or 0) for row in recycle_orders)
+        return {
+            "customer": customer,
+            "machines": [dict(row) for row in machines],
+            "repair_orders": [dict(row) for row in repair_orders],
+            "recycle_orders": [dict(row) for row in recycle_orders],
+            "sales_orders": [dict(row) for row in sales_orders],
+            "interactions": interactions,
+            "stats": {
+                "machine_count": len(machines),
+                "repair_count": len(repair_orders),
+                "recycle_count": len(recycle_orders),
+                "sale_count": len(sales_orders),
+                "repair_total": repair_total,
+                "sale_total": sale_total,
+                "recycle_total": recycle_total,
+                "total_spent": repair_total + sale_total,
+            },
+        }
+
+    def add_customer_interaction(self, customer_id: int, data: dict[str, Any], created_by: str) -> int:
+        cur = self.conn.execute(
+            """
+            INSERT INTO customer_interactions
+            (customer_id, interaction_type, content, next_follow_at, completed, created_by)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                customer_id,
+                data.get("interaction_type", "备注"),
+                data.get("content", ""),
+                data.get("next_follow_at", ""),
+                1 if data.get("completed") else 0,
+                created_by,
+            ),
+        )
+        self.conn.execute(
+            "UPDATE customers SET last_contact_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE customer_id=?",
+            (customer_id,),
+        )
+        return int(cur.lastrowid)
+
+    def get_customer_interaction(self, interaction_id: int) -> dict[str, Any] | None:
+        return row_to_dict(
+            self.conn.execute(
+                "SELECT * FROM customer_interactions WHERE interaction_id=?",
+                (interaction_id,),
+            ).fetchone()
+        )
+
+    def update_customer_interaction(self, interaction_id: int, data: dict[str, Any]) -> None:
+        self.conn.execute(
+            """
+            UPDATE customer_interactions
+            SET interaction_type=?, content=?, next_follow_at=?, completed=?, updated_at=CURRENT_TIMESTAMP
+            WHERE interaction_id=?
+            """,
+            (
+                data.get("interaction_type", "备注"),
+                data.get("content", ""),
+                data.get("next_follow_at", ""),
+                1 if data.get("completed") else 0,
+                interaction_id,
+            ),
+        )
+
+    def list_customer_interactions(self, customer_id: int) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT * FROM customer_interactions
+            WHERE customer_id=?
+            ORDER BY completed ASC, created_at DESC, interaction_id DESC
+            """,
+            (customer_id,),
         ).fetchall()
         return [dict(row) for row in rows]
 

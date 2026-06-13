@@ -10,6 +10,8 @@ from .auth import hash_password, permissions_for, require_permission
 from .config import ROOT_DIR
 from .models import (
     BusinessLine,
+    CustomerInteractionInput,
+    CustomerInteractionUpdateInput,
     CustomerInput,
     DeviceModelInput,
     DeviceStatus,
@@ -2189,9 +2191,71 @@ class MisService:
         self._allowed(user, "repair:read")
         return self.repo.list_repairs()
 
-    def search_customers(self, user: User, keyword: str = "") -> list[dict[str, Any]]:
+    def search_customers(
+        self,
+        user: User,
+        keyword: str = "",
+        category: str = "",
+        vip_level: str = "",
+        status: str = "",
+        tag: str = "",
+    ) -> list[dict[str, Any]]:
         self._allowed(user, "customer:read")
-        return self.repo.search_customers(keyword)
+        return self.repo.search_customers(keyword, category=category, vip_level=vip_level, status=status, tag=tag)
+
+    def create_customer(self, user: User, data: CustomerInput) -> dict[str, Any]:
+        self._allowed(user, "customer:write")
+        customer_id = self.repo.create_customer(data)
+        self._log_success(user, "customer:create", "customer", str(customer_id), customer_id=customer_id, request_summary=data.name)
+        self.conn.commit()
+        return self.repo.get_customer(customer_id) or {}
+
+    def customer_detail(self, user: User, customer_id: int) -> dict[str, Any]:
+        self._allowed(user, "customer:read")
+        detail = self.repo.customer_detail(customer_id)
+        if not detail["customer"]:
+            raise BusinessError("客户不存在")
+        try:
+            preview = self.settlement_preview(user, customer_id)
+        except PermissionError:
+            preview = {"sales": [], "repairs": [], "total_amount": 0}
+        detail["settlement_preview"] = preview
+        return detail
+
+    def update_customer(self, user: User, customer_id: int, data: CustomerInput) -> dict[str, Any]:
+        self._allowed(user, "customer:write")
+        if not self.repo.get_customer(customer_id):
+            raise BusinessError("客户不存在")
+        self.repo.update_customer(customer_id, data)
+        self._log_success(user, "customer:update", "customer", str(customer_id), customer_id=customer_id, request_summary=data.name)
+        self.conn.commit()
+        return self.repo.get_customer(customer_id) or {}
+
+    def add_customer_interaction(self, user: User, customer_id: int, data: CustomerInteractionInput) -> dict[str, Any]:
+        self._allowed(user, "customer:write")
+        if not self.repo.get_customer(customer_id):
+            raise BusinessError("客户不存在")
+        interaction_id = self.repo.add_customer_interaction(customer_id, data.model_dump(), user.username)
+        self._log_success(user, "customer:interaction", "customer", str(customer_id), customer_id=customer_id, request_summary=data.content)
+        self.conn.commit()
+        return self.repo.get_customer_interaction(interaction_id) or {}
+
+    def update_customer_interaction(self, user: User, interaction_id: int, data: CustomerInteractionUpdateInput) -> dict[str, Any]:
+        self._allowed(user, "customer:write")
+        interaction = self.repo.get_customer_interaction(interaction_id)
+        if not interaction:
+            raise BusinessError("互动记录不存在")
+        self.repo.update_customer_interaction(interaction_id, data.model_dump())
+        self._log_success(
+            user,
+            "customer:interaction:update",
+            "customer_interaction",
+            str(interaction_id),
+            customer_id=interaction.get("customer_id"),
+            request_summary=data.content,
+        )
+        self.conn.commit()
+        return self.repo.get_customer_interaction(interaction_id) or {}
 
     def lookup_imei(self, user: User, imei: str) -> dict[str, Any]:
         self._allowed(user, "device:read")

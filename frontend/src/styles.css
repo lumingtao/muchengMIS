@@ -2715,9 +2715,106 @@ tr.clickable { cursor: pointer; }
   font-style: normal;
 }
 
+.toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.member-filters {
+  display: grid;
+  grid-template-columns: minmax(260px, 1.4fr) repeat(4, minmax(130px, 0.7fr)) auto;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.member-detail {
+  display: grid;
+  gap: 18px;
+}
+
+.member-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(140px, 1fr));
+  gap: 12px;
+}
+
+.member-metric {
+  display: grid;
+  gap: 8px;
+  padding: 16px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.member-metric span {
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.member-metric strong {
+  color: #111827;
+  font-size: 24px;
+  line-height: 1.1;
+}
+
+.member-timeline {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.member-timeline-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 14px 16px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.member-timeline-item b {
+  color: #111827;
+}
+
+.member-timeline-item p {
+  margin: 5px 0;
+  color: #334155;
+}
+
+.member-timeline-item span {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.member-timeline-item.done {
+  background: #f8fafc;
+}
+
+.member-timeline-item.done p,
+.member-timeline-item.done span {
+  color: #94a3b8;
+}
+
+.empty-state {
+  padding: 18px;
+  border: 1px dashed #cbd5e1;
+  border-radius: 8px;
+  color: #64748b;
+  text-align: center;
+}
+
 @media (max-width: 1180px) {
   .metric-grid { grid-template-columns: repeat(2, minmax(150px, 1fr)); }
   .dashboard-grid, .split, .repair-detail-grid { grid-template-columns: 1fr; }
+  .member-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .member-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .insight-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .home-layout { grid-template-columns: 1fr; }
   .pool-stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -2790,4 +2887,7 @@ tr.clickable { cursor: pointer; }
   .inline-item-editor { grid-template-columns: 1fr; }
   .inline-actions,
   .inline-editor-actions { flex-wrap: wrap; }
+  .member-filters,
+  .member-summary-grid { grid-template-columns: 1fr; }
+  .member-timeline-item { align-items: stretch; flex-direction: column; }
 }

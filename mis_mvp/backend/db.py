@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS users (
 
 CREATE TABLE IF NOT EXISTS customers (
     customer_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    member_no TEXT NOT NULL DEFAULT '',
     name TEXT NOT NULL,
     phone TEXT NOT NULL DEFAULT '',
     wechat TEXT NOT NULL DEFAULT '',
@@ -27,9 +28,26 @@ CREATE TABLE IF NOT EXISTS customers (
     tags TEXT NOT NULL DEFAULT '',
     vip_level TEXT NOT NULL DEFAULT '',
     discount_policy TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT '正常',
+    source TEXT NOT NULL DEFAULT '',
+    birthday TEXT NOT NULL DEFAULT '',
+    last_contact_at TEXT NOT NULL DEFAULT '',
     remark TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS customer_interactions (
+    interaction_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    customer_id INTEGER NOT NULL,
+    interaction_type TEXT NOT NULL DEFAULT '备注',
+    content TEXT NOT NULL,
+    next_follow_at TEXT NOT NULL DEFAULT '',
+    completed INTEGER NOT NULL DEFAULT 0,
+    created_by TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (customer_id) REFERENCES customers(customer_id)
 );
 
 CREATE TABLE IF NOT EXISTS devices (
@@ -642,6 +660,8 @@ def connect(database_path: Path | str) -> sqlite3.Connection:
 def migrate(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     ensure_columns(conn)
+    backfill_customer_member_no(conn)
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_member_no ON customers(member_no)")
     seed_users(conn)
     seed_device_models(conn)
     seed_repair_skus(conn)
@@ -651,6 +671,13 @@ def migrate(conn: sqlite3.Connection) -> None:
 
 def ensure_columns(conn: sqlite3.Connection) -> None:
     columns: dict[str, list[tuple[str, str]]] = {
+        "customers": [
+            ("member_no", "TEXT NOT NULL DEFAULT ''"),
+            ("status", "TEXT NOT NULL DEFAULT '正常'"),
+            ("source", "TEXT NOT NULL DEFAULT ''"),
+            ("birthday", "TEXT NOT NULL DEFAULT ''"),
+            ("last_contact_at", "TEXT NOT NULL DEFAULT ''"),
+        ],
         "repair_orders": [
             ("order_no", "TEXT"),
             ("customer_name", "TEXT NOT NULL DEFAULT ''"),
@@ -737,6 +764,18 @@ def ensure_columns(conn: sqlite3.Connection) -> None:
         for name, definition in table_columns:
             if name not in existing:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+
+
+def backfill_customer_member_no(conn: sqlite3.Connection) -> None:
+    rows = conn.execute(
+        "SELECT customer_id FROM customers WHERE member_no = '' OR member_no IS NULL ORDER BY customer_id"
+    ).fetchall()
+    for row in rows:
+        customer_id = int(row["customer_id"])
+        conn.execute(
+            "UPDATE customers SET member_no=? WHERE customer_id=?",
+            (f"M{customer_id:06d}", customer_id),
+        )
 
 
 def seed_users(conn: sqlite3.Connection) -> None:
