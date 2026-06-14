@@ -60,7 +60,7 @@ frontend/src/
 - 业务行为不因 UI 迁移改变。
 - 新组件先进入项目级封装，再进入业务页。
 - 不直接覆盖 Ant Design 内部 class。
-- 保持当前构建输出到 `mis_mvp/frontend_dist/`。
+- 保持当前构建输出到 `mis_mvp/frontend_dist/`，并把它作为生成物处理。
 - 每次迁移一个页面或组件族，配套补测试。
 - 优先处理高频、高价值、低风险区域。
 
@@ -162,5 +162,5 @@ npm.cmd run build
 ## 7. 当前保留策略
 
 - `lucide-react` 继续作为主图标库。
-- 历史 `mis_mvp/static/` 保留回退，不继续投入新 UI。
+- 历史 `mis_mvp/static/` 已移除，不再保留旧原型回退。
 - Ant Design 作为主组件库，不再重复评估新主库，除非出现明确阻塞。

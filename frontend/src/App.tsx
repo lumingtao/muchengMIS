@@ -10,7 +10,6 @@ import {
   Grid2X2,
   HelpCircle,
   Info,
-  LogOut,
   Mail,
   Megaphone,
   PackageSearch,
@@ -50,6 +49,7 @@ import { StatusTag } from "./components/data/StatusTag";
 import { AppModal } from "./components/feedback/AppModal";
 import { notify as feedbackNotify } from "./components/feedback/notify";
 import { AppFormSection } from "./components/forms/AppFormSection";
+import { AppShellLayout } from "./components/layout/AppShellLayout";
 import { AppPanel } from "./components/layout/AppPanel";
 
 type ViewKey = "dashboard" | "repairPool" | "orderDetail" | "recyclePool" | "repair" | "recycle" | "warehouse" | "inventory" | "sales" | "customers" | "payments" | "reports" | "audit";
@@ -304,42 +304,20 @@ function App() {
   if (!user) return <LoginScreen onLogin={(name) => { setStoredUser(name); setUser(name); }} notify={notify} />;
 
   return (
-    <div className={`app-shell ${view === "orderDetail" || view === "repair" ? "order-detail-shell" : ""} ${view === "repairPool" ? "repair-pool-shell" : ""}`}>
-      <aside className="sidebar">
-        <div className="brand"><div><strong>沐辰科技</strong><span>专业维修与销售</span></div></div>
-        <nav className="primary-nav">
-          {primaryNav.map(item => (
-            <button key={item.key} className={view === item.key || (view === "orderDetail" && item.key === "repairPool") ? "active" : ""} onClick={() => setView(item.key)} type="button">
-              {item.icon}{item.label}
-            </button>
-          ))}
-        </nav>
-        <div className="sidebar-footer">
-          <button type="button" className="plain-nav-button" onClick={() => notify("帮助中心已接入当前业务说明文档，可先查看 README 和 BUSINESS_FLOW。")}><HelpCircle size={20} />帮助中心</button>
-          <button type="button" className="plain-nav-button" onClick={logout}><LogOut size={20} />退出登录</button>
-        </div>
-      </aside>
-      <main>
-        <header className="topbar">
-          <div className="top-search"><Search size={22} /><Input variant="borderless" placeholder="快捷搜索工单、机型或零件..." /></div>
-          <div className="top-links">
-            <button type="button" onClick={() => setView("warehouse")}>设备入库</button>
-            <button type="button" onClick={() => setView("sales")}>快速卖机</button>
-          </div>
-          <div className="top-icons">
-            <button type="button" className="icon-button" aria-label="查看待处理提醒" onClick={() => setView("dashboard")}><Bell size={23} /><span /></button>
-            <button type="button" className="icon-button" aria-label="查看工作消息" onClick={() => { setView("dashboard"); notify("工作消息在首页右侧消息区查看。"); }}><Mail size={23} /></button>
-          </div>
-          <div className="admin-chip">
-            <div><strong>{String(profile.data?.username || user) === "admin" ? "管理员" : String(profile.data?.username || user)}</strong><span>{String(profile.data?.role || "高级维修顾问")}</span></div>
-            <div className="avatar-dot"><UserRound size={19} /></div>
-          </div>
-        </header>
-        {view !== "dashboard" && view !== "orderDetail" && view !== "repairPool" && view !== "repair" && <div className="page-title"><h1>{current.label}</h1><p>{current.subtitle}</p></div>}
-        <ViewRouter view={view} notify={notify} openModal={setModal} setView={setView} openNewOrder={openNewOrder} openOrderDetail={openOrderDetail} selectedRepairOrderId={selectedRepairOrderId} orderMode={orderMode} setSelectedRepairOrderId={setSelectedRepairOrderId} setOrderMode={setOrderMode} onLeaveOrderDetail={leaveOrderDetail} />
-      </main>
-      <AppModal open={Boolean(modal)} onClose={() => setModal(null)}>{modal}</AppModal>
-    </div>
+    <AppShellLayout
+      view={view}
+      current={current}
+      primaryNav={primaryNav}
+      userLabel={String(profile.data?.username || user) === "admin" ? "管理员" : String(profile.data?.username || user)}
+      roleLabel={String(profile.data?.role || "高级维修顾问")}
+      modal={modal}
+      setView={setView}
+      notify={notify}
+      logout={logout}
+      onCloseModal={() => setModal(null)}
+    >
+      <ViewRouter view={view} notify={notify} openModal={setModal} setView={setView} openNewOrder={openNewOrder} openOrderDetail={openOrderDetail} selectedRepairOrderId={selectedRepairOrderId} orderMode={orderMode} setSelectedRepairOrderId={setSelectedRepairOrderId} setOrderMode={setOrderMode} onLeaveOrderDetail={leaveOrderDetail} />
+    </AppShellLayout>
   );
 }
 

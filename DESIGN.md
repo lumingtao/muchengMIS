@@ -22,15 +22,14 @@ mis_mvp/
   backend/models.py       Pydantic 输入模型和枚举
   backend/repository.py   SQL 数据访问
   backend/service.py      业务规则、状态流转和审计
-  frontend_dist/          React build 输出
-  static/                 历史静态前端回退
+  frontend_dist/          React build 输出，本地生成
   tests/                  后端业务测试
 ```
 
-FastAPI 根路径 `/` 的服务顺序：
+FastAPI 根路径 `/` 的服务策略：
 
 1. 若 `mis_mvp/frontend_dist/index.html` 存在，返回 React 构建产物。
-2. 否则返回 `mis_mvp/static/index.html`。
+2. 否则返回 503 构建提示，要求先在 `frontend/` 运行 `npm run build`。
 
 数据库默认路径：
 
@@ -219,7 +218,7 @@ admin、boss、frontdesk、engineer、staff、finance
 - API 调用统一走 `api()`，保持 `X-User` 行为一致。
 - 新 UI 优先用项目级 Ant Design 适配组件，不在业务页散落直接定制 Ant 内部 DOM。
 - 逐步拆分 `App.tsx`，优先按业务域拆：维修、会员、库存、财务、系统设置。
-- 旧静态前端只作为回退，不继续作为新功能主线。
+- 旧静态前端已移除；`frontend/src/` 是唯一前端源码入口。
 
 ## 6. 数据迁移
 
