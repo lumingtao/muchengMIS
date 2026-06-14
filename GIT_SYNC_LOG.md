@@ -34,6 +34,28 @@
 
 ## 变更记录
 
+### 2026-06-14 09:18 CST | 合并 codex/stitch 到主分支
+
+- 分支：main
+- 远端：origin/main
+- 操作：从本地分支 `codex/stitch` 合并到 `main`，准备提交最新留痕并推送远端
+- 提交：
+  - 合并提交：d394ea4 Merge codex/stitch into main
+  - 来源提交：1cd75c0 Remove obsolete code and simplify backend
+- 变更内容：
+  - 引入 Stitch 相关界面整理成果，新增 `docs/STITCH_DESIGN_BRIEF.md`、`docs/STITCH_UI_WORKFLOW.md`、`docs/stitch/` 目录和前端页面说明。
+  - 新增 `frontend/src/components/layout/AppShellLayout.tsx`，并将原先集中的样式拆分为 `base.css`、`components.css`、`layout.css`、`pages.css`，降低单个样式文件体积。
+  - 更新 `README.md`、`DESIGN.md`、Ant Design 迁移计划和 UI 组件库评估文档，使文档与当前 Stitch/UI 结构同步。
+  - 删除旧静态页面资源 `mis_mvp/static/app.js`、`mis_mvp/static/index.html`、`mis_mvp/static/styles.css`，以及部分旧前端构建产物和 TypeScript 构建缓存。
+  - 新增 `tools/npm/` 辅助脚本和 `tools/verify-ui.mjs`，用于后续 UI 验证和本地工具链说明。
+  - `.gitignore` 补充运行时/缓存类文件忽略规则，并移除仓库中已存在的 pytest 临时链接和 pid 文件。
+- 同步结果：合并已在本地完成，无冲突；当前 `main` 暂时超前 `origin/main`，等待推送。
+- 验证情况：本次先完成 Git 合并和文档留痕；尚未运行自动化测试或 UI 验证。
+- 回退参考：
+  - 如需撤销整个分支合并，可优先评估 revert 合并提交 `d394ea4`。
+  - 如只需撤销 Stitch 来源变更，可评估来源提交 `1cd75c0` 涉及的文件范围。
+- 备注：本记录文件 `GIT_SYNC_LOG.md` 已按要求实时更新；Stitch 相关项目文档已由合并内容同步更新。
+
 ### 2026-06-14 | 新增 Git 同步记录机制
 
 - 分支：main
