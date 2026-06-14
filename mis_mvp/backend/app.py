@@ -38,6 +38,7 @@ from .models import (
     RepairInspectionInput,
     RepairInput,
     RepairItemInput,
+    RepairOrderDeleteInput,
     RepairOrderNoteDeleteInput,
     RepairOrderNoteUpdateInput,
     RepairOrderInput,
@@ -199,6 +200,16 @@ def delete_machine(machine_id: int, user: User = Depends(current_user), service:
 @app.post("/api/repair-orders")
 def create_repair_order(data: RepairOrderInput, user: User = Depends(current_user), service: MisService = Depends(get_service)):
     return endpoint(lambda: service.create_repair_order(user, data))
+
+
+@app.get("/api/repair-orders/archive-search")
+def search_archived_repair_order(order_no: str = Query(default=""), user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.search_archived_repair_order(user, order_no))
+
+
+@app.delete("/api/repair-orders/{repair_order_id}")
+def delete_repair_order(repair_order_id: int, data: RepairOrderDeleteInput, user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.delete_repair_order(user, repair_order_id, data.reason))
 
 
 @app.get("/api/repair-skus")

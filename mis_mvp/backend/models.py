@@ -190,6 +190,10 @@ class RepairOrderNoteDeleteInput(BaseModel):
     reason: str = ""
 
 
+class RepairOrderDeleteInput(BaseModel):
+    reason: str = Field(min_length=1, max_length=500)
+
+
 class RepairOrderLogInput(BaseModel):
     title: str = Field(min_length=1)
     detail: str = ""

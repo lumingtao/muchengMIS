@@ -201,6 +201,17 @@ CREATE TABLE IF NOT EXISTS repair_orders (
     FOREIGN KEY (machine_id) REFERENCES machines(machine_id)
 );
 
+CREATE TABLE IF NOT EXISTS repair_order_archives (
+    archive_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    repair_order_id INTEGER NOT NULL UNIQUE,
+    order_no TEXT NOT NULL DEFAULT '',
+    archived_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    archived_by TEXT NOT NULL DEFAULT '',
+    archive_reason TEXT NOT NULL DEFAULT '',
+    purge_after TEXT NOT NULL,
+    snapshot_json TEXT NOT NULL DEFAULT '{}'
+);
+
 CREATE TABLE IF NOT EXISTS repair_items (
     repair_item_id INTEGER PRIMARY KEY AUTOINCREMENT,
     repair_order_id INTEGER NOT NULL,
@@ -658,9 +669,37 @@ def connect(database_path: Path | str) -> sqlite3.Connection:
     return conn
 
 
+def purge_expired_repair_order_archives(conn: sqlite3.Connection) -> None:
+    rows = conn.execute(
+        """
+        SELECT repair_order_id
+        FROM repair_order_archives
+        WHERE purge_after <= CURRENT_TIMESTAMP
+        """
+    ).fetchall()
+    repair_order_ids = [int(row["repair_order_id"]) for row in rows]
+    for repair_order_id in repair_order_ids:
+        conn.execute("DELETE FROM payments WHERE source_type='repair' AND source_id=?", (repair_order_id,))
+        conn.execute("DELETE FROM repair_order_photos WHERE repair_order_id=?", (repair_order_id,))
+        conn.execute("DELETE FROM repair_order_inspections WHERE repair_order_id=?", (repair_order_id,))
+        conn.execute("DELETE FROM repair_order_notes WHERE repair_order_id=?", (repair_order_id,))
+        conn.execute("DELETE FROM repair_items WHERE repair_order_id=?", (repair_order_id,))
+        conn.execute("DELETE FROM repair_income_items WHERE repair_order_id=?", (repair_order_id,))
+        conn.execute("DELETE FROM repair_cost_items WHERE repair_order_id=?", (repair_order_id,))
+        conn.execute("DELETE FROM repair_materials WHERE repair_order_id=?", (repair_order_id,))
+        conn.execute("DELETE FROM receivables WHERE repair_order_id=?", (repair_order_id,))
+        conn.execute("UPDATE material_units SET repair_order_id=NULL WHERE repair_order_id=?", (repair_order_id,))
+        conn.execute("UPDATE material_requests SET repair_order_id=NULL WHERE repair_order_id=?", (repair_order_id,))
+        conn.execute("UPDATE material_returns SET repair_order_id=NULL WHERE repair_order_id=?", (repair_order_id,))
+        conn.execute("UPDATE stock_movements SET repair_order_id=NULL WHERE repair_order_id=?", (repair_order_id,))
+        conn.execute("DELETE FROM repair_orders WHERE repair_order_id=?", (repair_order_id,))
+        conn.execute("DELETE FROM repair_order_archives WHERE repair_order_id=?", (repair_order_id,))
+
+
 def migrate(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     ensure_columns(conn)
+    purge_expired_repair_order_archives(conn)
     backfill_customer_member_no(conn)
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_member_no ON customers(member_no)")
     seed_users(conn)
@@ -705,6 +744,10 @@ def ensure_columns(conn: sqlite3.Connection) -> None:
             ("delivered_at", "TEXT NOT NULL DEFAULT ''"),
             ("engineer_closed_at", "TEXT"),
             ("engineer_close_remark", "TEXT NOT NULL DEFAULT ''"),
+            ("archived_at", "TEXT NOT NULL DEFAULT ''"),
+            ("archived_by", "TEXT NOT NULL DEFAULT ''"),
+            ("archive_reason", "TEXT NOT NULL DEFAULT ''"),
+            ("purge_after", "TEXT NOT NULL DEFAULT ''"),
         ],
         "recycle_orders": [
             ("order_no", "TEXT"),

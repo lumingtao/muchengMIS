@@ -218,7 +218,7 @@ class Repository:
             LEFT JOIN (
                 SELECT customer_id, COUNT(*) AS repair_count, SUM(quoted_amount) AS repair_total
                 FROM repair_orders
-                WHERE customer_id IS NOT NULL
+                WHERE customer_id IS NOT NULL AND archived_at=''
                 GROUP BY customer_id
             ) rs ON rs.customer_id = c.customer_id
             LEFT JOIN (
@@ -275,7 +275,7 @@ class Repository:
             SELECT ro.*, m.machine_no, m.imei, m.model
             FROM repair_orders ro
             JOIN machines m ON m.machine_id = ro.machine_id
-            WHERE ro.customer_id=?
+            WHERE ro.customer_id=? AND ro.archived_at=''
             ORDER BY ro.updated_at DESC, ro.repair_order_id DESC
             """,
             (customer_id,),
@@ -490,7 +490,7 @@ class Repository:
                    COALESCE(m.model, '') AS model
             FROM repair_orders ro
             JOIN machines m ON m.machine_id = ro.machine_id
-            WHERE ro.customer_id=? AND ro.status NOT IN ('已结单', '已作废')
+            WHERE ro.customer_id=? AND ro.archived_at='' AND ro.status NOT IN ('已结单', '已作废')
               AND ro.quoted_amount > 0
             ORDER BY ro.repair_order_id DESC
             """,
@@ -737,7 +737,7 @@ class Repository:
 
     def search_machines(self, keyword: str = "", assigned_to: str | None = None) -> list[dict[str, Any]]:
         like = f"%{keyword}%"
-        assigned_filter = " AND (m.assigned_to = ? OR EXISTS (SELECT 1 FROM repair_orders ro WHERE ro.machine_id = m.machine_id AND ro.assigned_to = ?))" if assigned_to else ""
+        assigned_filter = " AND (m.assigned_to = ? OR EXISTS (SELECT 1 FROM repair_orders ro WHERE ro.machine_id = m.machine_id AND ro.assigned_to = ? AND ro.archived_at=''))" if assigned_to else ""
         params: list[Any] = [keyword, like, like, like, like, like, like]
         if assigned_to:
             params.extend([assigned_to, assigned_to])
@@ -780,8 +780,14 @@ class Repository:
         )
         return int(cur.lastrowid)
 
-    def get_repair_order(self, repair_order_id: int) -> dict[str, Any] | None:
-        return row_to_dict(self.conn.execute("SELECT * FROM repair_orders WHERE repair_order_id=?", (repair_order_id,)).fetchone())
+    def get_repair_order(self, repair_order_id: int, include_archived: bool = False) -> dict[str, Any] | None:
+        archived_clause = "" if include_archived else " AND archived_at=''"
+        return row_to_dict(
+            self.conn.execute(
+                f"SELECT * FROM repair_orders WHERE repair_order_id=?{archived_clause}",
+                (repair_order_id,),
+            ).fetchone()
+        )
 
     def assign_repair_order(self, repair_order_id: int, engineer: str, workflow_status: str) -> None:
         self.conn.execute(
@@ -853,6 +859,53 @@ class Repository:
         self.conn.execute(
             "UPDATE repair_orders SET remark=?, updated_at=CURRENT_TIMESTAMP WHERE repair_order_id=?",
             (remark, repair_order_id),
+        )
+
+    def archive_repair_order(self, repair_order_id: int, archived_by: str, reason: str, snapshot: dict[str, Any]) -> None:
+        order = self.get_repair_order(repair_order_id)
+        if not order:
+            return
+        order_no = str(order.get("order_no") or "")
+        snapshot_json = json.dumps(snapshot, ensure_ascii=False, default=str)
+        self.conn.execute(
+            """
+            UPDATE repair_orders
+            SET archived_at=CURRENT_TIMESTAMP,
+                archived_by=?,
+                archive_reason=?,
+                purge_after=datetime(CURRENT_TIMESTAMP, '+30 days'),
+                updated_at=CURRENT_TIMESTAMP
+            WHERE repair_order_id=? AND archived_at=''
+            """,
+            (archived_by, reason, repair_order_id),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO repair_order_archives
+            (repair_order_id, order_no, archived_by, archive_reason, purge_after, snapshot_json)
+            VALUES (?, ?, ?, ?, datetime(CURRENT_TIMESTAMP, '+30 days'), ?)
+            ON CONFLICT(repair_order_id) DO UPDATE SET
+                order_no=excluded.order_no,
+                archived_at=CURRENT_TIMESTAMP,
+                archived_by=excluded.archived_by,
+                archive_reason=excluded.archive_reason,
+                purge_after=excluded.purge_after,
+                snapshot_json=excluded.snapshot_json
+            """,
+            (repair_order_id, order_no, archived_by, reason, snapshot_json),
+        )
+
+    def get_repair_order_archive_by_order_no(self, order_no: str) -> dict[str, Any] | None:
+        return row_to_dict(
+            self.conn.execute(
+                """
+                SELECT a.*, ro.machine_id
+                FROM repair_order_archives a
+                JOIN repair_orders ro ON ro.repair_order_id=a.repair_order_id
+                WHERE a.order_no=? AND ro.archived_at<>''
+                """,
+                (order_no,),
+            ).fetchone()
         )
 
     def add_repair_item(self, repair_order_id: int, item_name: str, quantity: int, cost_amount: float, charge_amount: float, remark: str, sku_id: int | None = None) -> int:
@@ -1167,8 +1220,8 @@ class Repository:
         ).fetchall()
         return [dict(row) for row in rows]
 
-    def repair_order_detail(self, repair_order_id: int) -> dict[str, Any] | None:
-        order = self.get_repair_order(repair_order_id)
+    def repair_order_detail(self, repair_order_id: int, include_archived: bool = False) -> dict[str, Any] | None:
+        order = self.get_repair_order(repair_order_id, include_archived=include_archived)
         if not order:
             return None
         machine_id = int(order["machine_id"])
@@ -1285,7 +1338,7 @@ class Repository:
             "SELECT * FROM machine_events WHERE machine_id=? ORDER BY event_id",
             (machine_id,),
         ).fetchall()
-        repairs = self.conn.execute("SELECT * FROM repair_orders WHERE machine_id=? ORDER BY repair_order_id", (machine_id,)).fetchall()
+        repairs = self.conn.execute("SELECT * FROM repair_orders WHERE machine_id=? AND archived_at='' ORDER BY repair_order_id", (machine_id,)).fetchall()
         repair_items: list[dict[str, Any]] = []
         repair_payments: list[dict[str, Any]] = []
         for row in repairs:

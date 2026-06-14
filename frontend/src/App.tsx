@@ -1,6 +1,7 @@
 import { KeyboardEvent, ReactNode, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Input, Select } from "antd";
+import { strToU8, zipSync } from "fflate";
 import {
   BarChart3,
   Bell,
@@ -38,6 +39,7 @@ import {
   Flag,
   Home,
   ReceiptText,
+  Trash2,
   UserPlus,
   Users,
 } from "lucide-react";
@@ -213,14 +215,117 @@ function blankDisplay(value: unknown) {
   return String(value ?? "");
 }
 
-function csvCell(value: unknown) {
-  const text = String(value ?? "").replace(/\r?\n/g, " ");
-  return `"${text.replace(/"/g, '""')}"`;
+export const repairBillHeaders = ["ID", "机型", "时间", "串号", "顾客", "备注", "解决方案", "工程师", "配件1", "付款方式", "图片", "故障", "配件来源", "配件2", "配件3", "报价", "成本", "利润"];
+
+function splitExportList(value: unknown) {
+  if (Array.isArray(value)) return value.map(item => String(item || "").trim()).filter(Boolean);
+  return String(value || "").split("||").map(item => item.trim()).filter(Boolean);
 }
 
-function downloadCsv(filename: string, headers: string[], rows: unknown[][]) {
-  const content = "\ufeff" + [headers.map(csvCell).join(","), ...rows.map(row => row.map(csvCell).join(","))].join("\n");
-  const blob = new Blob([content], { type: "text/csv;charset=utf-8" });
+function numberOrBlank(value: unknown) {
+  if (value === null || value === undefined || value === "") return "";
+  const amount = Number(value);
+  return Number.isFinite(amount) ? amount : "";
+}
+
+function fileTimestamp(date = new Date()) {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+}
+
+export function toRepairBillExportRow(row: AnyRecord) {
+  const parts = splitExportList(row.export_parts);
+  const quote = numberOrBlank(row.quoted_amount || row.charge_amount || row.amount);
+  const cost = numberOrBlank(row.export_cost_amount);
+  const profit = numberOrBlank(row.export_profit_amount);
+  return [
+    row.order_no || row.repair_order_id || "",
+    row.model || "",
+    row.created_at || "",
+    row.imei || row.serial || "",
+    row.customer_name || "",
+    row.remark || "",
+    row.repair_solution || "",
+    row.assigned_to || row.engineer_user || "",
+    parts[0] || "",
+    row.export_payment_method || "",
+    "",
+    row.fault_detail || row.fault_description || "",
+    splitExportList(row.export_part_sources).join("、"),
+    parts[1] || "",
+    parts[2] || "",
+    quote,
+    cost,
+    profit,
+  ];
+}
+
+function xmlEscape(value: unknown) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function excelColumnName(index: number) {
+  let value = index + 1;
+  let name = "";
+  while (value > 0) {
+    const remainder = (value - 1) % 26;
+    name = String.fromCharCode(65 + remainder) + name;
+    value = Math.floor((value - 1) / 26);
+  }
+  return name;
+}
+
+function worksheetXml(headers: string[], rows: unknown[][]) {
+  const table = [headers, ...rows];
+  const columns = headers.map((header, index) => {
+    const width = Math.max(10, String(header).length + 4);
+    return `<col min="${index + 1}" max="${index + 1}" width="${width}" customWidth="1"/>`;
+  }).join("");
+  const sheetRows = table.map((row, rowIndex) => {
+    const cells = row.map((value, columnIndex) => {
+      const ref = `${excelColumnName(columnIndex)}${rowIndex + 1}`;
+      if (typeof value === "number" && Number.isFinite(value)) {
+        return `<c r="${ref}"><v>${value}</v></c>`;
+      }
+      return `<c r="${ref}" t="inlineStr"><is><t>${xmlEscape(value)}</t></is></c>`;
+    }).join("");
+    return `<row r="${rowIndex + 1}">${cells}</row>`;
+  }).join("");
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <cols>${columns}</cols>
+  <sheetData>${sheetRows}</sheetData>
+</worksheet>`;
+}
+
+export function downloadXlsx(filename: string, headers: string[], rows: unknown[][]) {
+  const files: Record<string, Uint8Array> = {
+    "[Content_Types].xml": strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>`),
+    "_rels/.rels": strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`),
+    "xl/workbook.xml": strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets>
+</workbook>`),
+    "xl/_rels/workbook.xml.rels": strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>`),
+    "xl/worksheets/sheet1.xml": strToU8(worksheetXml(headers, rows)),
+  };
+  const blob = new Blob([zipSync(files)], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
@@ -574,6 +679,14 @@ function RepairPool({ notify, openOrderDetail, openNewOrder }: { notify: (messag
   const done = orders.filter(row => normalizeRepairStatus(row.status) === "已完结").length;
   const pageCount = Math.max(1, Math.ceil(rows.length / pageSize));
   const visibleRows = rows.slice((page - 1) * pageSize, page * pageSize);
+  const archiveSearchText = keyword.trim();
+  const archiveQuery = useQuery({
+    queryKey: ["repair-order-archive-search", archiveSearchText],
+    queryFn: () => api<AnyRecord>(`/api/repair-orders/archive-search?order_no=${encodeURIComponent(archiveSearchText)}`),
+    enabled: Boolean(archiveSearchText) && rows.length === 0 && !query.isLoading,
+  });
+  const archivedOrder = ((archiveQuery.data?.order || {}) as AnyRecord);
+  const hasArchivedOrder = Boolean(archivedOrder.repair_order_id);
 
   useEffect(() => {
     setPage(1);
@@ -590,26 +703,16 @@ function RepairPool({ notify, openOrderDetail, openNewOrder }: { notify: (messag
       notify("当前筛选结果为空，无法导出。", true);
       return;
     }
-    downloadCsv(
-      `维修工单-${new Date().toISOString().slice(0, 10)}.csv`,
-      ["订单编号", "设备型号", "客户", "联系方式", "状态", "技术员", "最后更新", "预估金额"],
-      rows.map(row => [
-        row.order_no || row.repair_order_id || "",
-        row.model || "",
-        row.customer_name || "",
-        row.phone || row.customer_phone || "",
-        row.status || "",
-        row.assigned_to || row.engineer_user || "",
-        row.updated_at || row.created_at || "",
-        row.quoted_amount || row.charge_amount || row.amount || 0,
-      ]),
+    downloadXlsx(
+      `维修账单-${fileTimestamp()}.xlsx`,
+      repairBillHeaders,
+      rows.map(toRepairBillExportRow),
     );
-    notify(`已导出 ${rows.length} 条维修工单`);
+    notify(`已导出 ${rows.length} 条维修账单`);
   }
 
   function pageNumbers() {
-    const pages = new Set<number>([1, pageCount, page - 1, page, page + 1].filter(value => value >= 1 && value <= pageCount));
-    return Array.from(pages).sort((a, b) => a - b);
+    return compactPageItems(page, pageCount);
   }
 
   function changeSort(key: string) {
@@ -677,10 +780,11 @@ function RepairPool({ notify, openOrderDetail, openNewOrder }: { notify: (messag
         <section className="pool-table-card">
           <div className="pool-table-scroll">
             <table className="pool-table">
-              <thead><tr>{sortHeader("order_no", "订单编号")}{sortHeader("model", "设备信息")}{sortHeader("customer_name", "客户")}{sortHeader("status", "状态")}{sortHeader("assigned_to", "技术员")}{sortHeader("updated_at", "最后更新")}{sortHeader("amount", "预估金额", "align-right")}<th className="align-center">操作</th></tr></thead>
+              <thead><tr>{sortHeader("order_no", "订单编号")}{sortHeader("model", "设备信息")}{sortHeader("customer_name", "客户")}{sortHeader("created_at", "建单时间")}{sortHeader("pool_fault_names", "故障名称")}{sortHeader("pool_pre_inspection_abnormal", "维修前检测异常结果")}{sortHeader("status", "状态")}{sortHeader("assigned_to", "技术员")}{sortHeader("updated_at", "最后更新")}{sortHeader("amount", "预估金额", "align-right")}<th className="align-center">操作</th></tr></thead>
               <tbody>
                 {visibleRows.map((row, index) => <PoolOrderRow row={row} key={String(row.repair_order_id || row.order_no || index)} onOpen={openOrderDetail} />)}
-                {!visibleRows.length && <tr><td colSpan={8}><div className="pool-empty">没有找到匹配的维修工单</div></td></tr>}
+                {!visibleRows.length && hasArchivedOrder && <ArchiveOrderRow row={archivedOrder} onOpen={openOrderDetail} />}
+                {!visibleRows.length && !hasArchivedOrder && <tr><td colSpan={11}><div className="pool-empty">{archiveQuery.isLoading ? "正在搜索归档订单..." : "没有找到匹配的维修工单"}</div></td></tr>}
               </tbody>
             </table>
           </div>
@@ -688,10 +792,11 @@ function RepairPool({ notify, openOrderDetail, openNewOrder }: { notify: (messag
             <span>显示第 <b>{rows.length ? (page - 1) * pageSize + 1 : 0} - {Math.min(page * pageSize, rows.length)}</b> 条，共 <b>{rows.length || orders.length || 0}</b> 条工单</span>
             <div>
               <button type="button" disabled={page <= 1} onClick={() => setPage(value => Math.max(1, value - 1))}><ChevronLeft size={22} /></button>
-              {pageNumbers().map((pageNo, index, pages) => (
-                <span className="pool-page-segment" key={pageNo}>
-                  {index > 0 && pageNo - pages[index - 1] > 1 && <em>...</em>}
-                  <button type="button" className={pageNo === page ? "active" : ""} onClick={() => setPage(pageNo)}>{pageNo}</button>
+              {pageNumbers().map((pageNo, index) => (
+                <span className="pool-page-segment" key={`${pageNo}-${index}`}>
+                  {pageNo === "ellipsis"
+                    ? <em>...</em>
+                    : <button type="button" className={pageNo === page ? "active" : ""} onClick={() => setPage(pageNo)}>{pageNo}</button>}
                 </span>
               ))}
               <button type="button" disabled={page >= pageCount} onClick={() => setPage(value => Math.min(pageCount, value + 1))}><ChevronRight size={22} /></button>
@@ -714,6 +819,9 @@ function comparePoolOrder(left: AnyRecord, right: AnyRecord, key: string) {
   if (key === "status") return compareText(normalizeRepairStatus(left.status), normalizeRepairStatus(right.status));
   if (key === "assigned_to") return compareText(left.assigned_to || left.engineer_user, right.assigned_to || right.engineer_user);
   if (key === "updated_at") return compareText(left.updated_at || left.created_at, right.updated_at || right.created_at);
+  if (key === "created_at") return compareText(left.created_at, right.created_at);
+  if (key === "pool_fault_names") return compareText(left.pool_fault_names || left.fault_names || left.fault_detail || left.fault_description, right.pool_fault_names || right.fault_names || right.fault_detail || right.fault_description);
+  if (key === "pool_pre_inspection_abnormal") return compareText(left.pool_pre_inspection_abnormal || left.pre_inspection_abnormal, right.pool_pre_inspection_abnormal || right.pre_inspection_abnormal);
   if (key === "order_no") return compareText(left.order_no || left.repair_order_id, right.order_no || right.repair_order_id);
   return compareText(left[key], right[key]);
 }
@@ -722,16 +830,44 @@ function PoolOrderRow({ row, onOpen }: { row: AnyRecord; onOpen: (row: AnyRecord
   const status = normalizeRepairStatus(row.status);
   const phone = String(row.phone || row.customer_phone || "13800000000");
   const imei = String(row.imei || row.serial || row.machine_no || "");
+  const faultName = String(row.pool_fault_names || row.fault_names || row.fault_detail || row.fault_description || "");
+  const preInspectionAbnormal = String(row.pool_pre_inspection_abnormal || row.pre_inspection_abnormal || "");
   return (
     <tr>
       <td><button type="button" className="pool-order-link" onClick={() => onOpen(row, "view")}>{String(row.order_no || row.repair_order_id || "-")}</button></td>
       <td><div className="pool-device-cell"><b>{String(row.model || "待补机型")}</b><span>IMEI: {maskCode(imei)}</span></div></td>
       <td><div className="pool-customer-cell"><b>{String(row.customer_name || "未关联客户")}</b><span>{maskPhone(phone)}</span></div></td>
+      <td className="muted">{String(row.created_at || "--")}</td>
+      <td><span className="pool-text-cell">{faultName || "--"}</span></td>
+      <td><span className="pool-text-cell">{preInspectionAbnormal || "--"}</span></td>
       <td><StatusTag value={status} /></td>
       <td>{String(row.assigned_to || row.engineer_user || "--")}</td>
       <td className="muted">{String(row.updated_at || row.created_at || "--")}</td>
       <td className="align-right"><b>{poolMoney(row.quoted_amount || row.charge_amount || row.amount || 0)}</b></td>
       <td className="align-center"><div className="pool-row-actions"><button type="button" onClick={() => onOpen(row, "view")}>详情</button><button type="button" onClick={() => onOpen(row, "edit")}>编辑</button>{status === "待支付" && <button type="button" className="danger" onClick={() => onOpen(row, "cancel")}>取消</button>}</div></td>
+    </tr>
+  );
+}
+
+function ArchiveOrderRow({ row, onOpen }: { row: AnyRecord; onOpen: (row: AnyRecord, mode?: OrderMode) => void }) {
+  const archive = ((row.archive || {}) as AnyRecord);
+  const orderNo = String(row.order_no || "");
+  const phone = String(row.phone || row.customer_phone || "");
+  const imei = String(row.imei || row.serial || row.machine_no || "");
+  const archiveRow = { ...row, repair_order_id: `archive:${orderNo}` };
+  return (
+    <tr className="pool-archive-row">
+      <td><button type="button" className="pool-order-link" onClick={() => onOpen(archiveRow, "view")}>{orderNo || "-"}</button></td>
+      <td><div className="pool-device-cell"><b>{String(row.model || "归档订单")}</b><span>IMEI: {maskCode(imei)}</span></div></td>
+      <td><div className="pool-customer-cell"><b>{String(row.customer_name || row.linked_customer_name || "未关联客户")}</b><span>{maskPhone(phone)}</span></div></td>
+      <td className="muted">{String(row.created_at || "--")}</td>
+      <td><span className="pool-text-cell">{String(row.pool_fault_names || row.fault_names || row.fault_detail || row.fault_description || "--")}</span></td>
+      <td><span className="pool-text-cell">{String(row.pool_pre_inspection_abnormal || row.pre_inspection_abnormal || "--")}</span></td>
+      <td><span className="pool-status archived">已归档</span></td>
+      <td>{String(row.assigned_to || row.engineer_user || "--")}</td>
+      <td className="muted">{String(archive.archived_at || row.archived_at || row.updated_at || "--")}</td>
+      <td className="align-right"><b>{poolMoney(row.quoted_amount || row.charge_amount || row.amount || 0)}</b></td>
+      <td className="align-center"><div className="pool-row-actions"><button type="button" onClick={() => onOpen(archiveRow, "view")}>查看归档</button></div></td>
     </tr>
   );
 }
@@ -744,15 +880,28 @@ function normalizeRepairStatus(input: unknown) {
   return "维修中";
 }
 
-function maskCode(value: string) {
-  if (!value) return "356821******821";
+export function compactPageItems(currentPage: number, totalPages: number): Array<number | "ellipsis"> {
+  const pageCount = Math.max(1, totalPages);
+  const current = Math.min(Math.max(1, currentPage), pageCount);
+  const pages = new Set<number>([1, pageCount, current - 1, current, current + 1].filter(value => value >= 1 && value <= pageCount));
+  const sorted = Array.from(pages).sort((a, b) => a - b);
+  const items: Array<number | "ellipsis"> = [];
+  sorted.forEach((pageNo, index) => {
+    if (index > 0 && pageNo - sorted[index - 1] > 1) items.push("ellipsis");
+    items.push(pageNo);
+  });
+  return items;
+}
+
+export function maskCode(value: string) {
+  if (!value) return "-";
   if (value.length <= 8) return value;
   return `${value.slice(0, 6)}******${value.slice(-3)}`;
 }
 
-function maskPhone(value: string) {
+export function maskPhone(value: string) {
   const digits = value.replace(/\D/g, "");
-  if (digits.length < 7) return value || "138****8888";
+  if (digits.length < 7) return value || "-";
   return `${digits.slice(0, 3)}****${digits.slice(-4)}`;
 }
 
@@ -859,6 +1008,8 @@ function OrderDetailPage({
   const [newOrderNotes, setNewOrderNotes] = useState<AnyRecord[]>([]);
   const [newOrderNoteLogs, setNewOrderNoteLogs] = useState<AnyRecord[]>([]);
   const [selectedPhoto, setSelectedPhoto] = useState<AnyRecord | null>(null);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [deleteReason, setDeleteReason] = useState("");
   const [logsExpanded, setLogsExpanded] = useState(false);
   const [customerLookupOpen, setCustomerLookupOpen] = useState(false);
   const [customerLookupAnchor, setCustomerLookupAnchor] = useState<"name" | "phone">("name");
@@ -867,9 +1018,13 @@ function OrderDetailPage({
   const [newRepairItems, setNewRepairItems] = useState<AnyRecord[]>([]);
   const [selectedCustomer, setSelectedCustomer] = useState<AnyRecord | null>(null);
   const [selectedMachine, setSelectedMachine] = useState<AnyRecord | null>(null);
+  const archiveOrderNo = String(orderId || "").startsWith("archive:") ? String(orderId).slice("archive:".length) : "";
+  const isArchiveDetail = Boolean(archiveOrderNo);
   const query = useQuery({
-    queryKey: ["repair-workbench-detail", orderId],
-    queryFn: () => api<AnyRecord>(`/api/repair-workbench/${orderId}`),
+    queryKey: isArchiveDetail ? ["repair-order-archive-detail", archiveOrderNo] : ["repair-workbench-detail", orderId],
+    queryFn: () => isArchiveDetail
+      ? api<AnyRecord>(`/api/repair-orders/archive-search?order_no=${encodeURIComponent(archiveOrderNo)}`)
+      : api<AnyRecord>(`/api/repair-workbench/${orderId}`),
     enabled: Boolean(orderId) && mode !== "new",
   });
   const data = query.data || {};
@@ -877,12 +1032,12 @@ function OrderDetailPage({
   const timelineQuery = useQuery({
     queryKey: ["machine-timeline", order.machine_id],
     queryFn: () => api<AnyRecord>(`/api/machines/${order.machine_id}/timeline`),
-    enabled: Boolean(order.machine_id) && mode !== "new",
+    enabled: Boolean(order.machine_id) && mode !== "new" && !isArchiveDetail,
   });
   const photosQuery = useQuery({
     queryKey: ["repair-order-photos", orderId],
     queryFn: () => api<AnyRecord[]>(`/api/repair-orders/${orderId}/photos`),
-    enabled: Boolean(orderId) && mode !== "new",
+    enabled: Boolean(orderId) && mode !== "new" && !isArchiveDetail,
   });
   const customerLookupKeyword = customerLookupAnchor === "phone" ? String(form.phone || "") : String(form.customer_name || "");
   const customerRequestKeyword = customerLookupRequestKeyword(customerLookupAnchor, customerLookupKeyword);
@@ -914,10 +1069,12 @@ function OrderDetailPage({
   const incomeItems = ((data.income_items as AnyRecord[] | undefined) || []);
   const costItems = ((data.cost_items as AnyRecord[] | undefined) || []);
   const payments = ((data.payments as AnyRecord[] | undefined) || []);
+  const archiveMeta = ((data.archive || order.archive || {}) as AnyRecord);
+  const isReadOnlyArchive = Boolean(isArchiveDetail || data.archived || order.archived);
   const display = mode === "new" ? form : { ...order, ...form };
   const createdAt = String(order.created_at || order.opened_at || "保存后生成");
   const owner = String(display.assigned_to || order.assigned_to || "未指派");
-  const statusText = mode === "new" ? "待创建" : mode === "cancel" ? "取消确认" : normalizeRepairStatus(order.status);
+  const statusText = isReadOnlyArchive ? "已归档" : mode === "new" ? "待创建" : mode === "cancel" ? "取消确认" : normalizeRepairStatus(order.status);
   const model = String(display.model || order.model || (mode === "new" ? "" : "iPhone 13 Pro"));
   const colorCapacity = [display.color || order.color || (mode === "new" ? "" : "远峰蓝"), display.memory || order.memory || order.capacity || (mode === "new" ? "" : "128GB")].filter(Boolean).join(" / ");
   const imei = String(display.imei || order.imei || order.serial || (mode === "new" ? "" : "869123456789012"));
@@ -963,6 +1120,8 @@ function OrderDetailPage({
   const orderNotes = mode === "new" ? newOrderNotes : persistedNotes.length ? persistedNotes : parseOrderNotes(order.remark);
   const visibleOrderNotes: AnyRecord[] = orderNotes.length ? orderNotes : [{ type: "内部备注", content: "客户要求尽量保留原厂原色原彩，维修后请务必同步写入数据。", readonly: true }, { type: "交付说明", content: "告知客户外壳磕碰处无法复原，仅保证屏幕功能完好。", readonly: true }];
   const currentOperator = String(currentUserQuery.data?.username || "当前用户");
+  const currentPermissions = ((currentUserQuery.data?.permissions as string[] | undefined) || []);
+  const canDeleteOrder = currentPermissions.includes("repair_order:delete");
 
   function updateCustomerLookup(anchor: "name" | "phone", value: unknown) {
     setCustomerLookupAnchor(anchor);
@@ -1143,6 +1302,20 @@ function OrderDetailPage({
       queryClient.invalidateQueries({ queryKey: ["repair-workbench"] });
     },
     onError: error => notify(error instanceof Error ? error.message : "取消失败", true),
+  });
+  const deleteOrderMutation = useMutation({
+    mutationFn: (payload: AnyRecord) => api<AnyRecord>(`/api/repair-orders/${order.repair_order_id || orderId}`, {
+      method: "DELETE",
+      body: JSON.stringify({ reason: payload.reason || "" }),
+    }),
+    onSuccess: () => {
+      notify("订单已删除并归档，30 天后自动彻底删除");
+      setDeleteConfirmOpen(false);
+      setDeleteReason("");
+      queryClient.invalidateQueries({ queryKey: ["repair-workbench"] });
+      onBack();
+    },
+    onError: error => notify(error instanceof Error ? error.message : "删除失败", true),
   });
   const remarkMutation = useMutation({
     mutationFn: (payload: AnyRecord) => {
@@ -1442,6 +1615,14 @@ function OrderDetailPage({
     }
     cancelMutation.mutate(form);
   }
+  function submitDeleteOrder() {
+    const reason = deleteReason.trim();
+    if (!reason) {
+      notify("请填写删除原因", true);
+      return;
+    }
+    deleteOrderMutation.mutate({ reason });
+  }
 
   if (query.isLoading || query.error) return <QueryState loading={query.isLoading} error={query.error} />;
 
@@ -1456,9 +1637,10 @@ function OrderDetailPage({
       <section className="order-hero">
         <div><div className="order-heading-line"><h2>{mode === "new" ? "新建维修工单" : `工单: ${String(order.order_no || order.repair_order_id || orderId)}`}</h2><span className="order-status-pill">{statusText}</span></div><p>创建于 {createdAt} | 负责人: {owner}</p></div>
         <div className="order-hero-actions">
-          {mode === "view" && canModifyOrderStatus(statusText) && <button type="button" onClick={() => onModeChange("edit")}><Edit3 size={20} />编辑</button>}
-          {mode === "view" && canModifyOrderStatus(statusText) && <button type="button" onClick={() => onModeChange("cancel")}><CirclePlus size={20} />取消订单</button>}
+          {mode === "view" && !isReadOnlyArchive && canModifyOrderStatus(statusText) && <button type="button" onClick={() => onModeChange("edit")}><Edit3 size={20} />编辑</button>}
+          {mode === "view" && !isReadOnlyArchive && canModifyOrderStatus(statusText) && <button type="button" onClick={() => onModeChange("cancel")}><CirclePlus size={20} />取消订单</button>}
           {mode === "edit" && <button type="button" onClick={() => editMutation.mutate(form)} disabled={editMutation.isPending}><Edit3 size={20} />保存修改</button>}
+          {mode === "edit" && canDeleteOrder && !isReadOnlyArchive && <button type="button" className="danger-action" onClick={() => setDeleteConfirmOpen(true)} disabled={deleteOrderMutation.isPending}><Trash2 size={20} />删除订单</button>}
           {mode === "cancel" && <button type="button" className="danger-action" onClick={submitCancel} disabled={cancelMutation.isPending}>确认取消</button>}
           {mode !== "view" && mode !== "new" && <button type="button" onClick={() => { setForm({}); onModeChange("view"); }}>放弃</button>}
         </div>
@@ -1484,7 +1666,7 @@ function OrderDetailPage({
             <div className="repair-card-head">
               <h3><Smartphone size={24} />设备信息</h3>
               <div className="inline-actions">
-                {mode !== "new" && (profileEditing ? (
+                {mode !== "new" && !isReadOnlyArchive && (profileEditing ? (
                   <>
                     <button type="button" className="mini-add-button" onClick={submitProfile} disabled={profileMutation.isPending}>保存</button>
                     <button type="button" className="ghost-mini-button" onClick={() => { setProfileEditing(false); setProfileForm({}); }}>取消</button>
@@ -1554,12 +1736,13 @@ function OrderDetailPage({
 
         <aside className="order-side-column">
           {mode === "new" && <section className="order-card create-action-card"><button type="button" className="primary-create-button" onClick={submitNew} disabled={createMutation.isPending}><Plus size={20} />创建工单</button><button type="button" className="discard-order-button" onClick={() => { setForm({}); onBack(); }}>放弃</button></section>}
+          {isReadOnlyArchive && <section className="order-card archive-info-card"><h3>归档信息</h3><p>该订单已从普通订单池隐藏，仅可通过完整订单编号搜索查看。</p><div><b>删除原因</b><span>{String(archiveMeta.archive_reason || order.archive_reason || "-")}</span></div><div><b>归档人</b><span>{String(archiveMeta.archived_by || order.archived_by || "-")}</span></div><div><b>彻底删除时间</b><span>{String(archiveMeta.purge_after || order.purge_after || "-")}</span></div></section>}
           <section className="order-card"><h3>订单状态</h3><div className="detail-timeline">{buildStitchTimeline(mode, statusText, createdAt, owner).map(item => <div className={`timeline-step ${item.done ? "done" : ""} ${item.active ? "active" : ""}`} key={item.title}><span>{item.done ? <CheckCircle2 size={18} /> : item.active ? <Users size={18} /> : <Flag size={18} />}</span><div><b>{item.title}</b><p>{item.note}</p></div></div>)}</div></section>
           {mode === "cancel" && <section className="order-card cancel-warning-card"><h3>取消确认</h3><p>取消订单会将业务状态改为已作废，不会删除数据库记录。若订单已有未闭环领料，后端会提示先退料或报损。</p><OrderField label="取消原因" value={form.cancel_reason} editable area onChange={v => setField("cancel_reason", v)} /></section>}
           {mode === "edit" && <section className="order-card"><h3>订单转派</h3><OrderField label="负责人账号" value={form.assigned_to ?? order.assigned_to} editable onChange={v => setField("assigned_to", v)} /><OrderField label="修改备注" value={form.remark} editable area onChange={v => setField("remark", v)} /></section>}
           
 <section className="order-card notes-card">
-  <div className="side-title-row"><h3>备注信息</h3><button type="button" className="icon-mini-button" onClick={() => { setNoteFormOpen(value => !value); setNoteForm({ type: "内部备注" }); }}><CirclePlus size={22} /></button></div>
+  <div className="side-title-row"><h3>备注信息</h3>{!isReadOnlyArchive && <button type="button" className="icon-mini-button" onClick={() => { setNoteFormOpen(value => !value); setNoteForm({ type: "内部备注" }); }}><CirclePlus size={22} /></button>}</div>
   {noteFormOpen && (
     <div className="note-editor">
       <Select value={String(noteForm.type || "内部备注")} onChange={value => setNoteField("type", value)} options={[{ value: "内部备注", label: "内部备注" }, { value: "交付说明", label: "交付说明" }]} />
@@ -1567,7 +1750,7 @@ function OrderDetailPage({
       <div><AppButton className="mini-add-button" onClick={submitNote} disabled={remarkMutation.isPending || updateNoteMutation.isPending}>{noteForm.editing ? "保存修改" : "保存备注"}</AppButton><AppButton className="ghost-mini-button" onClick={() => { setNoteFormOpen(false); setNoteForm({ type: "内部备注" }); }}>取消</AppButton></div>
     </div>
   )}
-  {visibleOrderNotes.map((row, index) => { const noteType = String(row.note_type || row.type || "内部备注"); const createdBy = String(row.created_by || row.operator || currentOperator); const createdAt = String(row.created_at || "待创建"); return <div className={'note-box note-entry ' + (noteType === "交付说明" ? "muted" : "warning")} key={String(row.note_id || row.temp_id || noteType + '-' + index)}><div className="note-entry-head"><b>{noteType}</b><span>{createdBy} ? {createdAt}</span></div><p>{String(row.content || "")}</p>{!row.readonly && <div className="note-entry-actions"><AppButton type="link" onClick={() => editNote(row, index)}>修改</AppButton><AppButton type="link" danger onClick={() => deleteNote(row, index)} disabled={deleteNoteMutation.isPending}>删除</AppButton></div>}</div>; })}
+  {visibleOrderNotes.map((row, index) => { const noteType = String(row.note_type || row.type || "内部备注"); const createdBy = String(row.created_by || row.operator || currentOperator); const createdAt = String(row.created_at || "待创建"); return <div className={'note-box note-entry ' + (noteType === "交付说明" ? "muted" : "warning")} key={String(row.note_id || row.temp_id || noteType + '-' + index)}><div className="note-entry-head"><b>{noteType}</b><span>{createdBy} ? {createdAt}</span></div><p>{String(row.content || "")}</p>{!isReadOnlyArchive && !row.readonly && <div className="note-entry-actions"><AppButton type="link" onClick={() => editNote(row, index)}>修改</AppButton><AppButton type="link" danger onClick={() => deleteNote(row, index)} disabled={deleteNoteMutation.isPending}>删除</AppButton></div>}</div>; })}
 </section>
           <section className="order-card log-card"><div className="side-title-row"><h3>订单日志</h3>{combinedLogs.length > 3 && <button type="button" className="table-link" onClick={() => setLogsExpanded(value => !value)}>{logsExpanded ? "收起" : "更多"}</button>}</div>{visibleLogs.length ? visibleLogs.map((event, index) => <div className="log-item" key={String(event.event_id || event.created_at || index)}><b>{String(event.title || "订单维护")}</b><p>{String(event.detail || "工单信息已更新")}</p><span>{String(event.created_at || "")} {String(event.operator || "")}</span></div>) : <div className="history-empty">暂无订单日志</div>}</section>
         </aside>
@@ -1578,6 +1761,19 @@ function OrderDetailPage({
             <button type="button" className="photo-preview-close" onClick={() => setSelectedPhoto(null)}>×</button>
             <img src={String(selectedPhoto.url || "")} alt={String(selectedPhoto.filename || "维修照片")} />
             <p>{String(selectedPhoto.filename || "维修照片")}</p>
+          </div>
+        </div>
+      )}
+      {deleteConfirmOpen && (
+        <div className="photo-preview-backdrop" role="dialog" aria-modal="true" onClick={() => setDeleteConfirmOpen(false)}>
+          <div className="delete-order-dialog" onClick={event => event.stopPropagation()}>
+            <h3>删除订单</h3>
+            <p>订单会先进入归档，普通订单池和常规历史不再展示；30 天后系统会自动彻底删除。</p>
+            <Input.TextArea value={deleteReason} onChange={event => setDeleteReason(event.target.value)} placeholder="请填写删除原因" autoSize={{ minRows: 3, maxRows: 5 }} />
+            <div>
+              <button type="button" className="ghost-mini-button" onClick={() => setDeleteConfirmOpen(false)}>取消</button>
+              <button type="button" className="danger-action" onClick={submitDeleteOrder} disabled={deleteOrderMutation.isPending}>确认删除</button>
+            </div>
           </div>
         </div>
       )}

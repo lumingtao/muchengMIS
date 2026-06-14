@@ -604,6 +604,79 @@
   font-weight: 800;
 }
 
+.pool-archive-row {
+  background: #fff7ed;
+}
+
+.pool-status.archived {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 72px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  color: #9a3412;
+  background: #ffedd5;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.archive-info-card {
+  border-color: #fed7aa;
+  background: #fff7ed;
+}
+
+.archive-info-card p {
+  margin: -10px 0 16px;
+  color: #9a3412;
+  line-height: 1.6;
+}
+
+.archive-info-card div {
+  display: grid;
+  gap: 4px;
+  padding: 10px 0;
+  border-top: 1px solid #fed7aa;
+}
+
+.archive-info-card b {
+  color: #7c2d12;
+  font-size: 13px;
+}
+
+.archive-info-card span {
+  color: #431407;
+  word-break: break-word;
+}
+
+.delete-order-dialog {
+  width: min(520px, calc(100vw - 32px));
+  padding: 26px;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 24px 70px rgba(15, 23, 42, .28);
+}
+
+.delete-order-dialog h3 {
+  margin: 0 0 10px;
+  color: #991b1b;
+  font-size: 22px;
+}
+
+.delete-order-dialog p {
+  margin: 0 0 18px;
+  color: #5f6b7a;
+  line-height: 1.65;
+}
+
+.delete-order-dialog > div {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 18px;
+}
+
 .create-action-card {
   position: sticky;
   top: 84px;
@@ -1897,7 +1970,7 @@
 
 .pool-table {
   width: 100%;
-  min-width: 980px;
+  min-width: 1420px;
   border-collapse: collapse;
   white-space: nowrap;
   text-align: left;
@@ -1991,6 +2064,13 @@
 .pool-table td.muted {
   color: #64748b;
   font-size: 12px;
+}
+
+.pool-text-cell {
+  display: inline-block;
+  max-width: 220px;
+  white-space: normal;
+  line-height: 1.45;
 }
 
 .pool-status {

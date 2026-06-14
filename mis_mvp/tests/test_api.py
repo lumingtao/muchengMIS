@@ -75,6 +75,50 @@ def test_api_upload_repair_order_photo(client: TestClient) -> None:
     detail = client.get(f"/api/repair-workbench/{repair_id}", headers={"X-User": "staff"})
     assert detail.status_code == 200
     assert any(row["title"] == "上传维修前照片" for row in detail.json()["events"])
+
+
+def test_api_repair_order_delete_archives_and_exact_searches(client: TestClient) -> None:
+    created = client.post(
+        "/api/repair-orders",
+        headers={"X-User": "frontdesk"},
+        json={"machine": {"imei": "860000000008889", "model": "iPhone 15"}, "fault_description": "误开订单"},
+    )
+    assert created.status_code == 200
+    payload = created.json()
+    repair_id = payload["repair_order_id"]
+    order_no = payload["order_no"]
+
+    forbidden = client.request(
+        "DELETE",
+        f"/api/repair-orders/{repair_id}",
+        headers={"X-User": "frontdesk"},
+        json={"reason": "前台无权删除"},
+    )
+    assert forbidden.status_code == 403
+
+    deleted = client.request(
+        "DELETE",
+        f"/api/repair-orders/{repair_id}",
+        headers={"X-User": "admin"},
+        json={"reason": "重复录入"},
+    )
+    assert deleted.status_code == 200
+    assert deleted.json()["archived"] is True
+
+    workbench = client.get("/api/repair-workbench", headers={"X-User": "frontdesk"})
+    assert workbench.status_code == 200
+    assert all(row["repair_order_id"] != repair_id for row in workbench.json()["orders"])
+
+    partial = client.get(f"/api/repair-orders/archive-search?order_no={order_no[:8]}", headers={"X-User": "frontdesk"})
+    assert partial.status_code == 200
+    assert partial.json() == {}
+
+    archived = client.get(f"/api/repair-orders/archive-search?order_no={order_no}", headers={"X-User": "frontdesk"})
+    assert archived.status_code == 200
+    assert archived.json()["order"]["repair_order_id"] == repair_id
+    assert archived.json()["archive"]["archive_reason"] == "重复录入"
+
+
 def test_api_save_repair_order_inspection_logs_event(client: TestClient) -> None:
     created = client.post(
         "/api/repair-orders",

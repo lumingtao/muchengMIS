@@ -507,10 +507,82 @@ class MisService:
             """
             SELECT ro.*, m.machine_no, m.imei, m.serial, m.model, m.memory, m.color,
                    m.current_status, c.name AS linked_customer_name, c.phone AS customer_phone,
-                   c.category AS linked_customer_type
+                   c.category AS linked_customer_type,
+                   COALESCE((
+                       SELECT GROUP_CONCAT(name, '||')
+                       FROM (
+                           SELECT ri.item_name AS name, ri.repair_item_id AS sort_key
+                           FROM repair_items ri
+                           WHERE ri.repair_order_id=ro.repair_order_id
+                           UNION ALL
+                           SELECT mt.name AS name, 100000 + rm.repair_material_id AS sort_key
+                           FROM repair_materials rm
+                           JOIN materials mt ON mt.material_id=rm.material_id
+                           WHERE rm.repair_order_id=ro.repair_order_id
+                           ORDER BY sort_key
+                       )
+                   ), '') AS export_parts,
+                   COALESCE((
+                       SELECT GROUP_CONCAT(source_type, '||')
+                       FROM (
+                           SELECT DISTINCT rm.source_type
+                           FROM repair_materials rm
+                           WHERE rm.repair_order_id=ro.repair_order_id AND rm.source_type<>''
+                           ORDER BY rm.source_type
+                       )
+                   ), '') AS export_part_sources,
+                   (
+                       COALESCE((
+                           SELECT SUM(ri.quantity * ri.cost_amount)
+                           FROM repair_items ri
+                           WHERE ri.repair_order_id=ro.repair_order_id
+                       ), 0)
+                       +
+                       COALESCE((
+                           SELECT SUM(rm.total_cost)
+                           FROM repair_materials rm
+                           WHERE rm.repair_order_id=ro.repair_order_id
+                       ), 0)
+                   ) AS export_cost_amount,
+                   COALESCE((
+                       SELECT p.method
+                       FROM payments p
+                       WHERE p.source_type='repair'
+                         AND p.source_id=ro.repair_order_id
+                         AND p.direction IN ('收入', '鏀跺叆')
+                         AND p.method<>''
+                       ORDER BY p.paid_at DESC, p.payment_id DESC
+                       LIMIT 1
+                   ), '') AS export_payment_method,
+                   COALESCE((
+                       SELECT GROUP_CONCAT(name, '||')
+                       FROM (
+                           SELECT COALESCE(NULLIF(rs.fault_name, ''), ri.item_name) AS name, ri.repair_item_id AS sort_key
+                           FROM repair_items ri
+                           LEFT JOIN repair_skus rs ON rs.sku_id=ri.sku_id
+                           WHERE ri.repair_order_id=ro.repair_order_id
+                           ORDER BY sort_key
+                       )
+                   ), '') AS pool_fault_names,
+                   COALESCE((
+                       SELECT GROUP_CONCAT(summary, '；')
+                       FROM (
+                           SELECT CASE
+                                    WHEN note<>'' THEN item || '：' || note
+                                    ELSE item
+                                  END AS summary,
+                                  inspection_id AS sort_key
+                           FROM repair_order_inspections
+                           WHERE repair_order_id=ro.repair_order_id
+                             AND stage='pre'
+                             AND abnormal=1
+                           ORDER BY sort_key
+                       )
+                   ), '') AS pool_pre_inspection_abnormal
             FROM repair_orders ro
             JOIN machines m ON m.machine_id = ro.machine_id
             LEFT JOIN customers c ON c.customer_id = ro.customer_id
+            WHERE ro.archived_at=''
             ORDER BY ro.updated_at DESC, ro.repair_order_id DESC
             """
         )
@@ -520,6 +592,9 @@ class MisService:
             order["customer_type"] = order.get("customer_type") or order.get("linked_customer_type") or "待确认"
             order["payment_status"] = order.get("payment_status") or "未收款"
             order["settlement_status"] = order.get("settlement_status") or "未结"
+            order["export_profit_amount"] = float(order.get("quoted_amount") or 0) - float(order.get("export_cost_amount") or 0)
+            order["fault_names"] = order.get("pool_fault_names") or order.get("fault_detail") or order.get("fault_description") or ""
+            order["pre_inspection_abnormal"] = order.get("pool_pre_inspection_abnormal") or ""
             order["unknown_fields"] = self._repair_unknown_fields(order)
             order["is_overdue"] = bool(order.get("due_at")) and not order.get("closed_at") and order.get("status") not in {"已完结", "已结单"}
         return {
@@ -529,6 +604,7 @@ class MisService:
                 SELECT status, payment_status, settlement_status, COUNT(*) AS count,
                        COALESCE(SUM(quoted_amount), 0) AS quoted_amount
                 FROM repair_orders
+                WHERE archived_at=''
                 GROUP BY status, payment_status, settlement_status
                 ORDER BY status, payment_status
                 """
@@ -538,7 +614,7 @@ class MisService:
                 SELECT p.*, ro.order_no, ro.customer_name
                 FROM payments p
                 LEFT JOIN repair_orders ro ON ro.repair_order_id = p.source_id AND p.source_type='repair'
-                WHERE p.source_type='repair' AND p.status='已付款待财务确认'
+                WHERE p.source_type='repair' AND p.status='已付款待财务确认' AND COALESCE(ro.archived_at, '')=''
                 ORDER BY p.paid_at DESC, p.payment_id DESC
                 """
             ),
@@ -571,7 +647,7 @@ class MisService:
             FROM repair_orders ro
             JOIN machines m ON m.machine_id = ro.machine_id
             LEFT JOIN customers c ON c.customer_id = ro.customer_id
-            WHERE ro.repair_order_id=?
+            WHERE ro.repair_order_id=? AND ro.archived_at=''
             """,
             (repair_order_id,),
         )
@@ -607,6 +683,68 @@ class MisService:
             "events": self.repo.repair_order_events(int(order["machine_id"]), repair_order_id),
             "inspections": inspections,
             "notes": self.repo.list_repair_order_notes(repair_order_id),
+        }
+
+    def delete_repair_order(self, user: User, repair_order_id: int, reason: str) -> dict[str, Any]:
+        self._allowed(user, "repair_order:delete")
+        reason = reason.strip()
+        if not reason:
+            raise BusinessError("删除订单必须填写原因")
+        order = self.repo.get_repair_order(repair_order_id)
+        if not order:
+            raise BusinessError("维修单不存在")
+        snapshot = self.repo.repair_order_detail(repair_order_id) or order
+        self.repo.archive_repair_order(repair_order_id, user.username, reason, snapshot)
+        summary = f"{order.get('order_no') or repair_order_id} / {reason}"
+        self.repo.add_machine_event(int(order["machine_id"]), "repair", "删除订单归档", reason, user.username, "repair", repair_order_id)
+        self._log_success(user, "repair_order:delete", "repair_order", str(repair_order_id), customer_id=order.get("customer_id"), request_summary=summary)
+        self.conn.commit()
+        archive = self.repo.get_repair_order_archive_by_order_no(str(order.get("order_no") or ""))
+        return {
+            "repair_order_id": repair_order_id,
+            "order_no": order.get("order_no"),
+            "archived": True,
+            "archived_at": (archive or {}).get("archived_at", ""),
+            "purge_after": (archive or {}).get("purge_after", ""),
+        }
+
+    def search_archived_repair_order(self, user: User, order_no: str) -> dict[str, Any]:
+        self._allowed(user, "repair_order:read")
+        normalized = order_no.strip()
+        if not normalized:
+            raise BusinessError("请输入完整订单编号")
+        archive = self.repo.get_repair_order_archive_by_order_no(normalized)
+        if not archive:
+            return {}
+        repair_order_id = int(archive["repair_order_id"])
+        detail = self.repo.repair_order_detail(repair_order_id, include_archived=True)
+        if not detail:
+            return {}
+        machine = (detail.get("machine") or {}) if isinstance(detail.get("machine"), dict) else {}
+        customer = (detail.get("customer") or {}) if isinstance(detail.get("customer"), dict) else {}
+        for key in ("machine_no", "imei", "serial", "model", "memory", "color", "condition", "current_status"):
+            detail[key] = detail.get(key) or machine.get(key) or ""
+        detail["customer_name"] = detail.get("customer_name") or customer.get("name") or ""
+        detail["customer_phone"] = customer.get("phone") or ""
+        detail["customer_type"] = detail.get("customer_type") or customer.get("category") or ""
+        detail["archived"] = True
+        detail["archive"] = {
+            "archived_at": archive.get("archived_at", ""),
+            "archived_by": archive.get("archived_by", ""),
+            "archive_reason": archive.get("archive_reason", ""),
+            "purge_after": archive.get("purge_after", ""),
+        }
+        return {
+            "order": detail,
+            "repair_items": detail.get("items", []),
+            "payments": detail.get("payments", []),
+            "events": detail.get("events", []),
+            "inspections": detail.get("inspections", []),
+            "notes": detail.get("notes", []),
+            "archive": detail["archive"],
+            "available_actions": [],
+            "readonly": True,
+            "archived": True,
         }
 
     def _repair_modules(
@@ -871,7 +1009,7 @@ class MisService:
                 SELECT sm.*, m.sku, m.name, ro.order_no
                 FROM stock_movements sm
                 JOIN materials m ON m.material_id=sm.material_id
-                LEFT JOIN repair_orders ro ON ro.repair_order_id=sm.repair_order_id
+                LEFT JOIN repair_orders ro ON ro.repair_order_id=sm.repair_order_id AND ro.archived_at=''
                 ORDER BY sm.happened_at DESC, sm.stock_movement_id DESC
                 LIMIT 200
                 """
@@ -1277,7 +1415,7 @@ class MisService:
             f"""
             SELECT r.*, ro.order_no
             FROM material_requests r
-            LEFT JOIN repair_orders ro ON ro.repair_order_id=r.repair_order_id
+            LEFT JOIN repair_orders ro ON ro.repair_order_id=r.repair_order_id AND ro.archived_at=''
             {where}
             ORDER BY r.created_at DESC, r.request_id DESC
             """,
@@ -1715,7 +1853,7 @@ class MisService:
             FROM stock_movements sm
             JOIN materials m ON m.material_id=sm.material_id
             LEFT JOIN material_units u ON u.unit_id=sm.unit_id
-            LEFT JOIN repair_orders ro ON ro.repair_order_id=sm.repair_order_id
+            LEFT JOIN repair_orders ro ON ro.repair_order_id=sm.repair_order_id AND ro.archived_at=''
             LEFT JOIN warehouse_locations l ON l.location_id=sm.location_id
             ORDER BY sm.happened_at DESC, sm.stock_movement_id DESC
             LIMIT 500
