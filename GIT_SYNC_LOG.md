@@ -34,6 +34,28 @@
 
 ## 变更记录
 
+### 2026-06-14 20:58 CST | 快进同步远端 main 最新提交
+
+- 分支：main
+- 远端：origin/main
+- 操作：fetch 后将本地 `main` 快进到 `origin/main`，并准备提交本次同步留痕
+- 提交：
+  - 同步前本地基线：96f985c Document codex stitch merge
+  - 同步后远端最新：a3e26f4 Add repair order module updates
+  - 本次拉取范围：远端新增 6 个提交
+- 变更内容：
+  - 引入维修工单模块相关更新，包括需求文档、开发计划、问题报告和前后端功能调整。
+  - 新增 `docs/BUG_REPORT.md`、`docs/repair-order-module-development-plan.md`、`docs/repair-order-module-requirements.md`、`docs/repair-order-module-requirements-questionnaire.md`，补齐维修工单模块文档。
+  - 前端新增 `frontend/src/App.test.ts`，调整 `App.tsx`、状态标签测试和页面样式，并更新 `package.json`、`package-lock.json`。
+  - 后端新增 `mis_mvp/backend/order_numbers.py`，并更新 API、认证、数据库、模型、仓储和服务层逻辑。
+  - 更新维修工单相关测试和前端构建产物，替换旧 bundle 文件。
+- 同步结果：本地已从 `96f985c` 快进到 `a3e26f4`；当前将通过后续留痕提交再次推送，使远端包含本同步记录。
+- 验证情况：本次执行的是快进同步和文档留痕；尚未运行自动化测试或 UI 验证。
+- 回退参考：
+  - 如需回退本次远端同步带来的业务变更，可优先从 `a3e26f4` 往前分析这 6 个远端提交。
+  - 如只需撤销本地同步留痕，可 revert 后续的同步记录提交。
+- 备注：本次没有冲突；项目文档已随远端提交新增和更新，本文件按要求实时记录同步过程。
+
 ### 2026-06-14 09:18 CST | 合并 codex/stitch 到主分支
 
 - 分支：main
