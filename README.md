@@ -6,9 +6,9 @@
 
 - 后端主目录：`mis_mvp/`
 - 前端主目录：`frontend/`
-- 生产前端构建输出：`mis_mvp/frontend_dist/`
+- 生产前端构建输出：`mis_mvp/frontend_dist/`，由 `npm run build` 生成，不作为源码提交
 - 固定运行数据库：`mis_mvp/data/mis_mvp.sqlite3`
-- FastAPI 会优先服务 React 构建；若 `frontend_dist` 不存在，才回退到历史 `mis_mvp/static/` 静态页。
+- FastAPI 服务 React 构建产物；若 `frontend_dist` 不存在，会返回明确的构建提示。
 
 ## 目录说明
 
@@ -16,8 +16,7 @@
 mis_mvp/
   backend/              FastAPI 路由、权限、SQLite 迁移、业务服务
   data/                 本地 SQLite 运行库目录
-  frontend_dist/        React 构建产物，由 FastAPI 托管
-  static/               历史无构建静态前端，作为回退
+  frontend_dist/        React 构建产物，由 FastAPI 托管，本地构建生成
   tests/                后端 API、业务流、机器生命周期测试
   tools/                演示数据、旧数据和真实工作流导入脚本
 frontend/
@@ -80,6 +79,12 @@ finance / finance
 
 ## 前端开发
 
+如果当前 shell 没有系统 `npm`，先启用项目本地 npm：
+
+```powershell
+source tools/npm/use-npm.sh
+```
+
 ```powershell
 cd frontend
 npm.cmd install
@@ -95,7 +100,7 @@ cd frontend
 npm.cmd run build
 ```
 
-构建产物会写入 `mis_mvp/frontend_dist/`。
+构建产物会写入 `mis_mvp/frontend_dist/`，该目录是生成物，不作为 Stitch 或人工 UI 修改入口。
 
 ## 测试
 
@@ -111,6 +116,8 @@ npm.cmd run build
 cd frontend
 npm.cmd run test
 ```
+
+UI 冒烟验证可参考 [docs/STITCH_UI_WORKFLOW.md](docs/STITCH_UI_WORKFLOW.md) 中的浏览器验证步骤。
 
 ## 维护原则
 
@@ -128,3 +135,5 @@ npm.cmd run test
 - [mis_mvp/README.md](mis_mvp/README.md)：MVP 子项目运行和数据边界。
 - [docs/UI_COMPONENT_LIBRARY_EVALUATION.md](docs/UI_COMPONENT_LIBRARY_EVALUATION.md)：UI 组件库选型结论。
 - [docs/ANT_DESIGN_6_MIGRATION_PLAN.md](docs/ANT_DESIGN_6_MIGRATION_PLAN.md)：Ant Design 当前落地状态和后续迁移计划。
+- [docs/STITCH_UI_WORKFLOW.md](docs/STITCH_UI_WORKFLOW.md)：Stitch / Figma 双向 UI 修改流程。
+- [docs/STITCH_DESIGN_BRIEF.md](docs/STITCH_DESIGN_BRIEF.md)：可复制到 Stitch 的项目设计上下文。

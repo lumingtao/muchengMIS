@@ -15,7 +15,7 @@ lucide-react
 自研业务 CSS + 项目级 Ant Design 适配组件
 ```
 
-FastAPI 优先托管 `mis_mvp/frontend_dist/`，缺失时回退历史 `mis_mvp/static/`。
+FastAPI 托管 `mis_mvp/frontend_dist/`；该目录由前端构建生成，缺失时返回构建提示。
 
 ## 2. 结论
 

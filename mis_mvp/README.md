@@ -8,7 +8,7 @@
 - 默认数据库：`data/mis_mvp.sqlite3`
 - 数据库路径可由 `MIS_DATABASE_PATH` 覆盖，仅用于测试、迁移或临时验证。
 - 启动时会执行 `backend.db.migrate()`，自动补齐表、字段、索引和默认用户。
-- 根路径 `/` 优先返回 `frontend_dist/index.html`；缺失时返回 `static/index.html`。
+- 根路径 `/` 返回 `frontend_dist/index.html`；缺失时返回构建提示，不再回退旧静态原型。
 
 ## 当前数据模型
 

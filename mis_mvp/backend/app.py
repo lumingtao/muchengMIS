@@ -5,7 +5,7 @@ import re
 from typing import Callable
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import ROOT_DIR, settings
@@ -73,11 +73,9 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
-static_dir = ROOT_DIR / "static"
 frontend_dir = ROOT_DIR / "frontend_dist"
 uploads_dir = ROOT_DIR / "uploads"
 uploads_dir.mkdir(parents=True, exist_ok=True)
-app.mount("/static", StaticFiles(directory=static_dir), name="static")
 app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
 if (frontend_dir / "assets").exists():
     app.mount("/assets", StaticFiles(directory=frontend_dir / "assets"), name="frontend_assets")
@@ -144,10 +142,13 @@ def parse_photo_upload(content_type: str, body: bytes) -> tuple[str, str, str, b
 
 
 @app.get("/")
-def index() -> FileResponse:
+def index():
     if (frontend_dir / "index.html").exists():
         return FileResponse(frontend_dir / "index.html")
-    return FileResponse(static_dir / "index.html")
+    return HTMLResponse(
+        "<h1>前端构建产物不存在</h1><p>请在 frontend/ 运行 npm run build 生成 mis_mvp/frontend_dist/。</p>",
+        status_code=503,
+    )
 
 
 @app.post("/api/login")
