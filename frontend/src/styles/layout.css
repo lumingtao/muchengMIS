@@ -1,0 +1,220 @@
+.app-shell { min-height: 100vh; display: grid; grid-template-columns: 240px minmax(0, 1fr); }
+.sidebar {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  padding: 16px 12px;
+  overflow: auto;
+  color: var(--ink);
+  background: var(--nav);
+  border-right: 1px solid var(--line);
+}
+.brand { display: flex; align-items: center; gap: 11px; padding: 12px 18px 26px; border-bottom: 0; }
+.brand > div:not(.brand-mark) { display: grid; gap: 5px; }
+.brand > div:not(.brand-mark) strong { color: #003d9b; font-size: 22px; line-height: 1.2; }
+.brand > div:not(.brand-mark) span { color: var(--muted); font-size: 14px; }
+.brand-mark { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 10px; color: #003d9b; background: #dae6ff; font-weight: 900; }
+.brand strong { display: block; font-size: 16px; }
+.brand span { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; }
+.primary-nav { display: grid; gap: 13px; padding: 0 0 0; }
+.nav-group { display: grid; gap: 6px; margin-top: 18px; }
+.nav-group > span { margin: 0 12px 4px; color: var(--subtle); font-size: 12px; font-weight: 700; }
+nav button {
+  width: 100%;
+  justify-content: flex-start;
+  min-height: 54px;
+  gap: 14px;
+  padding: 0 16px;
+  color: #38485d;
+  background: transparent;
+  border-color: transparent;
+  border-radius: 8px;
+  font-size: 17px;
+  font-weight: 600;
+}
+nav button:hover { color: var(--accent); background: #f1f5fb; border-color: transparent; }
+nav button.active { color: var(--accent); background: rgba(0, 61, 155, .08); border-color: transparent; font-weight: 800; }
+nav button.active svg { color: var(--accent); }
+.sidebar-footer {
+  display: grid;
+  gap: 14px;
+  margin-top: auto;
+  padding: 20px 0 0;
+  border-top: 1px solid var(--line);
+}
+.sidebar-footer button { width: 100%; justify-content: flex-start; }
+.new-order-button {
+  min-height: 52px;
+  color: #fff;
+  background: #0049b8;
+  border-color: #0049b8;
+  font-size: 17px;
+}
+.new-order-button:hover { background: #003d9b; }
+.plain-nav-button { color: #38485d; background: transparent; border-color: transparent; font-weight: 500; }
+.plain-nav-button:hover { color: var(--accent); background: #f1f5fb; }
+
+main { min-width: 0; padding: 88px 24px 24px; }
+.topbar {
+  position: fixed;
+  left: 240px;
+  right: 0;
+  top: 0;
+  z-index: 30;
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+  min-height: 64px;
+  margin-bottom: 0;
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(255, 255, 255, .96);
+  backdrop-filter: blur(10px);
+}
+.topbar h1 { margin: 2px 0 1px; font-size: 22px; letter-spacing: 0; }
+.topbar p, .page-path { margin: 0; color: var(--muted); }
+.topbar p { display: none; }
+.page-path { font-size: 12px; }
+.top-search {
+  flex: 0 1 520px;
+  max-width: 520px;
+  margin-right: auto;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border-radius: 8px;
+  background: var(--surface-3);
+  color: var(--subtle);
+}
+.top-search input {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.top-links {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding-right: 18px;
+  border-right: 1px solid var(--line);
+}
+.top-links button {
+  min-height: 36px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 16px;
+  font-weight: 500;
+}
+.top-links button:hover { color: var(--accent); background: transparent; }
+.top-icons { display: flex; align-items: center; gap: 12px; }
+.icon-button {
+  position: relative;
+  width: 34px;
+  min-height: 34px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #64748b;
+}
+.icon-button:hover { color: var(--accent); background: transparent; }
+.icon-button span {
+  position: absolute;
+  right: 5px;
+  top: 5px;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--danger);
+}
+.admin-chip {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 150px;
+}
+.admin-chip > div:first-child { display: grid; justify-items: end; line-height: 1.2; }
+.admin-chip strong { font-size: 14px; }
+.admin-chip span { color: var(--muted); font-size: 12px; }
+.avatar-dot {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  color: #dbeafe;
+  background: radial-gradient(circle at 40% 30%, #1e3a8a, #0f172a 70%);
+}
+.page-title { margin-bottom: 18px; }
+.page-title h1 { margin: 0 0 5px; font-size: 24px; }
+.page-title p { margin: 0; color: var(--muted); }
+.account-card {
+  min-width: 204px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: none;
+}
+.account-card div { flex: 1; min-width: 0; }
+.account-card strong, .account-card span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-card span { color: var(--muted); font-size: 12px; }
+.account-card button { width: 34px; min-height: 34px; padding: 0; background: var(--surface); border-color: var(--line); color: var(--muted); }
+
+.stack { display: grid; gap: 16px; }
+.panel {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 18px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+.panel-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; margin-bottom: 16px; }
+.panel h2 { margin: 0; font-size: 18px; letter-spacing: 0; }
+.panel p { margin: 5px 0 0; color: var(--muted); line-height: 1.45; }
+.app-panel {
+  min-width: 0;
+  border-color: var(--line);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+}
+
+.app-panel .ant-card-head {
+  min-height: 0;
+  padding: 16px 18px 0;
+  border-bottom: 0;
+}
+
+.app-panel .ant-card-head-title {
+  padding: 0 0 16px;
+}
+
+.app-panel .ant-card-extra {
+  padding: 0 0 16px;
+}
+
+.app-panel .ant-card-body {
+  padding: 0 18px 18px;
+}
+
+.app-panel-title h2 {
+  margin: 0;
+  font-size: 18px;
+  letter-spacing: 0;
+}
+
+.app-panel-title p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  line-height: 1.45;
+  white-space: normal;
+}

@@ -17,6 +17,8 @@ env/
 *.log
 *.sqlite3
 *.sqlite3-*
+.runtime/
+outputs/
 mis_mvp/data/*
 !mis_mvp/data/.gitkeep
 mis_mvp/uploads/
@@ -30,6 +32,12 @@ mis_mvp/uploads/
 node_modules/
 dist/
 build/
+mis_mvp/frontend_dist/
+*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
+tools/npm/cache/
+tools/npm/package/
 
 # .NET / compiled output
 bin/
@@ -37,6 +45,8 @@ obj/
 *.exe
 *.dll
 *.pdb
+!tools/npm/bin/
+!tools/npm/bin/*
 
 # OS / editor
 .DS_Store

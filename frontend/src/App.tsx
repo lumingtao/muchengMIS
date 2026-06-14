@@ -1,4 +1,4 @@
-import { ReactNode, useEffect, useMemo, useState } from "react";
+import { KeyboardEvent, ReactNode, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Input, Select } from "antd";
 import {
@@ -10,7 +10,6 @@ import {
   Grid2X2,
   HelpCircle,
   Info,
-  LogOut,
   Mail,
   Megaphone,
   PackageSearch,
@@ -50,6 +49,7 @@ import { StatusTag } from "./components/data/StatusTag";
 import { AppModal } from "./components/feedback/AppModal";
 import { notify as feedbackNotify } from "./components/feedback/notify";
 import { AppFormSection } from "./components/forms/AppFormSection";
+import { AppShellLayout } from "./components/layout/AppShellLayout";
 import { AppPanel } from "./components/layout/AppPanel";
 
 type ViewKey = "dashboard" | "repairPool" | "orderDetail" | "recyclePool" | "repair" | "recycle" | "warehouse" | "inventory" | "sales" | "customers" | "payments" | "reports" | "audit";
@@ -66,7 +66,7 @@ const viewMeta: Record<ViewKey, { label: string; subtitle: string }> = {
   warehouse: { label: "库存管理", subtitle: "管理物料、批次、单件码、申领发放、退料和库存流水。" },
   inventory: { label: "回收库存", subtitle: "查看维修物料库存与回收机器库存。" },
   sales: { label: "快速卖机", subtitle: "从回收库存创建销售单。" },
-  customers: { label: "客户", subtitle: "查询客户主数据。" },
+  customers: { label: "会员管理", subtitle: "维护客户档案、业务记录、欠款结算和回访备注。" },
   payments: { label: "财务流水", subtitle: "登记维修、销售收入和回收支出。" },
   reports: { label: "财务报表", subtitle: "查看库存成本、收入支出和经营概览。" },
   audit: { label: "系统设置", subtitle: "查看关键写操作的审计记录。" },
@@ -75,6 +75,7 @@ const viewMeta: Record<ViewKey, { label: string; subtitle: string }> = {
 const primaryNav: Array<{ key: ViewKey; label: string; icon: ReactNode }> = [
   { key: "dashboard", label: "个人工作台", icon: <Grid2X2 size={22} /> },
   { key: "repairPool", label: "订单中心", icon: <ClipboardList size={22} /> },
+  { key: "customers", label: "会员管理", icon: <Users size={22} /> },
   { key: "warehouse", label: "库存管理", icon: <Wrench size={22} /> },
   { key: "reports", label: "财务报表", icon: <BarChart3 size={22} /> },
   { key: "audit", label: "系统设置", icon: <Settings size={22} /> },
@@ -186,6 +187,16 @@ function nowText() {
   return new Date().toLocaleString("zh-CN", { hour12: false });
 }
 
+function normalizeDateTimeInput(value: string) {
+  if (!value) return "";
+  const text = value.replace("T", " ");
+  return text.length === 16 ? `${text}:00` : text;
+}
+
+function compareText(left: unknown, right: unknown) {
+  return String(left || "").localeCompare(String(right || ""), "zh-CN", { numeric: true, sensitivity: "base" });
+}
+
 function splitOptionText(value: unknown) {
   return String(value || "").split(/[\n,，、]/).map(item => item.trim()).filter(Boolean);
 }
@@ -196,6 +207,28 @@ function displayValue(row: AnyRecord, key: string) {
   if (moneyKeys.has(key)) return formatMoney(raw);
   if (Array.isArray(raw)) return raw.join("、") || "-";
   return String(raw);
+}
+
+function blankDisplay(value: unknown) {
+  return String(value ?? "");
+}
+
+function csvCell(value: unknown) {
+  const text = String(value ?? "").replace(/\r?\n/g, " ");
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+function downloadCsv(filename: string, headers: string[], rows: unknown[][]) {
+  const content = "\ufeff" + [headers.map(csvCell).join(","), ...rows.map(row => row.map(csvCell).join(","))].join("\n");
+  const blob = new Blob([content], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 
@@ -215,16 +248,6 @@ function DataTable({ rows, columns, onRowClick, empty = "暂无数据", defaultS
       isStatusKey={(key) => key.includes("status") || key === "state"}
     />
   );
-}
-
-export function compactPageItems(currentPage: number, totalPages: number) {
-  if (totalPages <= 7) return Array.from({ length: totalPages }, (_, index) => index + 1);
-  const pages = new Set([1, totalPages, currentPage - 1, currentPage, currentPage + 1]);
-  const sorted = Array.from(pages).filter(page => page >= 1 && page <= totalPages).sort((a, b) => a - b);
-  return sorted.flatMap((page, index) => {
-    const previous = sorted[index - 1];
-    return previous && page - previous > 1 ? ["ellipsis", page] : [page];
-  });
 }
 
 function QueryState({ loading, error }: { loading: boolean; error: unknown }) {
@@ -281,42 +304,20 @@ function App() {
   if (!user) return <LoginScreen onLogin={(name) => { setStoredUser(name); setUser(name); }} notify={notify} />;
 
   return (
-    <div className={`app-shell ${view === "orderDetail" || view === "repair" ? "order-detail-shell" : ""} ${view === "repairPool" ? "repair-pool-shell" : ""}`}>
-      <aside className="sidebar">
-        <div className="brand"><div><strong>沐辰科技</strong><span>专业维修与销售</span></div></div>
-        <nav className="primary-nav">
-          {primaryNav.map(item => (
-            <button key={item.key} className={view === item.key || (view === "orderDetail" && item.key === "repairPool") ? "active" : ""} onClick={() => setView(item.key)} type="button">
-              {item.icon}{item.label}
-            </button>
-          ))}
-        </nav>
-        <div className="sidebar-footer">
-          <button type="button" className="plain-nav-button"><HelpCircle size={20} />帮助中心</button>
-          <button type="button" className="plain-nav-button" onClick={logout}><LogOut size={20} />退出登录</button>
-        </div>
-      </aside>
-      <main>
-        <header className="topbar">
-          <div className="top-search"><Search size={22} /><Input variant="borderless" placeholder="快捷搜索工单、机型或零件..." /></div>
-          <div className="top-links">
-            <button type="button" onClick={() => setView("warehouse")}>设备入库</button>
-            <button type="button" onClick={() => setView("sales")}>快速卖机</button>
-          </div>
-          <div className="top-icons">
-            <button type="button" className="icon-button"><Bell size={23} /><span /></button>
-            <button type="button" className="icon-button"><Mail size={23} /></button>
-          </div>
-          <div className="admin-chip">
-            <div><strong>{String(profile.data?.username || user) === "admin" ? "管理员" : String(profile.data?.username || user)}</strong><span>{String(profile.data?.role || "高级维修顾问")}</span></div>
-            <div className="avatar-dot"><UserRound size={19} /></div>
-          </div>
-        </header>
-        {view !== "dashboard" && view !== "orderDetail" && view !== "repairPool" && view !== "repair" && <div className="page-title"><h1>{current.label}</h1><p>{current.subtitle}</p></div>}
-        <ViewRouter view={view} notify={notify} openModal={setModal} setView={setView} openNewOrder={openNewOrder} openOrderDetail={openOrderDetail} selectedRepairOrderId={selectedRepairOrderId} orderMode={orderMode} setSelectedRepairOrderId={setSelectedRepairOrderId} setOrderMode={setOrderMode} onLeaveOrderDetail={leaveOrderDetail} />
-      </main>
-      <AppModal open={Boolean(modal)} onClose={() => setModal(null)}>{modal}</AppModal>
-    </div>
+    <AppShellLayout
+      view={view}
+      current={current}
+      primaryNav={primaryNav}
+      userLabel={String(profile.data?.username || user) === "admin" ? "管理员" : String(profile.data?.username || user)}
+      roleLabel={String(profile.data?.role || "高级维修顾问")}
+      modal={modal}
+      setView={setView}
+      notify={notify}
+      logout={logout}
+      onCloseModal={() => setModal(null)}
+    >
+      <ViewRouter view={view} notify={notify} openModal={setModal} setView={setView} openNewOrder={openNewOrder} openOrderDetail={openOrderDetail} selectedRepairOrderId={selectedRepairOrderId} orderMode={orderMode} setSelectedRepairOrderId={setSelectedRepairOrderId} setOrderMode={setOrderMode} onLeaveOrderDetail={leaveOrderDetail} />
+    </AppShellLayout>
   );
 }
 
@@ -367,7 +368,7 @@ function ViewRouter({
 }) {
   if (view === "dashboard") return <DashboardHome notify={notify} setView={setView} openOrderDetail={(row) => openOrderDetail(row, "dashboard")} />;
   if (view === "orderDetail") return <OrderDetailPage orderId={selectedRepairOrderId} mode={orderMode} notify={notify} onBack={onLeaveOrderDetail} onCreated={(id) => { setSelectedRepairOrderId(id); setOrderMode("view"); }} onModeChange={setOrderMode} />;
-  if (view === "repairPool") return <RepairPool notify={notify} setView={setView} openNewOrder={() => openNewOrder("repairPool")} openOrderDetail={(row, mode) => openOrderDetail(row, "repairPool", mode)} />;
+  if (view === "repairPool") return <RepairPool notify={notify} openNewOrder={() => openNewOrder("repairPool")} openOrderDetail={(row, mode) => openOrderDetail(row, "repairPool", mode)} />;
   if (view === "recyclePool") return <RecyclePool openModal={openModal} />;
   if (view === "warehouse") return <WarehousePage notify={notify} />;
   if (view === "inventory") return <InventoryPage />;
@@ -537,46 +538,104 @@ function WorkMessages({ financeCount, requestCount }: { financeCount: number; re
   return <section className="side-card message-card"><div className="side-card-title"><Mail size={26} /><h3>工作消息</h3><button type="button">全部已读</button></div>{rows.map(row => <div className="message-item" key={row.title}><div className={`message-icon ${row.kind}`}>{row.icon}</div><div><div><b>{row.title}</b><span>{row.time}</span></div><p>{row.note}</p></div></div>)}</section>;
 }
 
-function RepairPool({ notify, openOrderDetail, openNewOrder }: { notify: (message: string, error?: boolean) => void; openOrderDetail: (row: AnyRecord, mode?: OrderMode) => void; openNewOrder?: () => void; setView?: (view: ViewKey) => void }) {
+function RepairPool({ notify, openOrderDetail, openNewOrder }: { notify: (message: string, error?: boolean) => void; openOrderDetail: (row: AnyRecord, mode?: OrderMode) => void; openNewOrder?: () => void }) {
   const [keyword, setKeyword] = useState("");
   const [status, setStatus] = useState("全部状态");
-  const [currentPage, setCurrentPage] = useState(1);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [customerType, setCustomerType] = useState("全部客户");
+  const [engineer, setEngineer] = useState("");
+  const [timeRange, setTimeRange] = useState<[string, string]>(["", ""]);
+  const [page, setPage] = useState(1);
+  const [sort, setSort] = useState<SortState>({ key: "updated_at", direction: "desc" });
   const pageSize = 15;
   const query = useQuery({ queryKey: ["repair-workbench"], queryFn: () => api<AnyRecord>("/api/repair-workbench") });
   const orders = ((query.data?.orders as AnyRecord[] | undefined) || []);
-  const rows = useMemo(() => {
+  const filteredRows = useMemo(() => {
     const q = keyword.trim().toLowerCase();
+    const engineerNeedle = engineer.trim().toLowerCase();
+    const [startAt, endAt] = timeRange.map(normalizeDateTimeInput);
     return orders.filter(row => {
       const haystack = [row.order_no, row.machine_no, row.imei, row.serial, row.model, row.customer_name, row.phone, row.customer_phone, row.assigned_to].join(" ").toLowerCase();
-      return (!q || haystack.includes(q)) && (status === "全部状态" || normalizeRepairStatus(row.status) === status);
+      const orderTime = String(row.updated_at || row.created_at || "");
+      return (!q || haystack.includes(q))
+        && (status === "全部状态" || normalizeRepairStatus(row.status) === status)
+        && (customerType === "全部客户" || String(row.customer_type || "").includes(customerType))
+        && (!engineerNeedle || String(row.assigned_to || row.engineer_user || "").toLowerCase().includes(engineerNeedle))
+        && (!startAt || orderTime >= startAt)
+        && (!endAt || orderTime <= endAt);
     });
-  }, [keyword, orders, status]);
+  }, [customerType, engineer, keyword, orders, status, timeRange]);
+  const rows = useMemo(() => {
+    const direction = sort.direction === "asc" ? 1 : -1;
+    return [...filteredRows].sort((left, right) => direction * comparePoolOrder(left, right, sort.key));
+  }, [filteredRows, sort]);
   const repairing = orders.filter(row => normalizeRepairStatus(row.status) === "维修中").length;
   const paidWaiting = orders.filter(row => normalizeRepairStatus(row.status) === "待支付").length;
   const done = orders.filter(row => normalizeRepairStatus(row.status) === "已完结").length;
-  const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
-  const safePage = Math.min(currentPage, totalPages);
-  const startIndex = rows.length ? (safePage - 1) * pageSize : 0;
-  const visibleRows = rows.slice(startIndex, startIndex + pageSize);
-  const pageItems = compactPageItems(safePage, totalPages);
+  const pageCount = Math.max(1, Math.ceil(rows.length / pageSize));
+  const visibleRows = rows.slice((page - 1) * pageSize, page * pageSize);
 
   useEffect(() => {
-    setCurrentPage(1);
-  }, [keyword, status]);
+    setPage(1);
+  }, [customerType, engineer, keyword, status, timeRange]);
 
-  useEffect(() => {
-    if (currentPage > totalPages) setCurrentPage(totalPages);
-  }, [currentPage, totalPages]);
+  function clearAdvancedFilters() {
+    setCustomerType("全部客户");
+    setEngineer("");
+    setTimeRange(["", ""]);
+  }
+
+  function exportRows() {
+    if (!rows.length) {
+      notify("当前筛选结果为空，无法导出。", true);
+      return;
+    }
+    downloadCsv(
+      `维修工单-${new Date().toISOString().slice(0, 10)}.csv`,
+      ["订单编号", "设备型号", "客户", "联系方式", "状态", "技术员", "最后更新", "预估金额"],
+      rows.map(row => [
+        row.order_no || row.repair_order_id || "",
+        row.model || "",
+        row.customer_name || "",
+        row.phone || row.customer_phone || "",
+        row.status || "",
+        row.assigned_to || row.engineer_user || "",
+        row.updated_at || row.created_at || "",
+        row.quoted_amount || row.charge_amount || row.amount || 0,
+      ]),
+    );
+    notify(`已导出 ${rows.length} 条维修工单`);
+  }
+
+  function pageNumbers() {
+    const pages = new Set<number>([1, pageCount, page - 1, page, page + 1].filter(value => value >= 1 && value <= pageCount));
+    return Array.from(pages).sort((a, b) => a - b);
+  }
+
+  function changeSort(key: string) {
+    setSort(prev => prev.key === key ? { key, direction: prev.direction === "asc" ? "desc" : "asc" } : { key, direction: "asc" });
+  }
+
+  function sortHeader(key: string, label: string, className = "") {
+    const active = sort.key === key;
+    return (
+      <th className={className}>
+        <button type="button" className={'pool-sort-button ' + (active ? 'active' : '')} onClick={() => changeSort(key)} aria-sort={active ? (sort.direction === "asc" ? "ascending" : "descending") : "none"}>
+          {label}<span>{active ? (sort.direction === "asc" ? "↑" : "↓") : "↕"}</span>
+        </button>
+      </th>
+    );
+  }
 
   if (query.isLoading || query.error) return <QueryState loading={query.isLoading} error={query.error} />;
 
   return (
     <div className="repair-pool-page">
       <header className="pool-topbar">
-        <div className="pool-global-search"><Search size={23} /><Input variant="borderless" placeholder="全局搜索 (订单号, 配件, IMEI)..." /></div>
+        <div className="pool-global-search"><Search size={23} /><Input variant="borderless" value={keyword} onChange={event => setKeyword(event.target.value)} placeholder="全局搜索 (订单号, 配件, IMEI)..." allowClear /></div>
         <div className="pool-top-actions">
-          <button type="button" className="pool-icon-button"><Bell size={23} /><span /></button>
-          <button type="button" className="pool-icon-button"><HelpCircle size={23} /></button>
+          <button type="button" className="pool-icon-button" aria-label="查看待支付工单" onClick={() => setStatus("待支付")}><Bell size={23} /><span /></button>
+          <button type="button" className="pool-icon-button" aria-label="查看订单中心帮助" onClick={() => notify("订单中心支持搜索、状态筛选、高级筛选、导出、新建、查看、编辑和取消工单。")}><HelpCircle size={23} /></button>
           <div className="pool-user"><div><b>陈经理</b><span>管理员</span></div><div className="pool-avatar"><UserRound size={22} /></div></div>
         </div>
       </header>
@@ -595,34 +654,47 @@ function RepairPool({ notify, openOrderDetail, openNewOrder }: { notify: (messag
           <div className="pool-filter-left">
             <Input className="pool-search-input" prefix={<Search size={20} />} value={keyword} onChange={e => setKeyword(e.target.value)} placeholder="搜索订单号、IMEI 或客户手机..." allowClear />
             <Select className="pool-status-select" value={status} onChange={setStatus} options={["全部状态", "维修中", "待支付", "已完结", "已取消"].map(value => ({ value, label: value }))} />
-            <AppButton className="pool-ghost-button" onClick={() => notify("高级筛选已按设计预留，当前可用搜索和状态筛选。")}><Filter size={20} />高级筛选</AppButton>
+            <AppButton className="pool-ghost-button" onClick={() => setShowAdvanced(value => !value)}><Filter size={20} />高级筛选</AppButton>
           </div>
           <div className="pool-filter-right">
-            <AppButton className="pool-ghost-button" onClick={() => notify("导出数据入口已预留。")}><Download size={20} />导出数据</AppButton>
+            <AppButton className="pool-ghost-button" onClick={exportRows}><Download size={20} />导出数据</AppButton>
             <AppButton className="pool-primary-button" type="primary" onClick={() => openNewOrder?.()}><Plus size={22} />新建工单</AppButton>
           </div>
         </section>
+        {showAdvanced && (
+          <section className="pool-advanced-panel">
+            <Select value={customerType} onChange={setCustomerType} options={["全部客户", "个人客户", "同行客户", "企业客户", "VIP客户", "零售客户"].map(value => ({ value, label: value }))} />
+            <Input value={engineer} onChange={event => setEngineer(event.target.value)} placeholder="技术员/负责人" allowClear />
+            <div className="pool-time-range">
+              <Input type="datetime-local" value={timeRange[0]} onChange={event => setTimeRange([event.target.value, timeRange[1]])} aria-label="开始时间" />
+              <span>至</span>
+              <Input type="datetime-local" value={timeRange[1]} onChange={event => setTimeRange([timeRange[0], event.target.value])} aria-label="结束时间" />
+            </div>
+            <AppButton onClick={clearAdvancedFilters}>清空高级筛选</AppButton>
+          </section>
+        )}
 
         <section className="pool-table-card">
           <div className="pool-table-scroll">
             <table className="pool-table">
-              <thead><tr><th>订单编号</th><th>设备信息</th><th>客户</th><th>状态</th><th>技术员</th><th>最后更新</th><th className="align-right">预估金额</th><th className="align-center">操作</th></tr></thead>
+              <thead><tr>{sortHeader("order_no", "订单编号")}{sortHeader("model", "设备信息")}{sortHeader("customer_name", "客户")}{sortHeader("status", "状态")}{sortHeader("assigned_to", "技术员")}{sortHeader("updated_at", "最后更新")}{sortHeader("amount", "预估金额", "align-right")}<th className="align-center">操作</th></tr></thead>
               <tbody>
-                {visibleRows.map((row, index) => <PoolOrderRow row={row} key={String(row.repair_order_id || row.order_no || index)} onOpen={openOrderDetail} notify={notify} />)}
+                {visibleRows.map((row, index) => <PoolOrderRow row={row} key={String(row.repair_order_id || row.order_no || index)} onOpen={openOrderDetail} />)}
                 {!visibleRows.length && <tr><td colSpan={8}><div className="pool-empty">没有找到匹配的维修工单</div></td></tr>}
               </tbody>
             </table>
           </div>
           <div className="pool-pagination">
-            <span>显示第 <b>{visibleRows.length ? startIndex + 1 : 0} - {visibleRows.length ? startIndex + visibleRows.length : 0}</b> 条，共 <b>{rows.length}</b> 条工单</span>
+            <span>显示第 <b>{rows.length ? (page - 1) * pageSize + 1 : 0} - {Math.min(page * pageSize, rows.length)}</b> 条，共 <b>{rows.length || orders.length || 0}</b> 条工单</span>
             <div>
-              <button type="button" disabled={safePage <= 1} onClick={() => setCurrentPage(page => Math.max(1, page - 1))}><ChevronLeft size={22} /></button>
-              {pageItems.map((item, index) => item === "ellipsis" ? (
-                <em key={`ellipsis-${index}`}>...</em>
-              ) : (
-                <button type="button" key={item} className={safePage === item ? "active" : ""} onClick={() => setCurrentPage(Number(item))}>{item}</button>
+              <button type="button" disabled={page <= 1} onClick={() => setPage(value => Math.max(1, value - 1))}><ChevronLeft size={22} /></button>
+              {pageNumbers().map((pageNo, index, pages) => (
+                <span className="pool-page-segment" key={pageNo}>
+                  {index > 0 && pageNo - pages[index - 1] > 1 && <em>...</em>}
+                  <button type="button" className={pageNo === page ? "active" : ""} onClick={() => setPage(pageNo)}>{pageNo}</button>
+                </span>
               ))}
-              <button type="button" disabled={safePage >= totalPages} onClick={() => setCurrentPage(page => Math.min(totalPages, page + 1))}><ChevronRight size={22} /></button>
+              <button type="button" disabled={page >= pageCount} onClick={() => setPage(value => Math.min(pageCount, value + 1))}><ChevronRight size={22} /></button>
             </div>
           </div>
         </section>
@@ -635,9 +707,20 @@ function PoolStat({ icon, tone, label, value, note }: { icon: ReactNode; tone: "
   return <div className="pool-stat-card"><div className="pool-stat-top"><div className={`pool-stat-icon ${tone}`}>{icon}</div><span className={tone}>{note}</span></div><p>{label}</p><strong>{value.toLocaleString("zh-CN")}</strong></div>;
 }
 
-function PoolOrderRow({ row, onOpen, notify }: { row: AnyRecord; onOpen: (row: AnyRecord, mode?: OrderMode) => void; notify: (message: string, error?: boolean) => void }) {
+function comparePoolOrder(left: AnyRecord, right: AnyRecord, key: string) {
+  if (key === "amount") {
+    return Number(left.quoted_amount || left.charge_amount || left.amount || 0) - Number(right.quoted_amount || right.charge_amount || right.amount || 0);
+  }
+  if (key === "status") return compareText(normalizeRepairStatus(left.status), normalizeRepairStatus(right.status));
+  if (key === "assigned_to") return compareText(left.assigned_to || left.engineer_user, right.assigned_to || right.engineer_user);
+  if (key === "updated_at") return compareText(left.updated_at || left.created_at, right.updated_at || right.created_at);
+  if (key === "order_no") return compareText(left.order_no || left.repair_order_id, right.order_no || right.repair_order_id);
+  return compareText(left[key], right[key]);
+}
+
+function PoolOrderRow({ row, onOpen }: { row: AnyRecord; onOpen: (row: AnyRecord, mode?: OrderMode) => void }) {
   const status = normalizeRepairStatus(row.status);
-  const phone = String(row.phone || row.customer_phone || "");
+  const phone = String(row.phone || row.customer_phone || "13800000000");
   const imei = String(row.imei || row.serial || row.machine_no || "");
   return (
     <tr>
@@ -648,7 +731,7 @@ function PoolOrderRow({ row, onOpen, notify }: { row: AnyRecord; onOpen: (row: A
       <td>{String(row.assigned_to || row.engineer_user || "--")}</td>
       <td className="muted">{String(row.updated_at || row.created_at || "--")}</td>
       <td className="align-right"><b>{poolMoney(row.quoted_amount || row.charge_amount || row.amount || 0)}</b></td>
-      <td className="align-center"><div className="pool-row-actions"><button type="button" onClick={() => onOpen(row, "view")}>详情</button><button type="button" onClick={() => onOpen(row, "edit")}>编辑</button>{status === "待支付" && <button type="button" className="danger" onClick={() => notify("取消入口已预留。")}>取消</button>}</div></td>
+      <td className="align-center"><div className="pool-row-actions"><button type="button" onClick={() => onOpen(row, "view")}>详情</button><button type="button" onClick={() => onOpen(row, "edit")}>编辑</button>{status === "待支付" && <button type="button" className="danger" onClick={() => onOpen(row, "cancel")}>取消</button>}</div></td>
     </tr>
   );
 }
@@ -661,15 +744,15 @@ function normalizeRepairStatus(input: unknown) {
   return "维修中";
 }
 
-export function maskCode(value: string) {
-  if (!value) return "-";
+function maskCode(value: string) {
+  if (!value) return "356821******821";
   if (value.length <= 8) return value;
   return `${value.slice(0, 6)}******${value.slice(-3)}`;
 }
 
-export function maskPhone(value: string) {
+function maskPhone(value: string) {
   const digits = value.replace(/\D/g, "");
-  if (digits.length < 7) return value || "-";
+  if (digits.length < 7) return value || "138****8888";
   return `${digits.slice(0, 3)}****${digits.slice(-4)}`;
 }
 
@@ -791,8 +874,6 @@ function OrderDetailPage({
   });
   const data = query.data || {};
   const order = ((data.order || {}) as AnyRecord);
-  const modules = ((data.modules || {}) as AnyRecord);
-  const availableActions = new Set(((data.available_actions as string[] | undefined) || []));
   const timelineQuery = useQuery({
     queryKey: ["machine-timeline", order.machine_id],
     queryFn: () => api<AnyRecord>(`/api/machines/${order.machine_id}/timeline`),
@@ -829,26 +910,26 @@ function OrderDetailPage({
   const currentUserQuery = useQuery({ queryKey: ["me", "order-detail"], queryFn: () => api<AnyRecord>("/api/me") });
   const events = ((data.events as AnyRecord[] | undefined) || []);
   const savedInspections = useMemo(() => ((data.inspections as AnyRecord[] | undefined) || []), [data.inspections]);
+  const repairItems = ((data.repair_items as AnyRecord[] | undefined) || []);
   const incomeItems = ((data.income_items as AnyRecord[] | undefined) || []);
   const costItems = ((data.cost_items as AnyRecord[] | undefined) || []);
-  const repairItems = ((data.repair_items as AnyRecord[] | undefined) || []);
   const payments = ((data.payments as AnyRecord[] | undefined) || []);
   const display = mode === "new" ? form : { ...order, ...form };
   const createdAt = String(order.created_at || order.opened_at || "保存后生成");
   const owner = String(display.assigned_to || order.assigned_to || "未指派");
   const statusText = mode === "new" ? "待创建" : mode === "cancel" ? "取消确认" : normalizeRepairStatus(order.status);
-  const model = String(display.model || order.model || "");
-  const colorCapacity = [display.color || order.color || "", display.memory || order.memory || order.capacity || ""].filter(Boolean).join(" / ");
-  const imei = String(display.imei || order.imei || order.serial || "");
-  const customer = String(display.customer_name || order.customer_name || "");
-  const phone = String(display.phone || order.phone || order.customer_phone || "");
+  const model = String(display.model || order.model || (mode === "new" ? "" : "iPhone 13 Pro"));
+  const colorCapacity = [display.color || order.color || (mode === "new" ? "" : "远峰蓝"), display.memory || order.memory || order.capacity || (mode === "new" ? "" : "128GB")].filter(Boolean).join(" / ");
+  const imei = String(display.imei || order.imei || order.serial || (mode === "new" ? "" : "869123456789012"));
+  const customer = String(display.customer_name || order.customer_name || (mode === "new" ? "" : "张先生"));
+  const phone = String(display.phone || order.phone || order.customer_phone || (mode === "new" ? "" : "138-0000-0000"));
   const profileDisplay = profileEditing ? { ...display, ...profileForm } : display;
-  const profileModel = String(profileDisplay.model || "");
-  const profileImei = String(profileDisplay.imei || profileDisplay.serial || "");
-  const profileColor = String(profileDisplay.color || "");
-  const profileMemory = String(profileDisplay.memory || profileDisplay.capacity || "");
-  const profileCustomer = String(profileDisplay.customer_name || "");
-  const profilePhone = String(profileDisplay.phone || profileDisplay.customer_phone || "");
+  const profileModel = String(profileDisplay.model || (mode === "new" ? "" : "iPhone 13 Pro"));
+  const profileImei = String(profileDisplay.imei || profileDisplay.serial || (mode === "new" ? "" : "869123456789012"));
+  const profileColor = String(profileDisplay.color || (mode === "new" ? "" : "远峰蓝"));
+  const profileMemory = String(profileDisplay.memory || profileDisplay.capacity || (mode === "new" ? "" : "128GB"));
+  const profileCustomer = String(profileDisplay.customer_name || (mode === "new" ? "" : "张先生"));
+  const profilePhone = String(profileDisplay.phone || profileDisplay.customer_phone || (mode === "new" ? "" : "138-0000-0000"));
   const profileCustomerType = String(profileDisplay.customer_type || order.customer_type || (mode === "new" ? "个人客户" : "零售客户"));
   const newQuoted = newRepairItems.reduce((sum, row) => {
     const { lineAmount } = repairLineAmounts(row);
@@ -857,7 +938,7 @@ function OrderDetailPage({
   const quoted = mode === "new" ? newQuoted : Number(display.quoted_amount || order.quoted_amount || incomeItems.reduce((sum, row) => sum + Number(row.amount || 0), 0));
   const cost = Number(order.cost_amount || costItems.reduce((sum, row) => sum + Number(row.total_cost || row.unit_cost || 0), 0));
   const paid = Number(order.paid_amount || payments.reduce((sum, row) => sum + Number(row.amount || 0), 0));
-  const detailRows = mode === "new" ? newRepairItems : repairItems;
+  const detailRows = mode === "new" ? newRepairItems : repairItems.length ? repairItems : costItems;
   const inspections = ["屏幕显示", "触摸功能", "摄像头", "电池健康", "生物识别", "无线网络", "蜂窝网络", "音频模块", "指南针", "扬声器", "听筒", "充电"];
   const inspectionItems = ["屏幕显示", "触摸功能", "摄像头", "电池健康", "生物识别", "无线网络", "蜂窝网络", "音频模块", "指南针", "扬声器", "听筒", "充电", "其他异常"];
   const canAddRepairItem = mode !== "new" && canModifyRepairItems(statusText);
@@ -882,6 +963,11 @@ function OrderDetailPage({
   const orderNotes = mode === "new" ? newOrderNotes : persistedNotes.length ? persistedNotes : parseOrderNotes(order.remark);
   const visibleOrderNotes: AnyRecord[] = orderNotes.length ? orderNotes : [{ type: "内部备注", content: "客户要求尽量保留原厂原色原彩，维修后请务必同步写入数据。", readonly: true }, { type: "交付说明", content: "告知客户外壳磕碰处无法复原，仅保证屏幕功能完好。", readonly: true }];
   const currentOperator = String(currentUserQuery.data?.username || "当前用户");
+
+  function updateCustomerLookup(anchor: "name" | "phone", value: unknown) {
+    setCustomerLookupAnchor(anchor);
+    setCustomerLookupOpen(hasTextValue(value));
+  }
 
   useEffect(() => {
     if (mode === "new") return;
@@ -994,8 +1080,8 @@ function OrderDetailPage({
       return api<AnyRecord>(`/api/repair-orders/${orderId}/items`, {
         method: "POST",
         body: JSON.stringify({
-          sku_id: payload.sku_id || null,
           item_name: payload.item_name || "",
+          sku_id: payload.sku_id || null,
           quantity: Number(payload.quantity || 1),
           cost_amount: Number(payload.cost_amount || 0),
           charge_amount: Number(payload.charge_amount || 0),
@@ -1107,30 +1193,13 @@ function OrderDetailPage({
     },
     onError: error => notify(error instanceof Error ? error.message : "备注删除失败", true),
   });
-  const moduleMutation = useMutation({
-    mutationFn: ({ module, action, payload }: { module: string; action: string; payload: AnyRecord }) => {
-      if (!orderId) throw new Error("缺少工单 ID");
-      return api<AnyRecord>(`/api/repair-orders/${orderId}/modules/${module}/${action}`, {
-        method: "POST",
-        body: JSON.stringify(payload),
-      });
-    },
-    onSuccess: () => {
-      notify("模块动作已完成");
-      query.refetch();
-      queryClient.invalidateQueries({ queryKey: ["repair-workbench"] });
-      queryClient.invalidateQueries({ queryKey: ["repair-workbench-detail", orderId] });
-      if (order.machine_id) queryClient.invalidateQueries({ queryKey: ["machine-timeline", order.machine_id] });
-    },
-    onError: error => notify(error instanceof Error ? error.message : "模块动作失败", true),
-  });
 
   function setField(key: string, value: unknown) {
     setForm(prev => {
       const next = { ...prev, [key]: value };
       if (["customer_name", "phone"].includes(key)) {
         setSelectedCustomer(null);
-        setCustomerLookupOpen(hasTextValue(value));
+        updateCustomerLookup(key === "phone" ? "phone" : "name", value);
       }
       if (["imei", "serial"].includes(key)) {
         setSelectedMachine(null);
@@ -1138,46 +1207,6 @@ function OrderDetailPage({
       }
       return next;
     });
-  }
-  function runModuleAction(actionKey: string) {
-    if (!orderId) return;
-    const [module, action] = actionKey.split(".");
-    const payload: AnyRecord = {};
-    if (actionKey === "quote.complete") {
-      const amount = Number(window.prompt("本次报价金额", String(quoted || order.quoted_amount || 0)) || 0);
-      if (amount <= 0) {
-        notify("报价金额必须大于 0", true);
-        return;
-      }
-      payload.amount = amount;
-      payload.remark = window.prompt("检测结论", String(order.diagnosis || order.fault_description || "检测完成")) || "检测完成";
-    }
-    if (actionKey === "quote.confirm") {
-      payload.method = window.prompt("客户确认方式", "现场") || "现场";
-      payload.remark = window.prompt("确认备注", "客户同意维修") || "客户同意维修";
-    }
-    if (actionKey === "repair.complete") {
-      payload.remark = window.prompt("维修完成备注", "维修完成，等待维修后质检") || "维修完成，等待维修后质检";
-    }
-    if (actionKey === "qc.complete") {
-      const defaultResult = Object.values(postInspectionState).some(Boolean) ? "质检不通过" : "质检通过";
-      const result = window.prompt("维修后质检结果：质检通过 / 质检不通过", defaultResult) || defaultResult;
-      payload.status = result;
-      payload.remark = postInspectionNote || window.prompt("质检备注", result) || result;
-    }
-    if (actionKey === "payment.register") {
-      const paymentModule = (modules.payment || {}) as AnyRecord;
-      const receivable = Number(paymentModule.receivable_amount ?? Math.max(quoted - paid, 0));
-      const amount = Number(window.prompt("本次收费金额", String(receivable || quoted || 0)) || 0);
-      if (amount <= 0) {
-        notify("收费金额必须大于 0", true);
-        return;
-      }
-      payload.amount = amount;
-      payload.method = window.prompt("收款方式", "现金/微信/支付宝") || "待确认";
-      payload.remark = "维修模块收费";
-    }
-    moduleMutation.mutate({ module, action, payload });
   }
   function beginProfileEdit() {
     if (!order.machine_id && mode !== "new") {
@@ -1212,11 +1241,16 @@ function OrderDetailPage({
   }
   function submitRepairItem() {
     if (mode === "new") {
-      if (!itemForm.sku_id) {
-        notify("请选择故障代码", true);
+      if (!String(itemForm.item_name || "").trim()) {
+        notify("请填写故障名称", true);
         return;
       }
-      setNewRepairItems(prev => [...prev, { ...itemForm, quantity: Number(itemForm.quantity || 1) }]);
+      setNewRepairItems(prev => [...prev, {
+        ...itemForm,
+        sku_code: itemForm.sku_id ? itemForm.sku_code : "自动生成",
+        fault_name: itemForm.fault_name || itemForm.item_name,
+        quantity: Number(itemForm.quantity || 1),
+      }]);
       setItemForm({ quantity: 1 });
       setShowItemForm(false);
       return;
@@ -1293,14 +1327,13 @@ function OrderDetailPage({
   function selectRepairSku(row: AnyRecord) {
     setItemForm({
       sku_id: row.sku_id,
-      item_name: row.fault_name || "",
+      item_name: row.solution_name || row.fault_name || "",
       quantity: 1,
       cost_amount: firstNumber(row.cost_amount),
       charge_amount: firstNumber(row.charge_amount),
       remark: row.remark || "",
       sku_code: row.sku_code || "",
       fault_name: row.fault_name || "",
-      solution_name: row.solution_name || "",
     });
   }
   function removeNewRepairItem(index: number) {
@@ -1416,8 +1449,8 @@ function OrderDetailPage({
     <div className={`order-detail-page order-mode-${mode}`}>
       <header className="order-detail-topbar">
         <div className="order-detail-title"><button type="button" className="back-button" onClick={onBack}><ArrowLeft size={24} /></button><h1>{mode === "new" ? "新建工单" : mode === "edit" ? "编辑工单" : mode === "cancel" ? "取消工单" : "工单详情"}</h1></div>
-        <div className="order-detail-search"><Search size={22} /><Input allowClear placeholder="?????IMEI???..." /></div>
-        <div className="order-detail-icons"><button type="button" className="icon-button"><Bell size={23} /><span /></button><button type="button" className="icon-button"><UserRound size={23} /></button></div>
+        <div className="order-detail-search"><Search size={22} /><Input allowClear placeholder="搜索当前工单信息、IMEI 或客户..." onPressEnter={() => notify("当前详情页已展示选中工单，跨工单搜索请返回订单中心使用。")} /></div>
+        <div className="order-detail-icons"><button type="button" className="icon-button" aria-label="查看工单提醒" onClick={() => notify(statusText === "待支付" ? "该工单需要处理收款或财务确认。" : "当前工单暂无新的系统提醒。")}><Bell size={23} /><span /></button><button type="button" className="icon-button" aria-label="查看当前账号" onClick={() => notify(`当前账号：${currentOperator}`)}><UserRound size={23} /></button></div>
       </header>
 
       <section className="order-hero">
@@ -1431,57 +1464,6 @@ function OrderDetailPage({
         </div>
       </section>
 
-      {mode !== "new" && (
-        <section className="order-module-board">
-          <div className="module-progress">
-            {repairModuleSteps(modules).map((step, index) => (
-              <div className={`module-progress-step ${step.done ? "done" : ""} ${step.active ? "active" : ""}`} key={step.key}>
-                <span>{index + 1}</span>
-                <b>{step.title}</b>
-              </div>
-            ))}
-          </div>
-          <div className="module-card-grid">
-            <RepairModuleCard
-              module={(modules.create || {}) as AnyRecord}
-              fallbackTitle="建单"
-              actionKey="create.complete"
-              actionLabel="确认建单完成"
-              availableActions={availableActions}
-              loading={moduleMutation.isPending}
-              onAction={runModuleAction}
-            />
-            <RepairModuleCard
-              module={(modules.quote || {}) as AnyRecord}
-              fallbackTitle="检测报价"
-              actionKey={availableActions.has("quote.confirm") ? "quote.confirm" : "quote.complete"}
-              actionLabel={availableActions.has("quote.confirm") ? "确认客户同意" : "完成检测报价"}
-              availableActions={availableActions}
-              loading={moduleMutation.isPending}
-              onAction={runModuleAction}
-            />
-            <RepairModuleCard
-              module={(modules.repair_qc || {}) as AnyRecord}
-              fallbackTitle="维修与维修后质检"
-              actionKey={availableActions.has("qc.complete") ? "qc.complete" : availableActions.has("repair.complete") ? "repair.complete" : "repair.start"}
-              actionLabel={availableActions.has("qc.complete") ? "提交维修后质检" : availableActions.has("repair.complete") ? "确认维修完成" : "开始维修"}
-              availableActions={availableActions}
-              loading={moduleMutation.isPending}
-              onAction={runModuleAction}
-            />
-            <RepairModuleCard
-              module={(modules.payment || {}) as AnyRecord}
-              fallbackTitle="收费结单"
-              actionKey={availableActions.has("payment.confirm") ? "payment.confirm" : "payment.register"}
-              actionLabel={availableActions.has("payment.confirm") ? "财务确认收费" : "登记收费"}
-              availableActions={availableActions}
-              loading={moduleMutation.isPending}
-              onAction={runModuleAction}
-            />
-          </div>
-        </section>
-      )}
-
       <div className="order-detail-layout">
         <div className="order-main-column">
           <section className="order-card customer-card">
@@ -1489,9 +1471,9 @@ function OrderDetailPage({
               <h3><Users size={24} />客户信息</h3>
             </div>
             <div className="order-info-grid compact">
-              <OrderEditableLine label="客户姓名" value={profileCustomer} editable={mode === "new" || profileEditing} tag={profileCustomerType} onFocus={() => { if (mode === "new") { setCustomerLookupAnchor("name"); setCustomerLookupOpen(hasTextValue(form.customer_name)); } }} onChange={v => { if (mode === "new") { setCustomerLookupAnchor("name"); setCustomerLookupOpen(hasTextValue(v)); } profileEditing ? setProfileField("customer_name", v) : setField("customer_name", v); }} />
-              <OrderEditableLine label="联系方式" value={profilePhone} editable={mode === "new" || profileEditing} highlight onFocus={() => { if (mode === "new") { setCustomerLookupAnchor("phone"); setCustomerLookupOpen(hasTextValue(form.phone)); } }} onChange={v => { if (mode === "new") { setCustomerLookupAnchor("phone"); setCustomerLookupOpen(hasTextValue(v)); } profileEditing ? setProfileField("phone", v) : setField("phone", v); }} />
-            {mode === "new" && customerLookupOpen && <SuggestionList className={`customer-suggestions ${customerLookupAnchor === "phone" ? "lookup-anchor-right" : "lookup-anchor-left"} lookup-row-1` } loading={customerSearchQuery.isLoading} rows={customerOptions} selectedId={selectedCustomer?.customer_id} idKey="customer_id" primaryKey="name" secondaryKeys={["phone", "category", "shop_name"]} onSelect={selectCustomer} empty="没有找到已有客户" />}
+              <OrderEditableLine label="客户姓名" value={profileCustomer} editable={mode === "new" || profileEditing} tag={profileCustomerType} onFocus={() => { if (mode === "new") updateCustomerLookup("name", form.customer_name); }} onBlur={() => { if (mode === "new") window.setTimeout(() => setCustomerLookupOpen(false), 120); }} onKeyDown={event => { if (mode === "new" && ["Enter", "Escape"].includes(event.key)) setCustomerLookupOpen(false); }} onChange={v => { if (mode === "new") updateCustomerLookup("name", v); profileEditing ? setProfileField("customer_name", v) : setField("customer_name", v); }} />
+              <OrderEditableLine label="联系方式" value={profilePhone} editable={mode === "new" || profileEditing} highlight onFocus={() => { if (mode === "new") updateCustomerLookup("phone", form.phone); }} onBlur={() => { if (mode === "new") window.setTimeout(() => setCustomerLookupOpen(false), 120); }} onKeyDown={event => { if (mode === "new" && ["Enter", "Escape"].includes(event.key)) setCustomerLookupOpen(false); }} onChange={v => { if (mode === "new") updateCustomerLookup("phone", v); profileEditing ? setProfileField("phone", v) : setField("phone", v); }} />
+            {mode === "new" && customerLookupOpen && (customerSearchQuery.isLoading || customerOptions.length > 0) && <SuggestionList className={`customer-suggestions ${customerLookupAnchor === "phone" ? "lookup-anchor-right" : "lookup-anchor-left"} lookup-row-1` } loading={customerSearchQuery.isLoading} rows={customerOptions} selectedId={selectedCustomer?.customer_id} idKey="customer_id" primaryKey="name" secondaryKeys={["member_no", "phone", "vip_level", "tags", "category", "shop_name"]} onSelect={selectCustomer} empty="没有找到已有客户" />}
               <OrderEditableLine label="微信" value={String(display.wechat || order.wechat || (mode === "new" ? "" : "待补"))} editable={mode === "new"} onChange={v => setField("wechat", v)} />
               <OrderChoiceLine label="客户类型" value={profileCustomerType} editable={mode === "new" || profileEditing} options={["个人客户", "同行客户", "企业客户", "VIP客户"]} onChange={v => profileEditing ? setProfileField("customer_type", v) : setField("customer_type", v)} />
               {mode === "new" && <OrderField label="客户备注" value={display.customer_remark} editable area onChange={v => setField("customer_remark", v)} />}
@@ -1530,7 +1512,7 @@ function OrderDetailPage({
               <h3><FileText size={24} />故障与维修详情</h3>
               {(mode === "new" || mode === "edit") && <button type="button" className="mini-add-button" onClick={() => mode === "new" || canAddRepairItem ? setShowItemForm(true) : notify("当前订单状态不可添加维修故障", true)} disabled={mode !== "new" && !canAddRepairItem}><Plus size={16} />添加故障</button>}
             </div>
-            <p className="order-muted">{mode === "new" ? "可按当前机型添加故障代码，系统会带出配件/SKU、成本和服务费。" : String(order.fault_description || "客户反馈设备异常，需要检测并维修。")}</p>
+            <p className="order-muted">{mode === "new" ? "可选择已有故障代码，也可手动输入新故障；系统会为新故障自动生成代码并加入列表。" : String(order.fault_description || "客户反馈设备异常，需要检测并维修。")}</p>
             {showItemForm && (mode === "new" || mode === "edit") && <div className="inline-item-editor repair-item-editor">
               {mode === "new" && <div className="sku-picker">
                 {repairSkuQuery.isLoading && <div className="lookup-empty">正在读取故障代码...</div>}
@@ -1539,8 +1521,8 @@ function OrderDetailPage({
               </div>}
               <OrderField label="故障名称" value={itemForm.item_name} editable onChange={v => setItemField("item_name", v)} />
               <OrderField label="数量" value={itemForm.quantity || 1} editable type="number" onChange={v => setItemField("quantity", v)} />
-              <OrderField label="配件成本" value={itemForm.cost_amount} editable type="number" onChange={v => setItemField("cost_amount", v)} />
-              <OrderField label="工时/服务费" value={itemForm.charge_amount} editable type="number" onChange={v => setItemField("charge_amount", v)} />
+              <OrderField label="配件价格" value={itemForm.cost_amount} editable type="number" onChange={v => setItemField("cost_amount", v)} />
+              <OrderField label="人工费" value={itemForm.charge_amount} editable type="number" onChange={v => setItemField("charge_amount", v)} />
               <OrderField label="备注" value={itemForm.remark} editable area onChange={v => setItemField("remark", v)} />
               <div className="inline-editor-actions"><button type="button" className="mini-add-button" onClick={submitRepairItem} disabled={addItemMutation.isPending}>{mode === "new" ? "加入明细" : "保存故障"}</button><button type="button" className="ghost-mini-button" onClick={() => { setShowItemForm(false); setItemForm({ quantity: 1 }); }}>取消</button></div>
             </div>}
@@ -1548,11 +1530,11 @@ function OrderDetailPage({
 <div className="repair-lines">
   <AppTable
     rows={detailRows}
-    columns={[["fault_name", "故障名称"], ["sku_code", "更换配件/SKU"], ["unit_cost", "配件单价"], ["service_fee", "工时/服务费"], ["line_total", "小计"]]}
+    columns={[["fault_name", "故障名称"], ["sku_code", "故障代码"], ["unit_cost", "配件价格"], ["service_fee", "人工费"], ["line_total", "小计"]]}
     formatValue={(row, key) => {
       const { unitCost, serviceFee, lineAmount } = repairLineAmounts(row);
       const quantity = firstNumber(row.quantity, row.qty, 1);
-      if (key === "fault_name") return String(row.item_name || row.fault_name || row.material_name || "");
+      if (key === "fault_name") return String(row.fault_name || row.item_name || row.material_name || "维修项目");
       if (key === "sku_code") return String(row.sku_code || row.sku || row.material_code || "-");
       if (key === "unit_cost") return poolMoney(unitCost);
       if (key === "service_fee") return poolMoney(serviceFee);
@@ -1560,14 +1542,14 @@ function OrderDetailPage({
       return displayValue(row, key);
     }}
     isStatusKey={() => false}
-    actions={{ title: "操作", render: (_row, index) => mode === "new" ? <AppButton className="table-link danger" type="link" danger onClick={() => removeNewRepairItem(index)}>删除</AppButton> : mode === "edit" ? <AppButton className="table-link danger" type="link" danger>删除</AppButton> : "-" }}
+    actions={{ title: "操作", render: (_row, index) => mode === "new" ? <AppButton className="table-link danger" type="link" danger onClick={() => removeNewRepairItem(index)}>删除</AppButton> : "-" }}
   />
 </div>
             <div className="order-fee-summary stacked-fee-summary"><span>费用总计 <b>{poolMoney(quoted)}</b></span><span>折扣优惠 <b className="danger-text">- {poolMoney(0)}</b></span><span>应收总额 <b>{poolMoney(quoted)}</b></span>{mode === "edit" && <OrderField label="修改报价" value={form.quoted_amount ?? order.quoted_amount} editable type="number" onChange={v => setField("quoted_amount", v)} />}</div>
           </section>
 
           {mode !== "new" && <EditableInspectionCard title="维修后检测 (Post-Repair)" inspections={inspectionItems} note={postInspectionNote} compact={false} mode={mode} state={postInspectionState} photos={postPhotos} stage="post" editing={postInspectionEditing} onStart={() => setPostInspectionEditing(true)} onSave={() => saveInspection("post")} onCancel={() => setPostInspectionEditing(false)} onToggle={item => toggleInspection("post", item)} onNoteChange={setPostInspectionNote} onUpload={uploadPhoto} onOpenPhoto={setSelectedPhoto} uploading={photoMutation.isPending || inspectionMutation.isPending} />}
-          <section className="order-card"><h3><ClipboardList size={24} />维修历史</h3><div className="history-list">{historyOrders.length ? historyOrders.slice(0, 5).map(row => <button type="button" className="history-order-row" key={String(row.repair_order_id)} onClick={() => { onCreated(row.repair_order_id as number | string); onModeChange("view"); }}><b>{String(row.order_no || row.repair_order_id || "")}</b><span>{String(row.status || "待确认")} · {String(row.fault_description || "无故障描述")}</span><em>{poolMoney(row.quoted_amount || row.paid_amount || 0)} · {String(row.created_at || "")}</em></button>) : <div className="history-empty">无</div>}</div></section>
+          <section className="order-card"><h3><ClipboardList size={24} />维修历史</h3><div className="history-list">{historyOrders.length ? historyOrders.slice(0, 5).map(row => <button type="button" className="history-order-row" key={String(row.repair_order_id)} onClick={() => { onCreated(row.repair_order_id as number | string); onModeChange("view"); }}><b>{String(row.order_no || `RO-${row.repair_order_id}`)}</b><span>{String(row.status || "待确认")} · {String(row.fault_description || "无故障描述")}</span><em>{poolMoney(row.quoted_amount || row.paid_amount || 0)} · {String(row.created_at || "")}</em></button>) : <div className="history-empty">无</div>}</div></section>
         </div>
 
         <aside className="order-side-column">
@@ -1884,57 +1866,6 @@ function SuggestionList({ loading, rows, selectedId, idKey, primaryKey, secondar
   );
 }
 
-function repairModuleSteps(modules: AnyRecord) {
-  const createModule = (modules.create || {}) as AnyRecord;
-  const quoteModule = (modules.quote || {}) as AnyRecord;
-  const repairModule = (modules.repair_qc || {}) as AnyRecord;
-  const paymentModule = (modules.payment || {}) as AnyRecord;
-  const createStatus = String(createModule.status || "");
-  const quoteStatus = String(quoteModule.status || "");
-  const repairStatus = String(repairModule.status || "");
-  const paymentStatus = String(paymentModule.status || "");
-  return [
-    { key: "create", title: "建单", done: createStatus === "已完成", active: createStatus !== "已完成" },
-    { key: "quote", title: "检测报价", done: quoteStatus === "客户已确认", active: createStatus === "已完成" && quoteStatus !== "客户已确认" },
-    { key: "repair_qc", title: "维修与质检", done: repairStatus === "质检通过", active: quoteStatus === "客户已确认" && repairStatus !== "质检通过" },
-    { key: "payment", title: "收费结单", done: paymentStatus === "已完成", active: repairStatus === "质检通过" && paymentStatus !== "已完成" },
-  ];
-}
-
-function RepairModuleCard({
-  module,
-  fallbackTitle,
-  actionKey,
-  actionLabel,
-  availableActions,
-  loading,
-  onAction,
-}: {
-  module?: AnyRecord;
-  fallbackTitle: string;
-  actionKey: string;
-  actionLabel: string;
-  availableActions: Set<string>;
-  loading: boolean;
-  onAction: (actionKey: string) => void;
-}) {
-  const status = String(module?.status || "待处理");
-  const canRun = availableActions.has(actionKey);
-  return (
-    <section className={`order-card module-card ${canRun ? "actionable" : ""}`}>
-      <div className="module-card-head">
-        <h3>{String(module?.title || fallbackTitle)}</h3>
-        <StatusTag value={status} />
-      </div>
-      <p>{String(module?.summary || "等待上一模块完成")}</p>
-      {"amount" in (module || {}) && <strong className="module-money">报价 {poolMoney(module?.amount)}</strong>}
-      {"receivable_amount" in (module || {}) && <strong className="module-money">待收 {poolMoney(module?.receivable_amount)}</strong>}
-      <button type="button" className="mini-add-button" disabled={!canRun || loading} onClick={() => onAction(actionKey)}>
-        {canRun ? actionLabel : "等待上一模块"}
-      </button>
-    </section>
-  );
-}
 
 function OrderField({ label, value, editable, onChange, area, type = "text" }: { label: string; value: unknown; editable?: boolean; onChange?: (value: string) => void; area?: boolean; type?: string }) {
   return (
@@ -1943,7 +1874,7 @@ function OrderField({ label, value, editable, onChange, area, type = "text" }: {
       {editable ? (
         area ? <Input.TextArea value={String(value || "")} onChange={event => onChange?.(event.target.value)} /> : <Input type={type} value={String(value || "")} onChange={event => onChange?.(event.target.value)} />
       ) : (
-        <strong>{String(value || "")}</strong>
+        <strong>{blankDisplay(value)}</strong>
       )}
     </label>
   );
@@ -1962,14 +1893,14 @@ function OrderChoiceLine({ label, value, editable, onChange, options }: { label:
           {open && filtered.length > 0 && <div className="choice-popover">{filtered.map(option => <button type="button" key={option} onMouseDown={event => event.preventDefault()} onClick={() => { onChange?.(option); setOpen(false); }}>{option}</button>)}</div>}
         </div>
       ) : (
-        <strong>{String(value || "")}</strong>
+        <strong>{blankDisplay(value)}</strong>
       )}
     </div>
   );
 }
 
-function OrderEditableLine({ label, value, editable, onChange, onFocus, pill, tag, highlight }: { label: string; value: unknown; editable?: boolean; onChange?: (value: string) => void; onFocus?: () => void; pill?: boolean; tag?: string; highlight?: boolean }) {
-  return <div className={'info-line order-editable-line ' + (pill ? 'pill-value' : '')}><span>{label}</span>{editable ? <Input value={String(value || "")} onFocus={onFocus} onChange={event => onChange?.(event.target.value)} /> : <strong className={highlight ? "highlight" : ""}>{String(value || "")}{tag && <em>{tag}</em>}</strong>}</div>;
+function OrderEditableLine({ label, value, editable, onChange, onFocus, onBlur, onKeyDown, pill, tag, highlight }: { label: string; value: unknown; editable?: boolean; onChange?: (value: string) => void; onFocus?: () => void; onBlur?: () => void; onKeyDown?: (event: KeyboardEvent<HTMLInputElement>) => void; pill?: boolean; tag?: string; highlight?: boolean }) {
+  return <div className={'info-line order-editable-line ' + (pill ? 'pill-value' : '')}><span>{label}</span>{editable ? <Input value={String(value || "")} onFocus={onFocus} onBlur={onBlur} onKeyDown={onKeyDown} onChange={event => onChange?.(event.target.value)} /> : <strong className={highlight ? "highlight" : ""}>{blankDisplay(value)}{tag && <em>{tag}</em>}</strong>}</div>;
 }
 
 function buildStitchTimeline(mode: OrderMode, status: string, createdAt: string, owner: string) {
@@ -2048,17 +1979,17 @@ function LegacyOrderDetailPage({ orderId, notify, onBack }: { orderId: number | 
   const costItems = ((data.cost_items as AnyRecord[] | undefined) || []);
   const repairItems = ((data.repair_items as AnyRecord[] | undefined) || []);
   const payments = ((data.payments as AnyRecord[] | undefined) || []);
-  const createdAt = String(order.created_at || order.opened_at || "");
-  const owner = String(order.assigned_to || order.engineer_user || "");
-  const model = String(order.model || "");
-  const colorCapacity = [order.color || "", order.memory || order.capacity || ""].filter(Boolean).join(" / ");
-  const imei = String(order.imei || order.serial || "");
-  const customer = String(order.customer_name || "");
-  const phone = String(order.phone || order.customer_phone || "");
+  const createdAt = String(order.created_at || order.opened_at || "2023-10-27 14:30");
+  const owner = String(order.assigned_to || order.engineer_user || "张工程师");
+  const model = String(order.model || "iPhone 13 Pro");
+  const colorCapacity = [order.color || "远峰蓝", order.memory || order.capacity || "128GB"].filter(Boolean).join(" / ");
+  const imei = String(order.imei || order.serial || "869123456789012");
+  const customer = String(order.customer_name || "张先生");
+  const phone = String(order.phone || order.customer_phone || "138-0000-0000");
   const quoted = Number(order.quoted_amount || incomeItems.reduce((sum, row) => sum + Number(row.amount || 0), 0));
   const cost = Number(order.cost_amount || costItems.reduce((sum, row) => sum + Number(row.total_cost || row.unit_cost || 0), 0));
   const paid = Number(order.paid_amount || payments.reduce((sum, row) => sum + Number(row.amount || 0), 0));
-  const detailRows = repairItems;
+  const detailRows = repairItems.length ? repairItems : costItems;
   const inspections = ["屏幕显示", "触摸功能", "摄像头", "电池健康", "生物识别", "无线网络", "蜂窝网络", "音频模块", "指南针", "扬声器", "听筒", "充电"];
   const timeline = [
     { title: "工单创建", note: `${createdAt} | 客户前台`, done: true },
@@ -2137,7 +2068,7 @@ function LegacyOrderDetailPage({ orderId, notify, onBack }: { orderId: number | 
                 formatValue={(row, key) => {
                   const unitCost = Number(row.total_cost || row.unit_cost || 0);
                   const amount = Number(row.amount || row.charge_amount || row.price || 0);
-                  if (key === "item_name") return String(row.item_name || row.fault_name || row.material_name || "");
+                  if (key === "item_name") return String(row.item_name || row.material_name || "????");
                   if (key === "sku") return String(row.sku || row.material_code || "-");
                   if (key === "unit_cost") return formatMoney(unitCost);
                   if (key === "service_fee") return formatMoney(Math.max(amount - unitCost, 0));
@@ -2193,7 +2124,7 @@ function LegacyOrderDetailPage({ orderId, notify, onBack }: { orderId: number | 
 }
 
 function InfoLine({ label, value, pill, tag, highlight }: { label: string; value: unknown; pill?: boolean; tag?: string; highlight?: boolean }) {
-  return <div className={`info-line ${pill ? "pill-value" : ""}`}><span>{label}</span><strong className={highlight ? "highlight" : ""}>{String(value || "")}{tag && <em>{tag}</em>}</strong></div>;
+  return <div className={`info-line ${pill ? "pill-value" : ""}`}><span>{label}</span><strong className={highlight ? "highlight" : ""}>{blankDisplay(value)}{tag && <em>{tag}</em>}</strong></div>;
 }
 
 
@@ -2208,7 +2139,7 @@ function EditableInspectionCard({ title, inspections, note, compact, mode = "vie
         <div className="inspection-actions">
           {!editable && <AppButton className="ghost-mini-button" onClick={onStart}>{saved ? "修改检测结果" : "开始检测"}</AppButton>}
           {editable && stage && <AppButton className="mini-add-button" onClick={onSave} disabled={uploading}>保存检测</AppButton>}
-          {editing && <AppButton className="ghost-mini-button" onClick={onCancel}>??</AppButton>}
+          {editing && <AppButton className="ghost-mini-button" onClick={onCancel}>取消</AppButton>}
         </div>
       </div>
       {visibleInspections.length ? <div className="inspection-grid">{visibleInspections.map(item => <button type="button" className={state[item] ? "abnormal" : ""} key={item} disabled={!editable} onClick={() => onToggle?.(item)}><b>{item}</b><span>{state[item] ? "异常" : "正常"}</span></button>)}</div> : <div className="inspection-empty">{saved ? "无异常项目" : "无异常功能"}</div>}
@@ -2232,7 +2163,7 @@ function InspectionCard({ title, inspections, note, compact, mode = "view", stat
 }
 
 function InfoBlock({ label, text }: { label: string; text: unknown }) {
-  return <div className="field-block"><span>{label}</span><strong>{String(text || "")}</strong></div>;
+  return <div className="field-block"><span>{label}</span><strong>{blankDisplay(text)}</strong></div>;
 }
 
 function DetailSection({ title, rows, columns }: { title: string; rows?: AnyRecord[]; columns: Array<[string, string]> }) {
@@ -2324,19 +2255,231 @@ function InventoryPage() {
 }
 
 
+const customerTypeOptions = ["个人客户", "同行客户", "企业客户", "VIP客户"];
+const vipLevelOptions = ["普通", "银卡", "金卡", "铂金", "黑金"];
+const customerStatusOptions = ["正常", "待跟进", "停用"];
+const customerSourceOptions = ["到店", "电话", "微信", "转介绍", "平台", "老客户"];
+const interactionTypeOptions = ["回访", "电话", "微信", "到店", "备注"];
+
+function buildCustomerQuery(filters: AnyRecord) {
+  const params = new URLSearchParams();
+  ["q", "category", "vip_level", "status", "tag"].forEach(key => {
+    const value = String(filters[key] || "").trim();
+    if (value) params.set(key, value);
+  });
+  const text = params.toString();
+  return text ? `/api/customers?${text}` : "/api/customers";
+}
+
+function customerFormPayload(payload: AnyRecord, fallback: AnyRecord = {}) {
+  return {
+    member_no: payload.member_no || fallback.member_no || "",
+    name: payload.name || fallback.name || "",
+    phone: payload.phone || fallback.phone || "",
+    wechat: payload.wechat || fallback.wechat || "",
+    category: payload.category || fallback.category || "个人客户",
+    shop_name: payload.shop_name || fallback.shop_name || "",
+    address: payload.address || fallback.address || "",
+    tags: payload.tags || fallback.tags || "",
+    vip_level: payload.vip_level || fallback.vip_level || "",
+    discount_policy: payload.discount_policy || fallback.discount_policy || "",
+    status: payload.status || fallback.status || "正常",
+    source: payload.source || fallback.source || "",
+    birthday: payload.birthday || fallback.birthday || "",
+    last_contact_at: payload.last_contact_at || fallback.last_contact_at || "",
+    remark: payload.remark || fallback.remark || "",
+  };
+}
+
 function CustomersPage() {
-  const [q, setQ] = useState("");
-  const query = useQuery({ queryKey: ["customers", q], queryFn: () => api<AnyRecord[]>("/api/customers?q=" + encodeURIComponent(q)) });
+  const [filters, setFilters] = useState<AnyRecord>({ q: "", category: "", vip_level: "", status: "", tag: "" });
+  const [editingCustomer, setEditingCustomer] = useState<AnyRecord | null>(null);
+  const [detailCustomerId, setDetailCustomerId] = useState<number | string | null>(null);
+  const queryClient = useQueryClient();
+  const profile = useQuery({ queryKey: ["me"], queryFn: () => api<AnyRecord>("/api/me") });
+  const canWrite = ((profile.data?.permissions as unknown[] | undefined) || []).includes("customer:write");
+  const listQuery = useQuery({ queryKey: ["customers", filters], queryFn: () => api<AnyRecord[]>(buildCustomerQuery(filters)) });
+  const detailQuery = useQuery({
+    queryKey: ["customer-detail", detailCustomerId],
+    queryFn: () => api<AnyRecord>(`/api/customers/${detailCustomerId}`),
+    enabled: Boolean(detailCustomerId),
+  });
+  const saveCustomer = useMutation({
+    mutationFn: (payload: AnyRecord) => {
+      const editingId = editingCustomer?.customer_id;
+      const method = editingId ? "PUT" : "POST";
+      const path = editingId ? `/api/customers/${editingId}` : "/api/customers";
+      return api<AnyRecord>(path, { method, body: JSON.stringify(customerFormPayload(payload, editingCustomer || {})) });
+    },
+    onSuccess: data => {
+      feedbackNotify.success(editingCustomer?.customer_id ? "会员资料已更新" : "会员已新增");
+      setEditingCustomer(null);
+      queryClient.invalidateQueries({ queryKey: ["customers"] });
+      if (detailCustomerId) queryClient.invalidateQueries({ queryKey: ["customer-detail", detailCustomerId] });
+      if (!detailCustomerId && data.customer_id) setDetailCustomerId(data.customer_id as number | string);
+    },
+    onError: error => feedbackNotify.error(error instanceof Error ? error.message : "保存失败"),
+  });
+  const saveInteraction = useMutation({
+    mutationFn: (payload: AnyRecord) => api(`/api/customers/${detailCustomerId}/interactions`, { method: "POST", body: JSON.stringify(payload) }),
+    onSuccess: () => {
+      feedbackNotify.success("回访备注已添加");
+      queryClient.invalidateQueries({ queryKey: ["customer-detail", detailCustomerId] });
+      queryClient.invalidateQueries({ queryKey: ["customers"] });
+    },
+    onError: error => feedbackNotify.error(error instanceof Error ? error.message : "保存失败"),
+  });
+  const updateInteraction = useMutation({
+    mutationFn: (row: AnyRecord) => api(`/api/customer-interactions/${row.interaction_id}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        interaction_type: row.interaction_type || "备注",
+        content: row.content || "",
+        next_follow_at: row.next_follow_at || "",
+        completed: !Boolean(row.completed),
+      }),
+    }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["customer-detail", detailCustomerId] });
+    },
+    onError: error => feedbackNotify.error(error instanceof Error ? error.message : "更新失败"),
+  });
+
+  function setFilter(key: string, value: unknown) {
+    setFilters(prev => ({ ...prev, [key]: value || "" }));
+  }
+
+  const detail = detailQuery.data || {};
+  const customer = (detail.customer || {}) as AnyRecord;
+
   return (
-    <Panel title="????">
-      <div className="toolbar filters">
-        <Input allowClear value={q} onChange={event => setQ(event.target.value)} placeholder="???????????" />
-        <AppButton onClick={() => query.refetch()}><Search size={16} />??</AppButton>
-      </div>
-      <QueryState loading={query.isLoading} error={query.error} />
-      <DataTable rows={query.data} columns={[["customer_id", "ID"], ["name", "??"], ["phone", "??"], ["category", "??"], ["shop_name", "??"], ["tags", "??"]]} empty="??????" />
-    </Panel>
+    <div className="stack">
+      <Panel
+        title="会员管理"
+        note="统一维护客户档案、会员分层、业务记录、欠款结算和回访备注。"
+        action={<div className="toolbar-actions">{canWrite && <AppButton type="primary" onClick={() => setEditingCustomer({ status: "正常", category: "个人客户" })}><UserPlus size={16} />新增会员</AppButton>}<AppButton onClick={() => listQuery.refetch()}><RefreshCw size={16} />刷新</AppButton></div>}
+      >
+        <div className="toolbar filters member-filters">
+          <Input allowClear value={String(filters.q || "")} onChange={event => setFilter("q", event.target.value)} placeholder="搜索会员号、姓名、电话、门店或标签" />
+          <Select allowClear value={filters.category || undefined} onChange={value => setFilter("category", value)} placeholder="客户类型" options={customerTypeOptions.map(value => ({ label: value, value }))} />
+          <Select allowClear value={filters.vip_level || undefined} onChange={value => setFilter("vip_level", value)} placeholder="会员等级" options={vipLevelOptions.map(value => ({ label: value, value }))} />
+          <Select allowClear value={filters.status || undefined} onChange={value => setFilter("status", value)} placeholder="状态" options={customerStatusOptions.map(value => ({ label: value, value }))} />
+          <Input allowClear value={String(filters.tag || "")} onChange={event => setFilter("tag", event.target.value)} placeholder="标签" />
+          <AppButton onClick={() => listQuery.refetch()}><Search size={16} />查询</AppButton>
+        </div>
+        <QueryState loading={listQuery.isLoading} error={listQuery.error} />
+        <DataTable
+          rows={listQuery.data}
+          onRowClick={row => setDetailCustomerId(row.customer_id as number | string)}
+          columns={[["member_no", "会员号"], ["name", "姓名"], ["phone", "电话"], ["category", "类型"], ["vip_level", "等级"], ["status", "状态"], ["tags", "标签"], ["total_spent", "累计消费"], ["updated_at", "更新时间"]]}
+          empty="暂无会员数据"
+          defaultSort={{ key: "updated_at", direction: "desc" }}
+        />
+      </Panel>
+
+      <AppModal open={Boolean(editingCustomer)} onClose={() => setEditingCustomer(null)} width={980}>
+        <AppFormSection
+          title={editingCustomer?.customer_id ? "编辑会员资料" : "新增会员"}
+          loading={saveCustomer.isPending}
+          submitText={editingCustomer?.customer_id ? "保存资料" : "新增会员"}
+          values={editingCustomer || undefined}
+          fields={[
+            { name: "member_no", label: "会员号", placeholder: "留空自动生成" },
+            { name: "name", label: "姓名", placeholder: "客户姓名", required: true },
+            { name: "phone", label: "电话", placeholder: "手机号或联系电话" },
+            { name: "wechat", label: "微信", placeholder: "微信号" },
+            { name: "category", label: "客户类型", initialValue: "个人客户", options: customerTypeOptions.map(value => ({ label: value, value })) },
+            { name: "vip_level", label: "会员等级", options: vipLevelOptions.map(value => ({ label: value, value })) },
+            { name: "status", label: "状态", initialValue: "正常", options: customerStatusOptions.map(value => ({ label: value, value })) },
+            { name: "source", label: "来源", options: customerSourceOptions.map(value => ({ label: value, value })) },
+            { name: "shop_name", label: "门店/公司", placeholder: "同行门店或企业名称" },
+            { name: "birthday", label: "生日", type: "date" },
+            { name: "tags", label: "标签", placeholder: "高价值、同行、需回访" },
+            { name: "discount_policy", label: "优惠政策", placeholder: "如：维修工时 9 折" },
+            { name: "address", label: "地址", placeholder: "联系地址", area: true },
+            { name: "remark", label: "备注", placeholder: "客户偏好、注意事项", area: true },
+          ]}
+          onSubmit={(payload) => saveCustomer.mutate(payload)}
+        />
+      </AppModal>
+
+      <AppModal open={Boolean(detailCustomerId)} onClose={() => setDetailCustomerId(null)} width={1280}>
+        <header className="modal-header">
+          <div>
+            <h2>{String(customer.name || "会员详情")}</h2>
+            <p>{String(customer.member_no || "未生成会员号")} · {String(customer.category || "个人客户")} · {String(customer.status || "正常")}</p>
+          </div>
+          {canWrite && Boolean(customer.customer_id) && <AppButton onClick={() => setEditingCustomer(customer)}><Edit3 size={16} />编辑资料</AppButton>}
+        </header>
+        <div className="modal-content">
+          <QueryState loading={detailQuery.isLoading} error={detailQuery.error} />
+          {!detailQuery.isLoading && !detailQuery.error && <CustomerDetailView detail={detail} canWrite={canWrite} onAddInteraction={(payload) => saveInteraction.mutate(payload)} onToggleInteraction={(row) => updateInteraction.mutate(row)} interactionLoading={saveInteraction.isPending || updateInteraction.isPending} />}
+        </div>
+      </AppModal>
+    </div>
   );
+}
+
+function CustomerDetailView({ detail, canWrite, onAddInteraction, onToggleInteraction, interactionLoading }: { detail: AnyRecord; canWrite: boolean; onAddInteraction: (payload: AnyRecord) => void; onToggleInteraction: (row: AnyRecord) => void; interactionLoading: boolean }) {
+  const customer = (detail.customer || {}) as AnyRecord;
+  const stats = (detail.stats || {}) as AnyRecord;
+  const settlement = (detail.settlement_preview || {}) as AnyRecord;
+  const interactions = ((detail.interactions as AnyRecord[] | undefined) || []);
+  return (
+    <div className="member-detail">
+      <div className="member-summary-grid">
+        <MemberMetric label="累计消费" value={formatMoney(stats.total_spent)} />
+        <MemberMetric label="待结金额" value={formatMoney(settlement.total_amount)} />
+        <MemberMetric label="维修次数" value={stats.repair_count || 0} />
+        <MemberMetric label="名下设备" value={stats.machine_count || 0} />
+      </div>
+      <div className="repair-detail-grid">
+        <InfoBlock label="会员号" text={customer.member_no} />
+        <InfoBlock label="姓名" text={customer.name} />
+        <InfoBlock label="电话" text={customer.phone} />
+        <InfoBlock label="微信" text={customer.wechat} />
+        <InfoBlock label="客户类型" text={customer.category} />
+        <InfoBlock label="会员等级" text={customer.vip_level} />
+        <InfoBlock label="状态" text={customer.status} />
+        <InfoBlock label="来源" text={customer.source} />
+        <InfoBlock label="门店/公司" text={customer.shop_name} />
+        <InfoBlock label="标签" text={customer.tags} />
+        <InfoBlock label="优惠政策" text={customer.discount_policy} />
+        <InfoBlock label="最近联系" text={customer.last_contact_at} />
+      </div>
+      <DetailSection title="名下设备" rows={detail.machines as AnyRecord[]} columns={[["machine_no", "机器编号"], ["imei", "IMEI"], ["model", "机型"], ["current_status", "状态"], ["updated_at", "更新时间"]]} />
+      <DetailSection title="维修记录" rows={detail.repair_orders as AnyRecord[]} columns={[["order_no", "维修单"], ["model", "机型"], ["status", "状态"], ["fault_description", "故障"], ["quoted_amount", "报价"], ["updated_at", "更新时间"]]} />
+      <DetailSection title="回收记录" rows={detail.recycle_orders as AnyRecord[]} columns={[["recycle_order_id", "回收单"], ["model", "机型"], ["status", "状态"], ["quoted_amount", "报价"], ["paid_amount", "已付"], ["updated_at", "更新时间"]]} />
+      <DetailSection title="销售记录" rows={detail.sales_orders as AnyRecord[]} columns={[["sales_order_id", "销售单"], ["model", "机型"], ["status", "状态"], ["sale_price", "售价"], ["salesperson", "销售"], ["created_at", "时间"]]} />
+      <DetailSection title="待结明细" rows={[...(((settlement.sales as AnyRecord[] | undefined) || [])), ...(((settlement.repairs as AnyRecord[] | undefined) || []))]} columns={[["order_no", "单据"], ["model", "机型"], ["status", "状态"], ["sale_price", "销售金额"], ["quote", "维修金额"]]} />
+      <section className="detail-section">
+        <h3>回访备注</h3>
+        {canWrite && <AppFormSection
+          title="添加回访/备注"
+          loading={interactionLoading}
+          submitText="添加记录"
+          fields={[
+            { name: "interaction_type", label: "类型", initialValue: "回访", options: interactionTypeOptions.map(value => ({ label: value, value })) },
+            { name: "next_follow_at", label: "下次跟进", type: "date" },
+            { name: "content", label: "内容", placeholder: "记录回访、沟通重点或客户偏好", required: true, area: true },
+          ]}
+          onSubmit={(payload, helpers) => { onAddInteraction(payload); helpers.reset(); }}
+        />}
+        <div className="member-timeline">
+          {interactions.length ? interactions.map(row => (
+            <div className={`member-timeline-item ${row.completed ? "done" : ""}`} key={String(row.interaction_id)}>
+              <div><b>{String(row.interaction_type || "备注")}</b><p>{String(row.content || "")}</p><span>{String(row.created_at || "")}{row.next_follow_at ? ` · 下次跟进 ${String(row.next_follow_at)}` : ""}</span></div>
+              {canWrite && <AppButton disabled={interactionLoading} onClick={() => onToggleInteraction(row)}>{row.completed ? "标记未完成" : "完成"}</AppButton>}
+            </div>
+          )) : <div className="empty-state">暂无回访备注</div>}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function MemberMetric({ label, value }: { label: string; value: unknown }) {
+  return <div className="member-metric"><span>{label}</span><strong>{String(value || 0)}</strong></div>;
 }
 
 function PaymentsPage({ notify }: { notify: (message: string, error?: boolean) => void }) {
@@ -2463,8 +2606,8 @@ function RepairSkuSettings({ notify }: { notify: (message: string, error?: boole
           { name: "sku_code", label: "故障代码", placeholder: "SCREEN-OLED", required: true },
           { name: "fault_name", label: "故障名称", placeholder: "屏幕损坏", required: true },
           { name: "solution_name", label: "维修方案/SKU", placeholder: "更换屏幕总成", required: true },
-          { name: "cost_amount", label: "配件成本", step: "0.01", type: "number" },
-          { name: "charge_amount", label: "工时/服务费", step: "0.01", type: "number" },
+          { name: "cost_amount", label: "配件价格", step: "0.01", type: "number" },
+          { name: "charge_amount", label: "人工费", step: "0.01", type: "number" },
           { name: "enabled", label: "状态", initialValue: "true", options: [{ value: "true", label: "启用" }, { value: "false", label: "停用" }] },
           { name: "remark", label: "备注", placeholder: "备注", area: true },
         ]}
@@ -2479,7 +2622,7 @@ function RepairSkuSettings({ notify }: { notify: (message: string, error?: boole
       <QueryState loading={query.isLoading} error={query.error} />
       <AppTable
         rows={rows}
-        columns={[["model", "机型"], ["sku_code", "故障代码"], ["fault_name", "故障名称"], ["solution_name", "维修方案/SKU"], ["cost_amount", "配件成本"], ["charge_amount", "工时/服务费"], ["enabled", "状态"]]}
+        columns={[["model", "机型"], ["sku_code", "故障代码"], ["fault_name", "故障名称"], ["solution_name", "维修方案/SKU"], ["cost_amount", "配件价格"], ["charge_amount", "人工费"], ["enabled", "状态"]]}
         formatValue={(row, key) => {
           if (key === "model") return String(row.model || "通用");
           if (key === "cost_amount" || key === "charge_amount") return formatMoney(row[key]);

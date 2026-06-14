@@ -71,6 +71,7 @@ class PaymentDirection(str, Enum):
 
 
 class CustomerInput(BaseModel):
+    member_no: str = ""
     name: str = Field(min_length=1)
     phone: str = ""
     wechat: str = ""
@@ -80,11 +81,29 @@ class CustomerInput(BaseModel):
     tags: str = ""
     vip_level: str = ""
     discount_policy: str = ""
+    status: str = "正常"
+    source: str = ""
+    birthday: str = ""
+    last_contact_at: str = ""
     remark: str = ""
 
 
 class Customer(CustomerInput):
     customer_id: int
+
+
+class CustomerInteractionInput(BaseModel):
+    interaction_type: str = "备注"
+    content: str = Field(min_length=1, max_length=1000)
+    next_follow_at: str = ""
+    completed: bool = False
+
+
+class CustomerInteractionUpdateInput(BaseModel):
+    interaction_type: str = "备注"
+    content: str = Field(min_length=1, max_length=1000)
+    next_follow_at: str = ""
+    completed: bool = False
 
 
 class MachineInput(BaseModel):
@@ -148,6 +167,7 @@ class RepairOrderInput(BaseModel):
     machine: MachineInput | None = None
     customer_id: int | None = None
     customer: CustomerInput | None = None
+    order_type: str = "维修"
     fault_description: str = ""
     remark: str = ""
     repair_items: list["RepairItemInput"] = []

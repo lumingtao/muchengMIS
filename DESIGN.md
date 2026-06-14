@@ -1,289 +1,266 @@
-# 沐辰科技二手机 MIS 管理系统设计说明
+# 沐辰科技 MIS 当前设计说明
 
-## 1. 项目定位
-
-本项目是“沐辰科技二手机 MIS 管理系统”的本地私有化业务系统原型与维护主线。当前开发主线固定为 `mis_mvp`，以 FastAPI + SQLite + 原生静态前端实现，目标是把维修、回收、库存、销售、客户、财务与日志串成可追溯的机器生命周期工作台。
-
-现阶段重点是维修业务闭环和配件仓库闭环：
-
-- 维修闭环覆盖接单、检测、报价、客户确认、维修、领料、库存消耗、交付、收款、同行挂账、财务确认和订单完结。
-- 配件仓库闭环覆盖物料档案、库区库位、采购/临采入库、批次与单件码、申领审核、发放、退料、退货、库存流水、盘点调整和维修故障物料绑定。
-- 未知业务字段不得伪造，统一保留为“待补”或“待确认”。
-
-## 2. 代码结构
+本文档描述当前项目真实实现状态，用于后续开发、测试和交接。当前主线不是旧 PWA，也不是纯静态页，而是：
 
 ```text
-.
-├── mis_mvp/                         # 当前运行主线
-│   ├── backend/
-│   │   ├── app.py                   # FastAPI 路由层
-│   │   ├── auth.py                  # 用户、角色、权限
-│   │   ├── config.py                # 配置和数据库路径
-│   │   ├── db.py                    # SQLite 建表、迁移、种子用户
-│   │   ├── models.py                # Pydantic 输入/输出模型
-│   │   ├── repository.py            # 传统机器生命周期数据访问
-│   │   └── service.py               # 核心业务服务与状态动作
-│   ├── static/
-│   │   ├── index.html               # 单页应用结构
-│   │   ├── app.js                   # 前端状态、接口调用、渲染与交互
-│   │   └── styles.css               # 页面样式
-│   ├── tools/
-│   │   ├── import_workflow_sqlite.py # 从真实工作流库迁移
-│   │   ├── import_legacy_mvp.py      # 旧 MVP 数据导入
-│   │   └── seed_demo_data.py         # 演示数据
-│   └── tests/                       # API、业务流与机器生命周期测试
-├── mis_pwa/data/mis_workflow.sqlite3 # 真实维修工作流迁移来源
-├── BUSINESS_REALITY_LOG.md           # 典型真实业务观察，不再作为完整订单流水
-├── MATERIAL_INVENTORY_LOG.md         # 典型物料采购、库存、领料观察，不再替代库存数据库
-├── BUSINESS_TIMELINE_SUMMARY.md      # 业务复盘与系统改造依据
-├── project_ctl.py                    # 命令式启动/重启/停止控制
-├── project_launcher.py               # 图形化启动入口
-└── 项目启动入口.vbs                  # 双击打开启动入口
+FastAPI + SQLite + Vite React + TypeScript + TanStack Query + Ant Design 适配层
 ```
 
-## 3. 运行架构
+## 1. 架构边界
 
-系统采用三层结构：
+```text
+frontend/                 React 前端源码
+  src/App.tsx             当前页面与业务交互主入口
+  src/api.ts              fetch 封装，自动写入 X-User
+  src/components/         项目级 Ant Design 适配组件
+  src/theme/antdTheme.ts  主题 token
+mis_mvp/
+  backend/app.py          FastAPI 路由和静态资源托管
+  backend/auth.py         角色权限矩阵
+  backend/config.py       数据库和运行配置
+  backend/db.py           SQLite 建表、迁移、默认数据
+  backend/models.py       Pydantic 输入模型和枚举
+  backend/repository.py   SQL 数据访问
+  backend/service.py      业务规则、状态流转和审计
+  frontend_dist/          React build 输出，本地生成
+  tests/                  后端业务测试
+```
 
-- 前端：`mis_mvp/static/index.html` + `app.js` + `styles.css`，通过浏览器访问 `http://127.0.0.1:8088/`。
-- 后端：`mis_mvp/backend/app.py` 使用 FastAPI 暴露 REST API，并挂载 `/static` 静态资源。
-- 数据：SQLite 作为运行库，启动时由 `backend.db.migrate()` 自动补齐表结构。
+FastAPI 根路径 `/` 的服务策略：
 
-固定数据库路径由 `mis_mvp/backend/config.py` 和启动入口共同指向：
+1. 若 `mis_mvp/frontend_dist/index.html` 存在，返回 React 构建产物。
+2. 否则返回 503 构建提示，要求先在 `frontend/` 运行 `npm run build`。
+
+数据库默认路径：
 
 ```text
 mis_mvp/data/mis_mvp.sqlite3
 ```
 
-项目启动器仍支持手动选择数据库文件，但真实业务默认运行库固定为上面这个路径；临时目录数据库只作为历史迁移来源或本地测试备份，不再作为日常运行库。
+`MIS_DATABASE_PATH` 可覆盖数据库路径，但只建议用于测试、迁移或临时验证。真实业务运行库以固定路径为准。
 
-## 4. 核心业务模块
+## 2. 领域主线
 
-### 4.1 维修闭环中心
+### 2.1 机器生命周期
 
-维修业务主线由 `machines + repair_orders + repair_items + payments + machine_events` 承载，并扩展收入、成本、物料和应收结构。
+新业务统一以 `machines.machine_id` 为核心。维修、回收、库存、销售、付款和时间线都应能追溯到机器。
+
+关键规则：
+
+- IMEI 非空时唯一。
+- 无 IMEI 的机器允许先建档，系统生成 `TMP-` 编号。
+- 机器创建写入 `machine_events`。
+- 编辑机器、开维修单、检测报价、交付、付款、回收入库和销售都应补充时间线。
+
+机器状态枚举来自 `MachineStatus`：
+
+```text
+到店、检测中、已报价、维修中、待交付、已交付、已回收、回收库存、待销售、已售出、已结单
+```
+
+### 2.2 维修工单
+
+维修是当前最完整的业务闭环。
 
 核心表：
 
-- `machines`：机器档案、机器编号、IMEI/序列号、机型、客户、当前状态、生命周期时间。
-- `repair_orders`：维修工单，保存客户描述、检测结论、维修方案、报价、工程师、付款状态、交付与完结时间。
-- `repair_items`：维修项目/SKU 项。
-- `repair_income_items`：维修费、扩容款、客户自带配件安装费、预付款等收入拆分。
-- `repair_cost_items`：库存物料、临采物料、回收配件、人工成本等成本拆分。
-- `payments`：收付款流水，包含状态、账号、流水号、收款人、财务确认人和确认时间。
-- `receivables`：同行挂账、未收款和应收记录。
-- `machine_events`：机器生命周期事件时间线。
+- `repair_orders`：工单主表，保存订单号、机器、客户、状态、指派、报价、交付、付款和完结字段。
+- `repair_items`：维修项目、成本、收费和 SKU 关联。
+- `repair_order_inspections`：开单或维修过程检测项。
+- `repair_order_photos`：按阶段上传的照片。
+- `repair_order_notes`：结构化备注。
+- `repair_skus`：常见故障、维修方案、成本和收费。
+- `repair_fault_materials`：维修 SKU 与推荐物料映射。
 
-推荐维修状态：
-
-```text
-新建 -> 待检测 -> 待报价确认 -> 维修中 -> 待领料 -> 已领料 -> 维修完成 -> 待交付检测 -> 待取机/待送机/待返寄 -> 已交付 -> 财务待确认/同行挂账 -> 已完结
-```
-
-推荐收款状态：
+工单状态枚举来自 `OrderStatus`：
 
 ```text
-未收款、已付款待财务确认、财务已确认、同行挂账、预付款已收、无需收款
+已开单、检测中、已报价、处理中、待交付、已交付、已入库、已售出、已结单、已作废
 ```
 
-关键业务约束：
+维修流转由 `MisService` 控制。开发时优先调用专用方法或 `/workflow-action`，避免在前端直接猜状态。
 
-- 客户描述、工程师检测结论、维修方案必须分开记录。
-- 技术维修完成不等于订单完结。
-- 客户取机不等于已收款。
-- 前台收款不等于财务已确认到账。
-- 同行挂账不计入当日已收款，应进入 `receivables`。
-- 状态流转优先使用专用动作接口，避免直接把“维修完成”跳成“已完结”。
+### 2.3 会员客户
 
-### 4.2 配件仓库
+客户主数据在 `customers`：
 
-配件仓库从“回收机器库存”独立出来，关注维修配件的采购、入库、领用、退料、退货、盘点和维修协同。
+- 支持会员号、姓名、电话、微信、客户类别、店铺名、地址、标签、会员等级、折扣策略、来源、生日、状态和备注。
+- `customer_interactions` 保存回访、备注、待办和完成状态。
+- 开单可以复用 `customer_id`，也可以提交 `customer` 创建或更新客户。
+
+后续涉及结账、挂账、同行客户、商家折扣的功能，应优先绑定稳定 `customer_id`，不要只依赖客户姓名字符串。
+
+### 2.4 维修物料库存
+
+物料库存已从回收机器库存独立出来。
 
 核心表：
 
-- `material_categories`：物料类别。
-- `warehouse_areas`：库区。
-- `warehouse_locations`：库位。
-- `materials`：物料档案，包含 `sku`、`material_code`、适配范围、低库存阈值和默认库位。
-- `material_batches`：采购/临采入库批次。
-- `material_units`：每一件物料的单件编码与状态。
-- `material_requests` / `material_request_items`：工程师申领单与明细。
-- `material_returns`：退料申请与仓库验收。
-- `repair_materials`：维修工单绑定的物料消耗。
-- `stock_movements`：所有库存变化流水。
-- `stock_counts` / `stock_count_items`：盘点单。
-- `stock_adjustments`：库存调整与反向冲销。
-- `repair_fault_materials`：维修故障/SKU 与推荐物料绑定。
+- 基础资料：`material_categories`、`warehouse_areas`、`warehouse_locations`、`materials`
+- 入库与单件码：`material_batches`、`material_units`
+- 申领发放：`material_requests`、`material_request_items`
+- 退料：`material_returns`
+- 维修绑定：`repair_materials`
+- 库存流水：`stock_movements`
+- 盘点调整：`stock_counts`、`stock_count_items`、`stock_adjustments`
 
-库存设计原则：
+库存规则：
 
-- 所有库存变化都通过 `stock_movements` 记录，不应绕过流水直接改数量。
-- 入库生成批次和单件码，单件初始状态为在库可用。
-- 工程师申请和审核不扣库存；仓库发放具体单件码时才扣库存。
-- 已发放、已使用、报损物料不能直接采购退货。
-- 工程师退料经仓库验收后，按可复用、已损坏、拆回待检等结果决定是否恢复可用库存。
-- 盘点确认后不可硬删除，只能做反向调整。
+- 库存数量由单件状态和库存流水共同维护。
+- 采购/临采入库生成批次和单件码。
+- 申领和审批不扣库存，发放单件码时扣库存。
+- 退料必须经过仓库验收。
+- 盘点和调整要写入流水，不应硬改数量。
 
-### 4.3 回收、销售与财务
+### 2.5 回收、销售和财务
 
-回收与销售模块继续沿用机器生命周期主线：
+回收销售沿用机器主线：
 
-- `recycle_orders`：回收开单、验机报价和付款入库。
-- `inventory_items`：回收机器库存和销售定价。
+- `recycle_orders`：回收开单、验机报价、改价、付款入库。
+- `inventory_items`：回收机器库存。
 - `sales_orders`：销售出库。
-- `payments`：维修收入、销售收入、回收支出以及后续退款/反向流水。
+- `payments`：维修收入、销售收入、回收支出。
+- `receivables`：同行挂账和应收扩展口径。
 
-当前第一阶段不做销售退货主线大改，但设计上应保留销售退货入库和财务反向流水的扩展空间。
+财务设计原则：
 
-## 5. API 设计
+- 报价金额、应收金额、实收金额、付款状态、财务确认状态要分开。
+- 同行挂账不计入当日已收款。
+- 前台已收款不等于财务已确认。
+- 退款、冲正和销售退货后续应通过反向流水扩展，不直接覆盖历史流水。
 
-后端 API 由 `mis_mvp/backend/app.py` 统一暴露，业务规则集中在 `MisService`。
+### 2.6 旧兼容模型
+
+`devices`、`repairs`、`settlements`、`settlement_items` 保留旧 MVP 能力和测试覆盖：
+
+- `POST /api/purchases`
+- `GET /api/stock`
+- `POST /api/sales`
+- `POST /api/repairs`
+- `GET /api/repairs`
+- `POST /api/settlements`
+- `GET /api/reports`
+
+新功能不要继续扩大这些表的职责，除非是在做历史兼容或迁移。
+
+## 3. API 分层
+
+路由集中在 `backend/app.py`，业务规则集中在 `MisService`。
 
 主要接口组：
 
-- 登录与用户：`POST /api/login`、`GET /api/me`
-- 机器：`POST /api/machines`、`GET /api/machines`、`GET /api/machines/{id}/timeline`
-- 维修：`POST /api/repair-orders`、`GET /api/repair-workbench`、`GET /api/repair-workbench/{id}`、`POST /api/repair-orders/{id}/workflow-action`
-- 维修 SKU：`GET/POST /api/repair-skus`
-- 仓库基础：`GET/POST /api/warehouse/areas`、`GET/POST /api/warehouse/locations`、`GET/POST /api/material-categories`、`GET/POST /api/materials`
-- 入库退货：`POST /api/material-batches/purchase`、`POST /api/material-batches/ad-hoc`、`POST /api/material-batches/{id}/return`
-- 申领发放退料：`POST /api/material-requests`、`GET /api/material-requests/mine`、`POST /api/material-requests/{id}/approve`、`POST /api/material-requests/{id}/issue`、`POST /api/material-issues/{id}/return-request`、`POST /api/material-returns/{id}/inspect`
-- 盘点流水：`POST /api/stock-counts`、`POST /api/stock-counts/{id}/confirm`、`POST /api/stock-adjustments`、`GET /api/stock-movements`
-- 故障物料提示：`GET/POST /api/repair-fault-materials`、`GET /api/repair-skus/{id}/material-hints`、`GET /api/repair-orders/{id}/material-hints`
-- 客户、财务、报表、日志：`GET /api/customers`、`GET/POST /api/payments`、`GET /api/machine-reports`、`GET /api/audit-logs`
+- 登录：`POST /api/login`、`GET /api/me`
+- 机器：`POST /api/machines`、`GET /api/machines`、`PUT /api/machines/{id}`、`DELETE /api/machines/{id}`、`GET /api/machines/{id}/timeline`
+- 维修工作台：`POST /api/repair-orders`、`GET /api/repair-workbench`、`GET /api/repair-workbench/{id}`
+- 维修动作：指派、报价、客户确认、改价、加项目、状态变更、备注、工程师结单、交付、照片、检测记录、工作流动作
+- 基础资料：`GET/POST /api/device-models`、`GET/POST /api/repair-skus`
+- 仓库：物料类别、库区库位、物料、批次、单件码、申领、审批、发放、退料、盘点、调整、流水
+- 会员：客户列表、详情、新增、编辑、互动记录
+- 回收销售财务：回收单、回收入库、库存、销售单、付款流水、机器报表
+- 审计：`GET /api/audit-logs`
 
-## 6. 前端设计
+错误处理：
 
-前端是一个无构建步骤的单页应用：
+- `BusinessError` 返回 HTTP 400。
+- `PermissionError` 返回 HTTP 403。
+- 当前用户由 `X-User` 请求头传入；未传时默认 `admin`，这是本地原型机制，不是生产认证方案。
 
-- 视图切换通过侧边栏 `data-view` 控制。
-- 接口调用统一走 `api(path, options)`。
-- 表格、徽章、弹窗、时间线等由 `app.js` 直接渲染。
-- 页面模块包括维修订单池、回收订单池、配件仓库、回收库存、销售开单、客户、财务流水、报表、日志。
+## 4. 权限模型
 
-维修闭环中心：
-
-- 顶部显示真实工单、未完结、财务待确认、同行挂账、待补资料等指标。
-- 主表支持关键词、维修状态、收款状态、客户类型、待补资料和更新时间范围筛选。
-- 主表展示工单号、维修状态、收款状态、客户、类型、柜台/同行、机型、建单时间、维修完成时间、订单完结时间、维修进度、工程师和更新时间。
-- 主表表头支持排序，排序作用于当前筛选结果。
-
-配件仓库：
-
-- 页面入口包含物料类别、库区库位、物料档案、采购/临采入库、申领发放、退货/退料/盘点、维修故障物料绑定。
-- 数据区展示物料档案与余量、单件库存状态、批次与退货、我的/全部申领、退料验收、库存流水。
-
-## 7. 数据迁移与真实数据口径
-
-日常真实订单录入口径：
-
-- 维修订单、物料消耗、收款、挂账和交付状态以固定 SQLite 数据库 `mis_mvp/data/mis_mvp.sqlite3` 中的结构化数据为准。
-- 启动器、`project_ctl.py` 和 `start_project.ps1` 默认都指向固定库；如临时指定其他 `MIS_DATABASE_PATH`，只能用于测试或迁移，不应作为真实业务录入库。
-- 后续新增真实订单应优先写入数据库，至少落到 `machines`、`repair_orders`，涉及收费/挂账/物料时同步落到 `payments`、`receivables`、`repair_items`、`stock_movements` 等对应表。
-- `BUSINESS_REALITY_LOG.md`、`MATERIAL_INVENTORY_LOG.md`、`BUSINESS_TIMELINE_SUMMARY.md` 只记录有典型特征、会改变业务理解或系统设计的样本，不再逐单充当完整业务台账。
-- 当数据库记录和 Markdown 观察文档不一致时，以数据库为订单事实源；Markdown 只作为需求、规则和业务经验的解释材料。
-
-真实业务数据来源：
+角色枚举：
 
 ```text
-mis_pwa/data/mis_workflow.sqlite3
+admin、boss、frontdesk、engineer、staff、finance
 ```
+
+权限矩阵在 `backend/auth.py`。
+
+重点边界：
+
+- 管理员和老板拥有全局业务、基础资料、仓库、财务、报表和审计权限。
+- 前台可开单、查看和调度维修、维护客户、登记部分业务流水。
+- 工程师可创建维修单、查看机器和指派给自己的维修订单、补充检测/维修信息、提交物料申领。
+- 财务可读业务、登记付款、做结账、看报表和审计。
+- 工程师读取维修工作台和机器时间线时会按指派范围收窄。
+
+## 5. 前端设计
+
+当前前端在 `frontend/src/App.tsx` 中仍较集中，但已经接入：
+
+- React 18
+- Vite
+- TypeScript
+- TanStack Query
+- Ant Design 6
+- lucide-react
+- 项目级组件：`AppButton`、`AppTable`、`StatusTag`、`QueryState`、`AppModal`、`AppFormSection`
+- 主题：`frontend/src/theme/antdTheme.ts`
+- Ant Design 上下文：`ConfigProvider`、`App`、`AntdFeedbackBridge`
+
+主要页面：
+
+- 个人工作台
+- 维修工单池
+- 工单详情/新建/编辑/作废
+- 回收工单池
+- 维修开单
+- 回收开单
+- 库存管理
+- 回收库存
+- 快速卖机
+- 会员管理
+- 财务流水
+- 财务报表
+- 系统设置/审计
+
+前端开发原则：
+
+- API 调用统一走 `api()`，保持 `X-User` 行为一致。
+- 新 UI 优先用项目级 Ant Design 适配组件，不在业务页散落直接定制 Ant 内部 DOM。
+- 逐步拆分 `App.tsx`，优先按业务域拆：维修、会员、库存、财务、系统设置。
+- 旧静态前端已移除；`frontend/src/` 是唯一前端源码入口。
+
+## 6. 数据迁移
 
 迁移脚本：
 
-```text
-mis_mvp/tools/import_workflow_sqlite.py
-```
+- `mis_mvp/tools/import_legacy_mvp.py`
+- `mis_mvp/tools/import_workflow_sqlite.py`
 
-迁移目标：
-
-```text
-mis_mvp/data/mis_mvp.sqlite3
-```
-
-迁移规则：
+迁移原则：
 
 - 迁移前备份目标 SQLite。
-- 以 `order_no`、`sku`、`batch_no`、`source_key` 等字段保证幂等。
-- 不覆盖人工后续补录的已确认字段。
-- `repair_orders` 导入当前维修工单，并创建/绑定 `machines`。
-- `repair_events` 导入 `machine_events`。
-- `materials`、`material_batches`、`repair_materials`、`stock_movements` 映射到物料与库存表。
-- `payments` 和 `receivables` 导入财务和应收结构。
+- 使用 `order_no`、`sku`、`batch_no`、`source_key` 等字段保证幂等。
+- 不覆盖人工补录和已确认字段。
+- 真实业务订单事实落到结构化表，Markdown 只保存业务观察、规则来源和待确认口径。
 
-真实业务资料文件：
+## 7. 测试策略
 
-- `BUSINESS_REALITY_LOG.md`
-- `MATERIAL_INVENTORY_LOG.md`
-- `BUSINESS_TIMELINE_SUMMARY.md`
-- `MIS_REFACTOR_NOTES.md`
+后端测试目录：`mis_mvp/tests`
 
-这些文件是后续维护依据，不是示例数据。
+覆盖重点：
 
-## 8. 权限与审计
+- 登录和权限矩阵
+- 旧 purchase/stock/sale/settlement 兼容流程
+- 机器唯一性、临时编号、编辑时间线、追加备注、删除权限
+- 维修生命周期、工单池、工程师指派与可见性、禁止跳转、作废保护
+- 回收、库存、销售、付款时间线
+- 物料批次、单件码、申领、发放、退料、盘点
+- 会员 CRM 和互动记录
+- 照片上传、检测记录、基础资料
 
-系统内置角色包括 `admin`、`boss`、`frontdesk`、`engineer`、`staff`、`finance`。后端通过 `current_user` 从请求头 `X-User` 取当前用户，并由 `MisService._allowed()` 校验权限。
+前端测试目录：`frontend/src`
 
-操作日志写入 `operation_logs`，机器生命周期写入 `machine_events`。涉及状态变更、库存变更、财务确认、退货退料和盘点调整的操作都应保留操作人、时间和原因。
+覆盖重点：
 
-## 9. 启动与运维
+- API 封装
+- 项目级 Ant Design 适配组件
 
-本地启动入口：
+## 8. 开发注意事项
 
-- `项目启动入口.vbs`：双击打开图形化入口，提供启动、重启、停止和数据库绑定。
-- `project_launcher.py`：图形化启动器主程序。
-- `project_ctl.py`：命令行控制器，可指定端口启动、重启、停止。
-- `start_project.ps1`：PowerShell 启动脚本。
-
-常用开发启动方式：
-
-```powershell
-& 'C:\Users\admini\AppData\Local\Python\bin\python.exe' -m uvicorn backend.app:app --host 0.0.0.0 --port 8088 --app-dir mis_mvp
-```
-
-默认访问：
-
-```text
-http://127.0.0.1:8088/
-```
-
-## 10. 测试策略
-
-已有测试目录：
-
-```text
-mis_mvp/tests
-```
-
-测试重点：
-
-- API 基础可用性。
-- 机器生命周期流转。
-- 维修闭环状态机：维修完成不能直接等于订单完结。
-- 财务确认：前台收款进入待确认，财务确认后才可完结。
-- 同行挂账：进入 `receivables`，不计入当日已收款。
-- 仓库入库：采购入库生成批次和单件码。
-- 申领发放：申请和审核不扣库存，发放扣库存。
-- 退料退货：通过反向流水恢复或减少库存，禁止硬删除。
-- 故障物料提示：选择维修 SKU 时显示推荐物料、可用库存、库位和低库存预警。
-
-前端语法检查：
-
-```powershell
-node --check mis_mvp/static/app.js
-```
-
-后端测试：
-
-```powershell
-& 'C:\Users\admini\AppData\Local\Python\bin\python.exe' -m pytest mis_mvp\tests
-```
-
-## 11. 后续设计原则
-
-- `mis_mvp` 是当前主线，`mis_pwa/data/mis_workflow.sqlite3` 仅作为真实业务迁移来源。
-- Markdown 业务日志、SQLite 迁移结果和前端展示口径必须保持一致。
-- 新增业务动作应优先补服务层方法和测试，再接前端按钮。
-- 已确认的入库、退货、发放、退料、盘点、财务流水不允许硬删除，只允许反向单冲销。
-- 所有金额、成本、工程师、付款方式、流水号、财务确认人缺失时保持“待补/待确认”。
-- 扩展销售退货、客户退款、采购退款时，应复用 `payments` 反向流水与库存反向单设计。
+- 新业务写入前先判断是否应落到机器主线。
+- 不直接绕过 `MisService` 写业务状态。
+- 涉及财务、库存、交付、作废、删除的动作必须写审计。
+- 不在文档或代码里写真实账号密码。
+- 本地数据库和运行日志不提交。
+- 若数据库结构变化，更新 `backend/db.py`、测试和本文档。

@@ -5,12 +5,15 @@ import re
 from typing import Callable
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import ROOT_DIR, settings
 from .db import connect, migrate
 from .models import (
+    CustomerInput,
+    CustomerInteractionInput,
+    CustomerInteractionUpdateInput,
     DeviceModelInput,
     LoginInput,
     MachineInput,
@@ -70,11 +73,9 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
-static_dir = ROOT_DIR / "static"
 frontend_dir = ROOT_DIR / "frontend_dist"
 uploads_dir = ROOT_DIR / "uploads"
 uploads_dir.mkdir(parents=True, exist_ok=True)
-app.mount("/static", StaticFiles(directory=static_dir), name="static")
 app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
 if (frontend_dir / "assets").exists():
     app.mount("/assets", StaticFiles(directory=frontend_dir / "assets"), name="frontend_assets")
@@ -141,10 +142,13 @@ def parse_photo_upload(content_type: str, body: bytes) -> tuple[str, str, str, b
 
 
 @app.get("/")
-def index() -> FileResponse:
+def index():
     if (frontend_dir / "index.html").exists():
         return FileResponse(frontend_dir / "index.html")
-    return FileResponse(static_dir / "index.html")
+    return HTMLResponse(
+        "<h1>前端构建产物不存在</h1><p>请在 frontend/ 运行 npm run build 生成 mis_mvp/frontend_dist/。</p>",
+        status_code=503,
+    )
 
 
 @app.post("/api/login")
@@ -549,8 +553,41 @@ def update_repair_status(data: RepairStatusInput, user: User = Depends(current_u
 
 
 @app.get("/api/customers")
-def customers(q: str = Query(default=""), user: User = Depends(current_user), service: MisService = Depends(get_service)):
-    return endpoint(lambda: service.search_customers(user, q))
+def customers(
+    q: str = Query(default=""),
+    category: str = Query(default=""),
+    vip_level: str = Query(default=""),
+    status: str = Query(default=""),
+    tag: str = Query(default=""),
+    user: User = Depends(current_user),
+    service: MisService = Depends(get_service),
+):
+    return endpoint(lambda: service.search_customers(user, q, category=category, vip_level=vip_level, status=status, tag=tag))
+
+
+@app.post("/api/customers")
+def create_customer(data: CustomerInput, user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.create_customer(user, data))
+
+
+@app.get("/api/customers/{customer_id}")
+def customer_detail(customer_id: int, user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.customer_detail(user, customer_id))
+
+
+@app.put("/api/customers/{customer_id}")
+def update_customer(customer_id: int, data: CustomerInput, user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.update_customer(user, customer_id, data))
+
+
+@app.post("/api/customers/{customer_id}/interactions")
+def add_customer_interaction(customer_id: int, data: CustomerInteractionInput, user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.add_customer_interaction(user, customer_id, data))
+
+
+@app.put("/api/customer-interactions/{interaction_id}")
+def update_customer_interaction(interaction_id: int, data: CustomerInteractionUpdateInput, user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.update_customer_interaction(user, interaction_id, data))
 
 
 @app.get("/api/imei/{imei}")

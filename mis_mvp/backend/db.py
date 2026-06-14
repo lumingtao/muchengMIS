@@ -5,7 +5,6 @@ import sqlite3
 from pathlib import Path
 
 from .auth import hash_password
-from .order_numbers import is_repair_order_no, repair_order_date_key, repair_order_no
 
 
 SCHEMA = """
@@ -19,6 +18,7 @@ CREATE TABLE IF NOT EXISTS users (
 
 CREATE TABLE IF NOT EXISTS customers (
     customer_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    member_no TEXT NOT NULL DEFAULT '',
     name TEXT NOT NULL,
     phone TEXT NOT NULL DEFAULT '',
     wechat TEXT NOT NULL DEFAULT '',
@@ -28,9 +28,26 @@ CREATE TABLE IF NOT EXISTS customers (
     tags TEXT NOT NULL DEFAULT '',
     vip_level TEXT NOT NULL DEFAULT '',
     discount_policy TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT '正常',
+    source TEXT NOT NULL DEFAULT '',
+    birthday TEXT NOT NULL DEFAULT '',
+    last_contact_at TEXT NOT NULL DEFAULT '',
     remark TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS customer_interactions (
+    interaction_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    customer_id INTEGER NOT NULL,
+    interaction_type TEXT NOT NULL DEFAULT '备注',
+    content TEXT NOT NULL,
+    next_follow_at TEXT NOT NULL DEFAULT '',
+    completed INTEGER NOT NULL DEFAULT 0,
+    created_by TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (customer_id) REFERENCES customers(customer_id)
 );
 
 CREATE TABLE IF NOT EXISTS devices (
@@ -500,6 +517,7 @@ CREATE TABLE IF NOT EXISTS repair_skus (
 
 CREATE TABLE IF NOT EXISTS recycle_orders (
     recycle_order_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_no TEXT,
     machine_id INTEGER NOT NULL,
     customer_id INTEGER,
     status TEXT NOT NULL,
@@ -643,7 +661,8 @@ def connect(database_path: Path | str) -> sqlite3.Connection:
 def migrate(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     ensure_columns(conn)
-    backfill_repair_order_numbers(conn)
+    backfill_customer_member_no(conn)
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_member_no ON customers(member_no)")
     seed_users(conn)
     seed_device_models(conn)
     seed_repair_skus(conn)
@@ -653,6 +672,13 @@ def migrate(conn: sqlite3.Connection) -> None:
 
 def ensure_columns(conn: sqlite3.Connection) -> None:
     columns: dict[str, list[tuple[str, str]]] = {
+        "customers": [
+            ("member_no", "TEXT NOT NULL DEFAULT ''"),
+            ("status", "TEXT NOT NULL DEFAULT '正常'"),
+            ("source", "TEXT NOT NULL DEFAULT ''"),
+            ("birthday", "TEXT NOT NULL DEFAULT ''"),
+            ("last_contact_at", "TEXT NOT NULL DEFAULT ''"),
+        ],
         "repair_orders": [
             ("order_no", "TEXT"),
             ("customer_name", "TEXT NOT NULL DEFAULT ''"),
@@ -679,6 +705,9 @@ def ensure_columns(conn: sqlite3.Connection) -> None:
             ("delivered_at", "TEXT NOT NULL DEFAULT ''"),
             ("engineer_closed_at", "TEXT"),
             ("engineer_close_remark", "TEXT NOT NULL DEFAULT ''"),
+        ],
+        "recycle_orders": [
+            ("order_no", "TEXT"),
         ],
         "repair_items": [
             ("sku_id", "INTEGER"),
@@ -741,27 +770,16 @@ def ensure_columns(conn: sqlite3.Connection) -> None:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
 
 
-def backfill_repair_order_numbers(conn: sqlite3.Connection) -> None:
+def backfill_customer_member_no(conn: sqlite3.Connection) -> None:
     rows = conn.execute(
-        """
-        SELECT repair_order_id, order_no, created_at
-        FROM repair_orders
-        ORDER BY date(COALESCE(NULLIF(created_at, ''), CURRENT_TIMESTAMP)), created_at, repair_order_id
-        """
+        "SELECT customer_id FROM customers WHERE member_no = '' OR member_no IS NULL ORDER BY customer_id"
     ).fetchall()
-    by_date: dict[str, list[sqlite3.Row]] = {}
     for row in rows:
-        date_key = repair_order_date_key(row["created_at"])
-        by_date.setdefault(date_key, []).append(row)
-    for date_key, date_rows in by_date.items():
-        for sequence, row in enumerate(date_rows, start=1):
-            current = str(row["order_no"] or "").strip()
-            if is_repair_order_no(current):
-                continue
-            conn.execute(
-                "UPDATE repair_orders SET order_no=? WHERE repair_order_id=?",
-                (repair_order_no(date_key, sequence), row["repair_order_id"]),
-            )
+        customer_id = int(row["customer_id"])
+        conn.execute(
+            "UPDATE customers SET member_no=? WHERE customer_id=?",
+            (f"M{customer_id:06d}", customer_id),
+        )
 
 
 def seed_users(conn: sqlite3.Connection) -> None:

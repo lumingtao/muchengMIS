@@ -1,37 +1,88 @@
-# MIS 数据库读写重构说明
+# MIS 当前重构维护说明
 
-## 当前主线
+本文档取代早期 WinForms / `MIS.Core` 重构笔记，记录当前仓库的实际开发主线。
 
-本轮重构以 `二手机未结` 作为统一 WinForms 主程序，并新增 `MIS.Core` 共享源码层。`MIS.WebAPI1` 也编译同一套共享数据访问代码，避免桌面端和 API 的 SQL 口径分叉。
+## 1. 当前主线
 
-## 数据库边界
+当前可运行主线是：
 
-- 不新增、不删除、不修改数据库表、字段、索引或其他结构。
-- 固定业务查询集中在 `MIS.Core/MisQueryService.cs`。
-- 所有 MIS 访问都通过 `MIS.Core/MisSession.cs` 封装 `MIS.API.MISServer`。
-- SQL 控制台完全开放，但界面会提示“数据库结构不能改动”，并把执行历史写入备份目录的 `sql-history.csv`。
+```text
+mis_mvp/backend      FastAPI + SQLite
+frontend             Vite + React + TypeScript
+mis_mvp/frontend_dist React 构建产物，由 FastAPI 托管
+```
 
-## 凭据配置
+旧 WinForms、`MIS.Core`、`MIS.WebAPI1` 相关内容只作为历史口径参考，不是当前仓库的运行主线。
 
-- 桌面端：启动后通过 `LoginForm` 输入 MIS 账号和密码，代码中不保存固定账号密码。
-- WebAPI：优先读取 `appsettings.json` 的 `Mis:Username` / `Mis:Password`；为空时读取环境变量 `MIS_USERNAME` / `MIS_PASSWORD`。
-- 不要把真实账号密码提交到源码文件中。
+## 2. 重构目标
 
-## 备份输出
+当前重构已经从“验证业务原型”进入“本地可维护 MIS”阶段：
 
-- 默认目录：当前用户“我的文档”下的 `MIS数据备份`。
-- 每次完整备份会导出：
-  - `沐辰科技二手机.xlsx`
-  - `维修账单.xlsx`
-  - `库存记录.xlsx` 追加库存成本汇总
-  - `sql-history.csv` 记录 SQL 控制台执行历史
+- 用 `machines` 承载机器生命周期。
+- 用 `repair_orders` 承载维修工单闭环。
+- 用 `customers` 承载会员和同行客户。
+- 用物料库存表承载维修配件库存。
+- 用 `payments`、`receivables` 承载收款、支出和挂账。
+- 用 `machine_events`、`operation_logs` 保证追溯。
+- 前端逐步从单文件大页面迁移到 React + Ant Design 项目级组件体系。
 
-## WebAPI 端点
+## 3. 数据库边界
 
-- `GET /api/mis/stock`
-- `GET /api/mis/unsettled-sales`
-- `GET /api/mis/repair-pending`
-- `GET /api/mis/bad-or-pending-devices`
-- `GET /api/mis/inventory-summary`
+默认运行库：
 
-这些接口返回 JSON 行对象列表，数据来源和桌面端固定视图相同。
+```text
+mis_mvp/data/mis_mvp.sqlite3
+```
+
+开发规则：
+
+- 表结构变更集中在 `mis_mvp/backend/db.py`。
+- 输入模型变更同步更新 `mis_mvp/backend/models.py`。
+- 业务写入优先走 `MisService`，不要绕过服务层直接写 SQL。
+- 旧 `devices/repairs` 表保留兼容，但新功能默认不再扩展它们。
+- 真实业务导入前先备份 SQLite，并通过幂等键避免重复导入。
+
+## 4. 前端边界
+
+当前前端已接入 Ant Design 6，但仍有历史 CSS 和大体量 `App.tsx`。
+
+维护方向：
+
+- 新按钮、表格、状态、弹窗、表单优先使用 `frontend/src/components/` 下的项目级组件。
+- 新页面按业务域拆分，不继续扩大 `App.tsx`。
+- API 调用统一走 `frontend/src/api.ts`。
+- 构建输出保持到 `mis_mvp/frontend_dist/`。
+
+## 5. 权限和审计
+
+权限矩阵在 `mis_mvp/backend/auth.py`。
+
+涉及以下动作必须记录审计或时间线：
+
+- 维修开单、指派、报价、改价、交付、作废、收款。
+- 机器资料编辑和删除。
+- 客户资料编辑和互动记录。
+- 物料入库、发放、退料、退货、盘点和调整。
+- 财务流水、结账和报表关键口径变更。
+
+## 6. 真实业务资料
+
+以下文档是业务规则来源：
+
+- `BUSINESS_REALITY_LOG.md`
+- `MATERIAL_INVENTORY_LOG.md`
+- `BUSINESS_TIMELINE_SUMMARY.md`
+- `CODEX_LOCAL_NOTES.md`
+
+这些文件不替代数据库订单事实。开发时遇到业务规则冲突，以结构化数据库为事实源，以业务观察文档解释规则来源和待确认字段。
+
+## 7. 开发检查清单
+
+变更后至少确认：
+
+- 后端测试：`pytest mis_mvp/tests --basetemp .runtime/pytest-tmp`
+- 前端测试：`cd frontend; npm.cmd run test`
+- 前端构建：`cd frontend; npm.cmd run build`
+- 若改 API：同步更新 `DESIGN.md` 和 `BUSINESS_FLOW.md`
+- 若改开单：同步更新 `ORDER_CREATION_ACTION_DESIGN.md`
+- 若改 UI 基础层：同步更新 `docs/ANT_DESIGN_6_MIGRATION_PLAN.md`

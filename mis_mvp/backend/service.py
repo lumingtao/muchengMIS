@@ -11,6 +11,8 @@ from .config import ROOT_DIR
 from .order_numbers import repair_order_date_key, repair_order_no
 from .models import (
     BusinessLine,
+    CustomerInteractionInput,
+    CustomerInteractionUpdateInput,
     CustomerInput,
     DeviceModelInput,
     DeviceStatus,
@@ -334,14 +336,48 @@ class MisService:
     def _input_has_field(self, data: Any, field: str) -> bool:
         return field in getattr(data, "model_fields_set", set())
 
+    def _auto_repair_sku_code(self, model: str) -> str:
+        prefix = self._normalize_code_part(model, fallback="GEN")
+        return f"AUTO-{prefix}-{uuid4().hex[:8].upper()}"
+
+    def _ensure_manual_repair_sku(self, item_name: str, model: str, cost_amount: float, charge_amount: float) -> int:
+        name = item_name.strip()
+        if not name:
+            raise BusinessError("维修故障名称不能为空")
+        sku_id = self.repo.upsert_repair_sku(
+            {
+                "model": model,
+                "sku_code": self._auto_repair_sku_code(model),
+                "fault_name": name,
+                "solution_name": name,
+                "cost_amount": cost_amount,
+                "charge_amount": charge_amount,
+                "enabled": True,
+                "remark": "手动录入故障自动生成",
+            }
+        )
+        return sku_id
+
     def create_repair_order(self, user: User, data: RepairOrderInput) -> dict[str, Any]:
         self._allowed(user, "repair_order:create")
+        order_type = self._repair_order_type(data)
+        order_prefix = "FX" if order_type == "返修" else "WX"
+        inspection_payloads = [self._normalize_inspection_input(item) for item in data.inspections]
+        for item in data.repair_items:
+            if item.sku_id:
+                sku = self.repo.get_repair_sku(item.sku_id)
+                if not sku or not int(sku.get("enabled", 1)):
+                    raise BusinessError("维修 SKU 不存在或已停用")
+        customer_id = self._customer_id(data.customer_id, data.customer)
+        machine = self._ensure_machine(user, data.machine_id, data.machine, BusinessLine.repair)
+        if not customer_id:
+            customer_id = machine.get("customer_id")
+        machine_id = int(machine["machine_id"])
+        machine_model = str(machine.get("model") or "")
         repair_items: list[dict[str, Any]] = []
         for item in data.repair_items:
             sku = self.repo.get_repair_sku(item.sku_id) if item.sku_id else None
-            if item.sku_id and (not sku or not int(sku.get("enabled", 1))):
-                raise BusinessError("维修 SKU 不存在或已停用")
-            item_name = item.item_name
+            item_name = item.item_name.strip()
             cost_amount = float(item.cost_amount or 0)
             charge_amount = float(item.charge_amount or 0)
             if sku:
@@ -350,9 +386,12 @@ class MisService:
                     cost_amount = float(sku["cost_amount"] or 0)
                 if not self._input_has_field(item, "charge_amount"):
                     charge_amount = float(sku["charge_amount"] or 0)
+            else:
+                sku_id = self._ensure_manual_repair_sku(item_name, machine_model, cost_amount, charge_amount)
+                sku = self.repo.get_repair_sku(sku_id)
             repair_items.append(
                 {
-                    "sku_id": item.sku_id,
+                    "sku_id": item.sku_id or (sku or {}).get("sku_id"),
                     "item_name": item_name,
                     "quantity": int(item.quantity or 1),
                     "cost_amount": cost_amount,
@@ -360,12 +399,6 @@ class MisService:
                     "remark": item.remark,
                 }
             )
-        inspection_payloads = [self._normalize_inspection_input(item) for item in data.inspections]
-        customer_id = self._customer_id(data.customer_id, data.customer)
-        machine = self._ensure_machine(user, data.machine_id, data.machine, BusinessLine.repair)
-        if not customer_id:
-            customer_id = machine.get("customer_id")
-        machine_id = int(machine["machine_id"])
         assigned_to = user.username if user.role == Role.engineer else ""
         workflow_status = "工程师待检测" if assigned_to else "待指派工程师"
         order_id = self.repo.create_repair_order(
@@ -377,6 +410,8 @@ class MisService:
             user.username,
             workflow_status,
             assigned_to,
+            order_prefix,
+            order_type,
         )
         self.repo.update_machine_status(machine_id, MachineStatus.diagnosing.value, BusinessLine.repair.value)
         self.repo.add_machine_event(machine_id, "repair", "维修开单", data.fault_description, user.username, "repair", order_id)
@@ -420,6 +455,18 @@ class MisService:
         self._log_success(user, "repair_order:create", "repair_order", str(order_id), customer_id=customer_id, request_summary=data.fault_description)
         self.conn.commit()
         return self._repair_order_response(order_id)
+
+    def _repair_order_type(self, data: RepairOrderInput) -> str:
+        explicit = data.order_type.strip()
+        haystack = "\n".join(
+            [
+                explicit,
+                data.fault_description,
+                data.remark,
+                *[note.content for note in data.notes],
+            ]
+        )
+        return "返修" if "返修" in haystack else "维修"
 
     def list_repair_skus(self, user: User, model: str = "", keyword: str = "") -> list[dict[str, Any]]:
         self._allowed(user, "repair_sku:read")
@@ -2062,9 +2109,10 @@ class MisService:
         self._ensure_repair_transition(order, OrderStatus.processing, {OrderStatus.quoted, OrderStatus.processing})
         if order.get("assigned_to") and not order.get("quote_confirm_status") and self._repair_order_status(order) == OrderStatus.quoted:
             raise BusinessError("报价需由前台确认后才能开始维修")
-        item_name = data.item_name
+        item_name = data.item_name.strip()
         cost_amount = data.cost_amount
         charge_amount = data.charge_amount
+        sku_id = data.sku_id
         if data.sku_id:
             sku = self.repo.get_repair_sku(data.sku_id)
             if not sku or not int(sku.get("enabled", 1)):
@@ -2074,7 +2122,10 @@ class MisService:
                 cost_amount = float(sku["cost_amount"] or 0)
             if not self._input_has_field(data, "charge_amount"):
                 charge_amount = float(sku["charge_amount"] or 0)
-        item_id = self.repo.add_repair_item(repair_order_id, item_name, data.quantity, cost_amount, charge_amount, data.remark, data.sku_id)
+        else:
+            machine = self.repo.get_machine(int(order["machine_id"]))
+            sku_id = self._ensure_manual_repair_sku(item_name, str((machine or {}).get("model") or ""), cost_amount, charge_amount)
+        item_id = self.repo.add_repair_item(repair_order_id, item_name, data.quantity, cost_amount, charge_amount, data.remark, sku_id)
         self.repo.quote_repair_order(
             repair_order_id,
             order["diagnosis"],
@@ -2376,9 +2427,71 @@ class MisService:
         self._allowed(user, "repair:read")
         return self.repo.list_repairs()
 
-    def search_customers(self, user: User, keyword: str = "") -> list[dict[str, Any]]:
+    def search_customers(
+        self,
+        user: User,
+        keyword: str = "",
+        category: str = "",
+        vip_level: str = "",
+        status: str = "",
+        tag: str = "",
+    ) -> list[dict[str, Any]]:
         self._allowed(user, "customer:read")
-        return self.repo.search_customers(keyword)
+        return self.repo.search_customers(keyword, category=category, vip_level=vip_level, status=status, tag=tag)
+
+    def create_customer(self, user: User, data: CustomerInput) -> dict[str, Any]:
+        self._allowed(user, "customer:write")
+        customer_id = self.repo.create_customer(data)
+        self._log_success(user, "customer:create", "customer", str(customer_id), customer_id=customer_id, request_summary=data.name)
+        self.conn.commit()
+        return self.repo.get_customer(customer_id) or {}
+
+    def customer_detail(self, user: User, customer_id: int) -> dict[str, Any]:
+        self._allowed(user, "customer:read")
+        detail = self.repo.customer_detail(customer_id)
+        if not detail["customer"]:
+            raise BusinessError("客户不存在")
+        try:
+            preview = self.settlement_preview(user, customer_id)
+        except PermissionError:
+            preview = {"sales": [], "repairs": [], "total_amount": 0}
+        detail["settlement_preview"] = preview
+        return detail
+
+    def update_customer(self, user: User, customer_id: int, data: CustomerInput) -> dict[str, Any]:
+        self._allowed(user, "customer:write")
+        if not self.repo.get_customer(customer_id):
+            raise BusinessError("客户不存在")
+        self.repo.update_customer(customer_id, data)
+        self._log_success(user, "customer:update", "customer", str(customer_id), customer_id=customer_id, request_summary=data.name)
+        self.conn.commit()
+        return self.repo.get_customer(customer_id) or {}
+
+    def add_customer_interaction(self, user: User, customer_id: int, data: CustomerInteractionInput) -> dict[str, Any]:
+        self._allowed(user, "customer:write")
+        if not self.repo.get_customer(customer_id):
+            raise BusinessError("客户不存在")
+        interaction_id = self.repo.add_customer_interaction(customer_id, data.model_dump(), user.username)
+        self._log_success(user, "customer:interaction", "customer", str(customer_id), customer_id=customer_id, request_summary=data.content)
+        self.conn.commit()
+        return self.repo.get_customer_interaction(interaction_id) or {}
+
+    def update_customer_interaction(self, user: User, interaction_id: int, data: CustomerInteractionUpdateInput) -> dict[str, Any]:
+        self._allowed(user, "customer:write")
+        interaction = self.repo.get_customer_interaction(interaction_id)
+        if not interaction:
+            raise BusinessError("互动记录不存在")
+        self.repo.update_customer_interaction(interaction_id, data.model_dump())
+        self._log_success(
+            user,
+            "customer:interaction:update",
+            "customer_interaction",
+            str(interaction_id),
+            customer_id=interaction.get("customer_id"),
+            request_summary=data.content,
+        )
+        self.conn.commit()
+        return self.repo.get_customer_interaction(interaction_id) or {}
 
     def lookup_imei(self, user: User, imei: str) -> dict[str, Any]:
         self._allowed(user, "device:read")

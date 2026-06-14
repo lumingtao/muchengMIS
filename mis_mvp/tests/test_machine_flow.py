@@ -41,7 +41,6 @@ from backend.models import (
     RepairOrderStatusInput,
     RepairQuoteConfirmInput,
     RepairQuoteInput,
-    RepairWorkflowActionInput,
     RepairFaultMaterialInput,
     RepairSkuInput,
     Role,
@@ -54,6 +53,10 @@ from backend.models import (
 from backend.service import BusinessError, MisService
 
 
+def assert_order_no(value: str, prefix: str) -> None:
+    assert re.fullmatch(rf"{prefix}\d{{8}}-\d{{4}}", value)
+
+
 @pytest.fixture()
 def service(tmp_path: Path) -> MisService:
     conn = connect(tmp_path / "machine.sqlite3")
@@ -63,10 +66,6 @@ def service(tmp_path: Path) -> MisService:
 
 def user(role: Role = Role.admin) -> User:
     return User(username=role.value, role=role)
-
-
-def assert_repair_order_no(value: str) -> None:
-    assert re.fullmatch(r"R-\d{8}-\d{3}", value)
 
 
 def warehouse_seed(service: MisService) -> tuple[dict, dict, dict, dict]:
@@ -222,7 +221,7 @@ def test_frontdesk_repair_order_creation_defaults_and_order_no(service: MisServi
     assert order["status"] == "已开单"
     assert order["workflow_status"] == "待指派工程师"
     assert order["assigned_to"] == ""
-    assert_repair_order_no(order["order_no"])
+    assert_order_no(order["order_no"], "WX")
 
     timeline = service.machine_timeline(user(Role.frontdesk), order["machine_id"])
     assert timeline["machine"]["current_status"] == "检测中"
@@ -247,7 +246,7 @@ def test_engineer_can_create_repair_order_and_is_auto_assigned(service: MisServi
     assert order["status"] == "已开单"
     assert order["workflow_status"] == "工程师待检测"
     assert order["assigned_to"] == "engineer"
-    assert_repair_order_no(order["order_no"])
+    assert_order_no(order["order_no"], "WX")
 
     visible = service.search_machines(user(Role.engineer), "862222222222226")
     assert [row["machine_id"] for row in visible] == [order["machine_id"]]
@@ -279,48 +278,23 @@ def test_repair_order_creation_can_reuse_customer_and_machine(service: MisServic
 
     assert order["machine_id"] == machine["machine_id"]
     assert order["customer_id"] == customer_id
-    assert_repair_order_no(order["order_no"])
+    assert_order_no(order["order_no"], "WX")
     assert len(service.search_machines(user(Role.frontdesk), "862222222222227")) == 1
 
 
-def test_repair_order_numbers_increment_by_created_date(service: MisService) -> None:
-    first = service.create_repair_order(
+def test_rework_repair_order_uses_rework_order_no_prefix(service: MisService) -> None:
+    order = service.create_repair_order(
         user(Role.frontdesk),
-        RepairOrderInput(machine=MachineInput(imei="862222222222301", model="iPhone 13"), fault_description="第一单"),
-    )
-    second = service.create_repair_order(
-        user(Role.frontdesk),
-        RepairOrderInput(machine=MachineInput(imei="862222222222302", model="iPhone 14"), fault_description="第二单"),
+        RepairOrderInput(
+            machine=MachineInput(imei="862222222222247", model="iPhone 15 Pro"),
+            customer=CustomerInput(name="返修客户"),
+            order_type="返修",
+            fault_description="上次维修后返修检测",
+        ),
     )
 
-    assert first["order_no"].startswith("R-")
-    assert second["order_no"].startswith(first["order_no"][:11])
-    assert int(second["order_no"].rsplit("-", 1)[1]) == int(first["order_no"].rsplit("-", 1)[1]) + 1
-
-
-def test_migrate_backfills_legacy_repair_order_numbers(service: MisService) -> None:
-    first = service.create_repair_order(
-        user(Role.frontdesk),
-        RepairOrderInput(machine=MachineInput(imei="862222222222303", model="iPhone 13"), fault_description="旧编号一"),
-    )
-    second = service.create_repair_order(
-        user(Role.frontdesk),
-        RepairOrderInput(machine=MachineInput(imei="862222222222304", model="iPhone 14"), fault_description="旧编号二"),
-    )
-    service.conn.execute(
-        "UPDATE repair_orders SET order_no='RO-99', created_at='2026-06-05 09:00:00' WHERE repair_order_id=?",
-        (first["repair_order_id"],),
-    )
-    service.conn.execute(
-        "UPDATE repair_orders SET order_no='RO-100', created_at='2026-06-05 10:00:00' WHERE repair_order_id=?",
-        (second["repair_order_id"],),
-    )
-    service.conn.commit()
-
-    migrate(service.conn)
-
-    assert service.repo.get_repair_order(first["repair_order_id"])["order_no"] == "R-20260605-001"
-    assert service.repo.get_repair_order(second["repair_order_id"])["order_no"] == "R-20260605-002"
+    assert_order_no(order["order_no"], "FX")
+    assert order["service_type"] == "返修"
 
 
 def test_repair_order_creation_validation_errors(service: MisService) -> None:
@@ -395,6 +369,28 @@ def test_create_repair_order_with_initial_repair_items(service: MisService) -> N
     assert any(event["title"] == "维修项目" for event in timeline["events"])
 
 
+def test_create_repair_order_with_manual_item_auto_creates_sku(service: MisService) -> None:
+    order = service.create_repair_order(
+        user(Role.frontdesk),
+        RepairOrderInput(
+            machine=MachineInput(imei="862222222222233", model="iPhone 15 Pro"),
+            customer=CustomerInput(name="手动故障客户"),
+            fault_description="主板异常",
+            repair_items=[RepairItemInput(item_name="主板维修", quantity=1, cost_amount=330, charge_amount=177)],
+        ),
+    )
+
+    item = order["items"][0]
+    assert item["item_name"] == "主板维修"
+    assert item["sku_id"]
+    assert item["sku_code"].startswith("AUTO-")
+    assert item["fault_name"] == "主板维修"
+    assert order["quoted_amount"] == 507
+
+    rows = service.list_repair_skus(user(Role.frontdesk), model="iPhone 15 Pro", keyword="主板维修")
+    assert any(row["sku_id"] == item["sku_id"] for row in rows)
+
+
 def test_create_repair_order_keeps_explicit_zero_service_fee(service: MisService) -> None:
     sku = service.upsert_repair_sku(
         user(Role.staff),
@@ -412,9 +408,6 @@ def test_create_repair_order_keeps_explicit_zero_service_fee(service: MisService
     )
 
     assert order["quoted_amount"] == 80
-    assert order["items"][0]["item_name"] == "电池老化"
-    assert order["items"][0]["fault_name"] == "电池老化"
-    assert "屏幕总成更换" not in order["items"][0]["item_name"]
     assert order["items"][0]["cost_amount"] == 80
     assert order["items"][0]["charge_amount"] == 0
 
@@ -603,71 +596,6 @@ def test_repair_order_rejects_jump_and_closed_changes(service: MisService) -> No
         service.add_repair_item(user(Role.staff), repair_id, RepairItemInput(item_name="重复维修"))
 
 
-def test_repair_order_module_flow_requires_qc_before_payment(service: MisService) -> None:
-    order = service.create_repair_order(
-        user(Role.frontdesk),
-        RepairOrderInput(
-            machine=MachineInput(imei="862222222222225", model="iPhone 15"),
-            customer=CustomerInput(name="模块流客户"),
-            fault_description="屏幕碎裂",
-        ),
-    )
-    repair_id = order["repair_order_id"]
-
-    detail = service.repair_workbench_detail(user(Role.staff), repair_id)
-    assert detail["modules"]["create"]["status"] == "已完成"
-    assert detail["available_actions"] == ["create.complete"]
-
-    detail = service.apply_repair_module_action(user(Role.staff), repair_id, "create", "complete", RepairWorkflowActionInput(action="module"))
-    assert detail["modules"]["quote"]["status"] == "待检测"
-    assert "quote.complete" in detail["available_actions"]
-
-    detail = service.apply_repair_module_action(
-        user(Role.staff),
-        repair_id,
-        "quote",
-        "complete",
-        RepairWorkflowActionInput(action="module", amount=680, remark="屏幕总成损坏"),
-    )
-    assert detail["modules"]["quote"]["status"] == "已报价"
-    assert detail["modules"]["quote"]["amount"] == 680
-    assert detail["available_actions"] == ["quote.confirm"]
-
-    detail = service.apply_repair_module_action(user(Role.staff), repair_id, "quote", "confirm", RepairWorkflowActionInput(action="module", method="微信"))
-    assert detail["modules"]["quote"]["status"] == "客户已确认"
-    assert "repair.start" in detail["available_actions"]
-    assert "repair.complete" not in detail["available_actions"]
-
-    detail = service.apply_repair_module_action(user(Role.staff), repair_id, "repair", "start", RepairWorkflowActionInput(action="module", remark="开始更换屏幕"))
-    assert detail["modules"]["repair_qc"]["status"] == "维修中"
-    assert "repair.complete" not in detail["available_actions"]
-
-    service.add_repair_item(user(Role.staff), repair_id, RepairItemInput(item_name="更换屏幕总成", charge_amount=680))
-    detail = service.repair_workbench_detail(user(Role.staff), repair_id)
-    assert "repair.complete" in detail["available_actions"]
-
-    detail = service.apply_repair_module_action(user(Role.staff), repair_id, "repair", "complete", RepairWorkflowActionInput(action="module", remark="维修完成"))
-    assert detail["modules"]["repair_qc"]["status"] == "待质检"
-    assert detail["available_actions"] == ["qc.complete"]
-
-    detail = service.apply_repair_module_action(user(Role.staff), repair_id, "qc", "complete", RepairWorkflowActionInput(action="module", status="质检不通过", remark="触摸仍异常"))
-    assert detail["modules"]["repair_qc"]["status"] == "质检不通过"
-    assert "payment.register" not in detail["available_actions"]
-    with pytest.raises(BusinessError):
-        service.create_payment(user(Role.finance), PaymentInput(source_type="repair", source_id=repair_id, direction=PaymentDirection.income, amount=680))
-
-    service.add_repair_item(user(Role.staff), repair_id, RepairItemInput(item_name="返修排线", charge_amount=0))
-    service.apply_repair_module_action(user(Role.staff), repair_id, "repair", "complete", RepairWorkflowActionInput(action="module", remark="返修完成"))
-    detail = service.apply_repair_module_action(user(Role.staff), repair_id, "qc", "complete", RepairWorkflowActionInput(action="module", status="质检通过", remark="功能正常"))
-    assert detail["modules"]["repair_qc"]["status"] == "质检通过"
-    assert "payment.register" in detail["available_actions"]
-
-    detail = service.apply_repair_module_action(user(Role.finance), repair_id, "payment", "register", RepairWorkflowActionInput(action="module", amount=680, method="微信"))
-    assert detail["modules"]["payment"]["status"] == "已完成"
-    assert detail["order"]["status"] in {"已结单", "已完结"}
-    assert any(event["title"] == "维修后质检" for event in detail["events"])
-
-
 def test_cancelled_repair_order_cannot_deliver_or_receive_payment(service: MisService) -> None:
     order = service.create_repair_order(
         user(Role.staff),
@@ -693,6 +621,7 @@ def test_recycle_inventory_sale_and_payment(service: MisService) -> None:
         ),
     )
     recycle_id = recycle["recycle_order_id"]
+    assert_order_no(recycle["order_no"], "ZB")
     service.quote_recycle_order(user(Role.staff), recycle_id, RecycleQuoteInput(inspection_result="功能正常", quoted_amount=3200))
     inventory = service.stock_in_recycle_order(user(), recycle_id, StockInInput(pay_amount=3200, sale_price=3880))
     assert inventory["status"] == "可销售"

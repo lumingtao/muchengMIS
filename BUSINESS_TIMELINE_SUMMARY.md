@@ -179,39 +179,62 @@
 
 ## 6. 系统改造经验
 
-### 已形成的项目修改方向
+### 当前项目修改方向
 
-本次对话后已经明确并实施了第一版“维修工单中心”方向：
+本复盘最初形成了“维修工单中心”方向。当前仓库已经把这条方向推进到 `mis_mvp` 主线：
 
-- 使用 SQLite 承载维修闭环数据。
-- 保留旧 mock/provider 作为库存/销售原型兼容。
-- 新增维修工单中心、物料库存、财务对账入口。
-- 新增工单、状态事件、物料档案、批次、库存流水、维修用料、收款流水、应收账款表。
-- 导入真实样例作为首批验收数据。
+- 使用 `mis_mvp/data/mis_mvp.sqlite3` 作为固定运行库。
+- 使用 `machines` 承载机器生命周期。
+- 使用 `repair_orders`、检测记录、照片、备注、维修项目和付款流水承载维修闭环。
+- 使用 `customers`、`customer_interactions` 承载会员、同行客户和回访记录。
+- 使用物料类别、库区库位、物料档案、批次、单件码、申领、发放、退料、盘点和库存流水承载维修物料库存。
+- 使用 `payments`、`receivables` 承载收款、支出和挂账口径。
+- 使用 React + Ant Design 6 前端承载工作台、工单池、工单详情、会员、库存、财务和系统设置。
 
-### 第一版数据落点
+### 历史来源与当前落点
 
-SQLite 数据库：
+历史维修工作流样本来源：
 
 ```text
 mis_pwa/data/mis_workflow.sqlite3
 ```
 
-主要表：
+当前结构化业务落点：
 
+```text
+mis_mvp/data/mis_mvp.sqlite3
+```
+
+迁移脚本：
+
+```text
+mis_mvp/tools/import_workflow_sqlite.py
+```
+
+当前主要表：
+
+- `machines`
 - `repair_orders`
-- `repair_events`
+- `repair_items`
+- `repair_order_inspections`
+- `repair_order_photos`
+- `repair_order_notes`
 - `customers`
+- `customer_interactions`
 - `materials`
 - `material_batches`
+- `material_units`
+- `material_requests`
+- `material_returns`
 - `stock_movements`
 - `repair_materials`
 - `payments`
 - `receivables`
+- `machine_events`
 
-### 已导入首批数据
+### 首批真实样本
 
-截至本次整理，首批导入结果：
+截至本次整理，首批真实样本包括：
 
 | 数据类型 | 数量 |
 | --- | ---: |
