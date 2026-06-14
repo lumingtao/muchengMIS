@@ -369,6 +369,28 @@ def test_create_repair_order_with_initial_repair_items(service: MisService) -> N
     assert any(event["title"] == "维修项目" for event in timeline["events"])
 
 
+def test_create_repair_order_with_manual_item_auto_creates_sku(service: MisService) -> None:
+    order = service.create_repair_order(
+        user(Role.frontdesk),
+        RepairOrderInput(
+            machine=MachineInput(imei="862222222222233", model="iPhone 15 Pro"),
+            customer=CustomerInput(name="手动故障客户"),
+            fault_description="主板异常",
+            repair_items=[RepairItemInput(item_name="主板维修", quantity=1, cost_amount=330, charge_amount=177)],
+        ),
+    )
+
+    item = order["items"][0]
+    assert item["item_name"] == "主板维修"
+    assert item["sku_id"]
+    assert item["sku_code"].startswith("AUTO-")
+    assert item["fault_name"] == "主板维修"
+    assert order["quoted_amount"] == 507
+
+    rows = service.list_repair_skus(user(Role.frontdesk), model="iPhone 15 Pro", keyword="主板维修")
+    assert any(row["sku_id"] == item["sku_id"] for row in rows)
+
+
 def test_create_repair_order_keeps_explicit_zero_service_fee(service: MisService) -> None:
     sku = service.upsert_repair_sku(
         user(Role.staff),

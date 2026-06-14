@@ -209,6 +209,10 @@ function displayValue(row: AnyRecord, key: string) {
   return String(raw);
 }
 
+function blankDisplay(value: unknown) {
+  return String(value ?? "");
+}
+
 function csvCell(value: unknown) {
   const text = String(value ?? "").replace(/\r?\n/g, " ");
   return `"${text.replace(/"/g, '""')}"`;
@@ -928,6 +932,7 @@ function OrderDetailPage({
   const currentUserQuery = useQuery({ queryKey: ["me", "order-detail"], queryFn: () => api<AnyRecord>("/api/me") });
   const events = ((data.events as AnyRecord[] | undefined) || []);
   const savedInspections = useMemo(() => ((data.inspections as AnyRecord[] | undefined) || []), [data.inspections]);
+  const repairItems = ((data.repair_items as AnyRecord[] | undefined) || []);
   const incomeItems = ((data.income_items as AnyRecord[] | undefined) || []);
   const costItems = ((data.cost_items as AnyRecord[] | undefined) || []);
   const payments = ((data.payments as AnyRecord[] | undefined) || []);
@@ -955,10 +960,7 @@ function OrderDetailPage({
   const quoted = mode === "new" ? newQuoted : Number(display.quoted_amount || order.quoted_amount || incomeItems.reduce((sum, row) => sum + Number(row.amount || 0), 0));
   const cost = Number(order.cost_amount || costItems.reduce((sum, row) => sum + Number(row.total_cost || row.unit_cost || 0), 0));
   const paid = Number(order.paid_amount || payments.reduce((sum, row) => sum + Number(row.amount || 0), 0));
-  const detailRows = mode === "new" ? newRepairItems : costItems.length ? costItems : [
-    { item_name: "屏幕总成更换", sku: "IP13P-SCR-OLED", unit_cost: cost || 680, amount: quoted || 980, qty: 1 },
-    { item_name: "维修服务费", sku: "SERVICE-PREMIUM", unit_cost: 0, amount: Math.max((quoted || 1280) - (cost || 680), 0), qty: 1 },
-  ];
+  const detailRows = mode === "new" ? newRepairItems : repairItems.length ? repairItems : costItems;
   const inspections = ["屏幕显示", "触摸功能", "摄像头", "电池健康", "生物识别", "无线网络", "蜂窝网络", "音频模块", "指南针", "扬声器", "听筒", "充电"];
   const inspectionItems = ["屏幕显示", "触摸功能", "摄像头", "电池健康", "生物识别", "无线网络", "蜂窝网络", "音频模块", "指南针", "扬声器", "听筒", "充电", "其他异常"];
   const canAddRepairItem = mode !== "new" && canModifyRepairItems(statusText);
@@ -1101,6 +1103,7 @@ function OrderDetailPage({
         method: "POST",
         body: JSON.stringify({
           item_name: payload.item_name || "",
+          sku_id: payload.sku_id || null,
           quantity: Number(payload.quantity || 1),
           cost_amount: Number(payload.cost_amount || 0),
           charge_amount: Number(payload.charge_amount || 0),
@@ -1260,11 +1263,16 @@ function OrderDetailPage({
   }
   function submitRepairItem() {
     if (mode === "new") {
-      if (!itemForm.sku_id) {
-        notify("请选择故障代码", true);
+      if (!String(itemForm.item_name || "").trim()) {
+        notify("请填写故障名称", true);
         return;
       }
-      setNewRepairItems(prev => [...prev, { ...itemForm, quantity: Number(itemForm.quantity || 1) }]);
+      setNewRepairItems(prev => [...prev, {
+        ...itemForm,
+        sku_code: itemForm.sku_id ? itemForm.sku_code : "自动生成",
+        fault_name: itemForm.fault_name || itemForm.item_name,
+        quantity: Number(itemForm.quantity || 1),
+      }]);
       setItemForm({ quantity: 1 });
       setShowItemForm(false);
       return;
@@ -1526,7 +1534,7 @@ function OrderDetailPage({
               <h3><FileText size={24} />故障与维修详情</h3>
               {(mode === "new" || mode === "edit") && <button type="button" className="mini-add-button" onClick={() => mode === "new" || canAddRepairItem ? setShowItemForm(true) : notify("当前订单状态不可添加维修故障", true)} disabled={mode !== "new" && !canAddRepairItem}><Plus size={16} />添加故障</button>}
             </div>
-            <p className="order-muted">{mode === "new" ? "可按当前机型添加故障代码，系统会带出配件/SKU、成本和服务费。" : String(order.fault_description || "客户反馈设备异常，需要检测并维修。")}</p>
+            <p className="order-muted">{mode === "new" ? "可选择已有故障代码，也可手动输入新故障；系统会为新故障自动生成代码并加入列表。" : String(order.fault_description || "客户反馈设备异常，需要检测并维修。")}</p>
             {showItemForm && (mode === "new" || mode === "edit") && <div className="inline-item-editor repair-item-editor">
               {mode === "new" && <div className="sku-picker">
                 {repairSkuQuery.isLoading && <div className="lookup-empty">正在读取故障代码...</div>}
@@ -1535,8 +1543,8 @@ function OrderDetailPage({
               </div>}
               <OrderField label="故障名称" value={itemForm.item_name} editable onChange={v => setItemField("item_name", v)} />
               <OrderField label="数量" value={itemForm.quantity || 1} editable type="number" onChange={v => setItemField("quantity", v)} />
-              <OrderField label="配件成本" value={itemForm.cost_amount} editable type="number" onChange={v => setItemField("cost_amount", v)} />
-              <OrderField label="工时/服务费" value={itemForm.charge_amount} editable type="number" onChange={v => setItemField("charge_amount", v)} />
+              <OrderField label="配件价格" value={itemForm.cost_amount} editable type="number" onChange={v => setItemField("cost_amount", v)} />
+              <OrderField label="人工费" value={itemForm.charge_amount} editable type="number" onChange={v => setItemField("charge_amount", v)} />
               <OrderField label="备注" value={itemForm.remark} editable area onChange={v => setItemField("remark", v)} />
               <div className="inline-editor-actions"><button type="button" className="mini-add-button" onClick={submitRepairItem} disabled={addItemMutation.isPending}>{mode === "new" ? "加入明细" : "保存故障"}</button><button type="button" className="ghost-mini-button" onClick={() => { setShowItemForm(false); setItemForm({ quantity: 1 }); }}>取消</button></div>
             </div>}
@@ -1544,7 +1552,7 @@ function OrderDetailPage({
 <div className="repair-lines">
   <AppTable
     rows={detailRows}
-    columns={[["fault_name", "故障名称"], ["sku_code", "更换配件/SKU"], ["unit_cost", "配件单价"], ["service_fee", "工时/服务费"], ["line_total", "小计"]]}
+    columns={[["fault_name", "故障名称"], ["sku_code", "故障代码"], ["unit_cost", "配件价格"], ["service_fee", "人工费"], ["line_total", "小计"]]}
     formatValue={(row, key) => {
       const { unitCost, serviceFee, lineAmount } = repairLineAmounts(row);
       const quantity = firstNumber(row.quantity, row.qty, 1);
@@ -1888,7 +1896,7 @@ function OrderField({ label, value, editable, onChange, area, type = "text" }: {
       {editable ? (
         area ? <Input.TextArea value={String(value || "")} onChange={event => onChange?.(event.target.value)} /> : <Input type={type} value={String(value || "")} onChange={event => onChange?.(event.target.value)} />
       ) : (
-        <strong>{String(value || "??")}</strong>
+        <strong>{blankDisplay(value)}</strong>
       )}
     </label>
   );
@@ -1907,14 +1915,14 @@ function OrderChoiceLine({ label, value, editable, onChange, options }: { label:
           {open && filtered.length > 0 && <div className="choice-popover">{filtered.map(option => <button type="button" key={option} onMouseDown={event => event.preventDefault()} onClick={() => { onChange?.(option); setOpen(false); }}>{option}</button>)}</div>}
         </div>
       ) : (
-        <strong>{String(value || "??")}</strong>
+        <strong>{blankDisplay(value)}</strong>
       )}
     </div>
   );
 }
 
 function OrderEditableLine({ label, value, editable, onChange, onFocus, onBlur, onKeyDown, pill, tag, highlight }: { label: string; value: unknown; editable?: boolean; onChange?: (value: string) => void; onFocus?: () => void; onBlur?: () => void; onKeyDown?: (event: KeyboardEvent<HTMLInputElement>) => void; pill?: boolean; tag?: string; highlight?: boolean }) {
-  return <div className={'info-line order-editable-line ' + (pill ? 'pill-value' : '')}><span>{label}</span>{editable ? <Input value={String(value || "")} onFocus={onFocus} onBlur={onBlur} onKeyDown={onKeyDown} onChange={event => onChange?.(event.target.value)} /> : <strong className={highlight ? "highlight" : ""}>{String(value || "??")}{tag && <em>{tag}</em>}</strong>}</div>;
+  return <div className={'info-line order-editable-line ' + (pill ? 'pill-value' : '')}><span>{label}</span>{editable ? <Input value={String(value || "")} onFocus={onFocus} onBlur={onBlur} onKeyDown={onKeyDown} onChange={event => onChange?.(event.target.value)} /> : <strong className={highlight ? "highlight" : ""}>{blankDisplay(value)}{tag && <em>{tag}</em>}</strong>}</div>;
 }
 
 function buildStitchTimeline(mode: OrderMode, status: string, createdAt: string, owner: string) {
@@ -1991,6 +1999,7 @@ function LegacyOrderDetailPage({ orderId, notify, onBack }: { orderId: number | 
   const events = ((data.events as AnyRecord[] | undefined) || []).slice(0, 8);
   const incomeItems = ((data.income_items as AnyRecord[] | undefined) || []);
   const costItems = ((data.cost_items as AnyRecord[] | undefined) || []);
+  const repairItems = ((data.repair_items as AnyRecord[] | undefined) || []);
   const payments = ((data.payments as AnyRecord[] | undefined) || []);
   const createdAt = String(order.created_at || order.opened_at || "2023-10-27 14:30");
   const owner = String(order.assigned_to || order.engineer_user || "张工程师");
@@ -2002,10 +2011,7 @@ function LegacyOrderDetailPage({ orderId, notify, onBack }: { orderId: number | 
   const quoted = Number(order.quoted_amount || incomeItems.reduce((sum, row) => sum + Number(row.amount || 0), 0));
   const cost = Number(order.cost_amount || costItems.reduce((sum, row) => sum + Number(row.total_cost || row.unit_cost || 0), 0));
   const paid = Number(order.paid_amount || payments.reduce((sum, row) => sum + Number(row.amount || 0), 0));
-  const detailRows = costItems.length ? costItems : [
-    { item_name: "屏幕总成更换", sku: "IP13P-SCR-OLED", unit_cost: cost || 680, amount: quoted || 980, qty: 1 },
-    { item_name: "维修服务费", sku: "SERVICE-PREMIUM", unit_cost: 0, amount: Math.max((quoted || 1280) - (cost || 680), 0), qty: 1 },
-  ];
+  const detailRows = repairItems.length ? repairItems : costItems;
   const inspections = ["屏幕显示", "触摸功能", "摄像头", "电池健康", "生物识别", "无线网络", "蜂窝网络", "音频模块", "指南针", "扬声器", "听筒", "充电"];
   const timeline = [
     { title: "工单创建", note: `${createdAt} | 客户前台`, done: true },
@@ -2140,7 +2146,7 @@ function LegacyOrderDetailPage({ orderId, notify, onBack }: { orderId: number | 
 }
 
 function InfoLine({ label, value, pill, tag, highlight }: { label: string; value: unknown; pill?: boolean; tag?: string; highlight?: boolean }) {
-  return <div className={`info-line ${pill ? "pill-value" : ""}`}><span>{label}</span><strong className={highlight ? "highlight" : ""}>{String(value || "待补")}{tag && <em>{tag}</em>}</strong></div>;
+  return <div className={`info-line ${pill ? "pill-value" : ""}`}><span>{label}</span><strong className={highlight ? "highlight" : ""}>{blankDisplay(value)}{tag && <em>{tag}</em>}</strong></div>;
 }
 
 
@@ -2179,7 +2185,7 @@ function InspectionCard({ title, inspections, note, compact, mode = "view", stat
 }
 
 function InfoBlock({ label, text }: { label: string; text: unknown }) {
-  return <div className="field-block"><span>{label}</span><strong>{String(text || "待补")}</strong></div>;
+  return <div className="field-block"><span>{label}</span><strong>{blankDisplay(text)}</strong></div>;
 }
 
 function DetailSection({ title, rows, columns }: { title: string; rows?: AnyRecord[]; columns: Array<[string, string]> }) {
@@ -2622,8 +2628,8 @@ function RepairSkuSettings({ notify }: { notify: (message: string, error?: boole
           { name: "sku_code", label: "故障代码", placeholder: "SCREEN-OLED", required: true },
           { name: "fault_name", label: "故障名称", placeholder: "屏幕损坏", required: true },
           { name: "solution_name", label: "维修方案/SKU", placeholder: "更换屏幕总成", required: true },
-          { name: "cost_amount", label: "配件成本", step: "0.01", type: "number" },
-          { name: "charge_amount", label: "工时/服务费", step: "0.01", type: "number" },
+          { name: "cost_amount", label: "配件价格", step: "0.01", type: "number" },
+          { name: "charge_amount", label: "人工费", step: "0.01", type: "number" },
           { name: "enabled", label: "状态", initialValue: "true", options: [{ value: "true", label: "启用" }, { value: "false", label: "停用" }] },
           { name: "remark", label: "备注", placeholder: "备注", area: true },
         ]}
@@ -2638,7 +2644,7 @@ function RepairSkuSettings({ notify }: { notify: (message: string, error?: boole
       <QueryState loading={query.isLoading} error={query.error} />
       <AppTable
         rows={rows}
-        columns={[["model", "机型"], ["sku_code", "故障代码"], ["fault_name", "故障名称"], ["solution_name", "维修方案/SKU"], ["cost_amount", "配件成本"], ["charge_amount", "工时/服务费"], ["enabled", "状态"]]}
+        columns={[["model", "机型"], ["sku_code", "故障代码"], ["fault_name", "故障名称"], ["solution_name", "维修方案/SKU"], ["cost_amount", "配件价格"], ["charge_amount", "人工费"], ["enabled", "状态"]]}
         formatValue={(row, key) => {
           if (key === "model") return String(row.model || "通用");
           if (key === "cost_amount" || key === "charge_amount") return formatMoney(row[key]);

@@ -334,16 +334,48 @@ class MisService:
     def _input_has_field(self, data: Any, field: str) -> bool:
         return field in getattr(data, "model_fields_set", set())
 
+    def _auto_repair_sku_code(self, model: str) -> str:
+        prefix = self._normalize_code_part(model, fallback="GEN")
+        return f"AUTO-{prefix}-{uuid4().hex[:8].upper()}"
+
+    def _ensure_manual_repair_sku(self, item_name: str, model: str, cost_amount: float, charge_amount: float) -> int:
+        name = item_name.strip()
+        if not name:
+            raise BusinessError("维修故障名称不能为空")
+        sku_id = self.repo.upsert_repair_sku(
+            {
+                "model": model,
+                "sku_code": self._auto_repair_sku_code(model),
+                "fault_name": name,
+                "solution_name": name,
+                "cost_amount": cost_amount,
+                "charge_amount": charge_amount,
+                "enabled": True,
+                "remark": "手动录入故障自动生成",
+            }
+        )
+        return sku_id
+
     def create_repair_order(self, user: User, data: RepairOrderInput) -> dict[str, Any]:
         self._allowed(user, "repair_order:create")
         order_type = self._repair_order_type(data)
         order_prefix = "FX" if order_type == "返修" else "WX"
+        inspection_payloads = [self._normalize_inspection_input(item) for item in data.inspections]
+        for item in data.repair_items:
+            if item.sku_id:
+                sku = self.repo.get_repair_sku(item.sku_id)
+                if not sku or not int(sku.get("enabled", 1)):
+                    raise BusinessError("维修 SKU 不存在或已停用")
+        customer_id = self._customer_id(data.customer_id, data.customer)
+        machine = self._ensure_machine(user, data.machine_id, data.machine, BusinessLine.repair)
+        if not customer_id:
+            customer_id = machine.get("customer_id")
+        machine_id = int(machine["machine_id"])
+        machine_model = str(machine.get("model") or "")
         repair_items: list[dict[str, Any]] = []
         for item in data.repair_items:
             sku = self.repo.get_repair_sku(item.sku_id) if item.sku_id else None
-            if item.sku_id and (not sku or not int(sku.get("enabled", 1))):
-                raise BusinessError("维修 SKU 不存在或已停用")
-            item_name = item.item_name
+            item_name = item.item_name.strip()
             cost_amount = float(item.cost_amount or 0)
             charge_amount = float(item.charge_amount or 0)
             if sku:
@@ -352,9 +384,12 @@ class MisService:
                     cost_amount = float(sku["cost_amount"] or 0)
                 if not self._input_has_field(item, "charge_amount"):
                     charge_amount = float(sku["charge_amount"] or 0)
+            else:
+                sku_id = self._ensure_manual_repair_sku(item_name, machine_model, cost_amount, charge_amount)
+                sku = self.repo.get_repair_sku(sku_id)
             repair_items.append(
                 {
-                    "sku_id": item.sku_id,
+                    "sku_id": item.sku_id or (sku or {}).get("sku_id"),
                     "item_name": item_name,
                     "quantity": int(item.quantity or 1),
                     "cost_amount": cost_amount,
@@ -362,12 +397,6 @@ class MisService:
                     "remark": item.remark,
                 }
             )
-        inspection_payloads = [self._normalize_inspection_input(item) for item in data.inspections]
-        customer_id = self._customer_id(data.customer_id, data.customer)
-        machine = self._ensure_machine(user, data.machine_id, data.machine, BusinessLine.repair)
-        if not customer_id:
-            customer_id = machine.get("customer_id")
-        machine_id = int(machine["machine_id"])
         assigned_to = user.username if user.role == Role.engineer else ""
         workflow_status = "工程师待检测" if assigned_to else "待指派工程师"
         order_id = self.repo.create_repair_order(
@@ -1894,9 +1923,10 @@ class MisService:
         self._ensure_repair_transition(order, OrderStatus.processing, {OrderStatus.quoted, OrderStatus.processing})
         if order.get("assigned_to") and not order.get("quote_confirm_status") and self._repair_order_status(order) == OrderStatus.quoted:
             raise BusinessError("报价需由前台确认后才能开始维修")
-        item_name = data.item_name
+        item_name = data.item_name.strip()
         cost_amount = data.cost_amount
         charge_amount = data.charge_amount
+        sku_id = data.sku_id
         if data.sku_id:
             sku = self.repo.get_repair_sku(data.sku_id)
             if not sku or not int(sku.get("enabled", 1)):
@@ -1906,7 +1936,10 @@ class MisService:
                 cost_amount = float(sku["cost_amount"] or 0)
             if not self._input_has_field(data, "charge_amount"):
                 charge_amount = float(sku["charge_amount"] or 0)
-        item_id = self.repo.add_repair_item(repair_order_id, item_name, data.quantity, cost_amount, charge_amount, data.remark, data.sku_id)
+        else:
+            machine = self.repo.get_machine(int(order["machine_id"]))
+            sku_id = self._ensure_manual_repair_sku(item_name, str((machine or {}).get("model") or ""), cost_amount, charge_amount)
+        item_id = self.repo.add_repair_item(repair_order_id, item_name, data.quantity, cost_amount, charge_amount, data.remark, sku_id)
         self.repo.quote_repair_order(
             repair_order_id,
             order["diagnosis"],
