@@ -51,10 +51,22 @@ start_project.command   macOS 本地启动脚本
 & 'C:\Users\admini\AppData\Local\Python\bin\python.exe' -m pip install -r mis_mvp\requirements.txt
 ```
 
+macOS / Codex 本地虚拟环境：
+
+```bash
+.venv/bin/python -m pip install -r mis_mvp/requirements.txt
+```
+
 启动后端：
 
 ```powershell
 & 'C:\Users\admini\AppData\Local\Python\bin\python.exe' -m uvicorn backend.app:app --host 0.0.0.0 --port 8088 --app-dir mis_mvp
+```
+
+macOS / Codex 本地虚拟环境：
+
+```bash
+.venv/bin/python -m uvicorn backend.app:app --host 0.0.0.0 --port 8088 --app-dir mis_mvp
 ```
 
 或使用启动器：
@@ -120,6 +132,12 @@ npm.cmd run build
 
 ```powershell
 & 'C:\Users\admini\AppData\Local\Python\bin\python.exe' -m pytest mis_mvp\tests --basetemp .runtime\pytest-tmp
+```
+
+macOS / Codex 本地虚拟环境：
+
+```bash
+.venv/bin/python -m pytest mis_mvp/tests --basetemp .runtime/pytest-tmp
 ```
 
 前端：

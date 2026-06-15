@@ -37,16 +37,34 @@
 & 'C:\Users\admini\AppData\Local\Python\bin\python.exe' -m pip install -r mis_mvp\requirements.txt
 ```
 
+macOS / Codex 本地虚拟环境：
+
+```bash
+.venv/bin/python -m pip install -r mis_mvp/requirements.txt
+```
+
 启动 API：
 
 ```powershell
 & 'C:\Users\admini\AppData\Local\Python\bin\python.exe' -m uvicorn backend.app:app --host 0.0.0.0 --port 8088 --app-dir mis_mvp
 ```
 
+macOS / Codex 本地虚拟环境：
+
+```bash
+.venv/bin/python -m uvicorn backend.app:app --host 0.0.0.0 --port 8088 --app-dir mis_mvp
+```
+
 运行测试：
 
 ```powershell
 & 'C:\Users\admini\AppData\Local\Python\bin\python.exe' -m pytest mis_mvp\tests --basetemp .runtime\pytest-tmp
+```
+
+macOS / Codex 本地虚拟环境：
+
+```bash
+.venv/bin/python -m pytest mis_mvp/tests --basetemp .runtime/pytest-tmp
 ```
 
 ## 重要接口组

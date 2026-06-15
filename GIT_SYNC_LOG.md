@@ -34,6 +34,20 @@
 
 ## 变更记录
 
+### 2026-06-15 09:13 CST | 更正后端测试环境并补跑测试
+
+- 分支：main
+- 远端：origin/main
+- 操作：更正文档中的本地测试命令说明，补充 macOS / Codex 本地虚拟环境用法
+- 提交：Document local pytest environment（本记录随该提交一起生成，最终短提交号以 `git log` 为准）
+- 变更内容：
+  - 确认仓库根目录存在 `.venv/bin/python`，其中已安装 `pytest 9.0.3`；上次失败原因是使用了不存在的 `../.venv/bin/python` 相对路径。
+  - 更新 `README.md` 和 `mis_mvp/README.md`，补充 `.venv/bin/python` 安装依赖、启动 API 和运行后端测试命令。
+- 同步结果：本地提交已生成，当前本地 `main` 超前 `origin/main`，待推送。
+- 验证情况：已运行 `.venv/bin/python -m pytest mis_mvp/tests --basetemp .runtime/pytest-tmp`，结果 `46 passed, 1 warning in 1.77s`。
+- 回退参考：如需撤销本次文档更正，可 revert 本条记录对应的 `Document local pytest environment` 提交。
+- 备注：保留上一条历史记录原文，本条作为更正说明追加。
+
 ### 2026-06-15 09:08 CST | 提交维修物料仓模块更新并同步远端
 
 - 分支：main
