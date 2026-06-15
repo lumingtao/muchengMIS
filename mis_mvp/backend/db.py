@@ -151,6 +151,7 @@ CREATE TABLE IF NOT EXISTS device_models (
     model_name TEXT NOT NULL,
     colors_json TEXT NOT NULL DEFAULT '[]',
     capacities_json TEXT NOT NULL DEFAULT '[]',
+    model_numbers_json TEXT NOT NULL DEFAULT '[]',
     enabled INTEGER NOT NULL DEFAULT 1,
     sort_order INTEGER NOT NULL DEFAULT 100,
     remark TEXT NOT NULL DEFAULT '',
@@ -488,10 +489,38 @@ CREATE TABLE IF NOT EXISTS repair_fault_materials (
     material_id INTEGER NOT NULL,
     qty REAL NOT NULL DEFAULT 1,
     priority INTEGER NOT NULL DEFAULT 1,
+    is_required INTEGER NOT NULL DEFAULT 1,
     remark TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(repair_sku_id, material_id),
+    FOREIGN KEY (repair_sku_id) REFERENCES repair_skus(sku_id),
+    FOREIGN KEY (material_id) REFERENCES materials(material_id)
+);
+
+CREATE TABLE IF NOT EXISTS repair_material_reservations (
+    reservation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    repair_order_id INTEGER NOT NULL,
+    repair_item_id INTEGER NOT NULL,
+    repair_sku_id INTEGER,
+    material_id INTEGER NOT NULL,
+    qty REAL NOT NULL DEFAULT 1,
+    reserved_qty REAL NOT NULL DEFAULT 0,
+    consumed_qty REAL NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT '已预占',
+    unit_ids_json TEXT NOT NULL DEFAULT '[]',
+    reserved_by TEXT NOT NULL DEFAULT '',
+    consumed_by TEXT NOT NULL DEFAULT '',
+    released_by TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    consumed_at TEXT,
+    released_at TEXT,
+    source_key TEXT NOT NULL DEFAULT '',
+    UNIQUE(repair_item_id, material_id),
+    FOREIGN KEY (repair_order_id) REFERENCES repair_orders(repair_order_id),
+    FOREIGN KEY (repair_item_id) REFERENCES repair_items(repair_item_id),
     FOREIGN KEY (repair_sku_id) REFERENCES repair_skus(sku_id),
     FOREIGN KEY (material_id) REFERENCES materials(material_id)
 );
@@ -762,6 +791,7 @@ def ensure_columns(conn: sqlite3.Connection) -> None:
             ("brand", "TEXT NOT NULL DEFAULT 'Apple'"),
             ("colors_json", "TEXT NOT NULL DEFAULT '[]'"),
             ("capacities_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ("model_numbers_json", "TEXT NOT NULL DEFAULT '[]'"),
             ("enabled", "INTEGER NOT NULL DEFAULT 1"),
             ("sort_order", "INTEGER NOT NULL DEFAULT 100"),
             ("remark", "TEXT NOT NULL DEFAULT ''"),
@@ -804,6 +834,12 @@ def ensure_columns(conn: sqlite3.Connection) -> None:
             ("direction", "TEXT NOT NULL DEFAULT ''"),
             ("source_type", "TEXT NOT NULL DEFAULT ''"),
             ("source_id", "INTEGER"),
+        ],
+        "repair_fault_materials": [
+            ("is_required", "INTEGER NOT NULL DEFAULT 1"),
+        ],
+        "repair_material_reservations": [
+            ("source_key", "TEXT NOT NULL DEFAULT ''"),
         ],
     }
     for table, table_columns in columns.items():

@@ -157,6 +157,7 @@ class DeviceModelInput(BaseModel):
     model_name: str = Field(min_length=1)
     colors: list[str] = []
     capacities: list[str] = []
+    model_numbers: list[str] = []
     enabled: bool = True
     sort_order: int = 100
     remark: str = ""
@@ -447,6 +448,24 @@ class RepairFaultMaterialInput(BaseModel):
     material_id: int
     qty: float = Field(default=1, ge=0)
     priority: int = Field(default=1, ge=1)
+    is_required: bool = True
+    remark: str = ""
+
+
+class RepairSkuMaterialPlanItemInput(BaseModel):
+    material_id: int
+    qty: float = Field(default=1, ge=0)
+    priority: int = Field(default=1, ge=1)
+    is_required: bool = True
+    remark: str = ""
+
+
+class RepairSkuMaterialPlanInput(BaseModel):
+    items: list[RepairSkuMaterialPlanItemInput] = Field(default_factory=list)
+
+
+class RepairMaterialReserveInput(BaseModel):
+    repair_item_id: int | None = None
     remark: str = ""
 
 

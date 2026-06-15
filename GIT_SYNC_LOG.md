@@ -34,6 +34,23 @@
 
 ## 变更记录
 
+### 2026-06-15 09:08 CST | 提交维修物料仓模块更新并同步远端
+
+- 分支：main
+- 远端：origin/main
+- 操作：提交当前工作区变更，随后 fetch 并推送到远端
+- 提交：待生成
+- 变更内容：
+  - 新增维修物料仓前端页面 `frontend/src/pages/warehouse/WarehousePage.tsx`，覆盖库存看板、物料档案、入库批次、单件码、申领、退料、盘点、调整、流水和基础资料。
+  - 后端扩展仓库相关 API、数据库迁移、模型、仓储和服务层，支持物料查询、批次详情、单件码筛选、申领/退料详情、盘点、调整、流水，以及维修工单物料预留/消耗/释放。
+  - 新增 `mis_mvp/tools/reset_warehouse_demo.py`，用于清空并重建演示维修物料仓数据。
+  - 更新后端 API 和维修流程测试，更新前端布局、页面样式和构建产物。
+  - 实时更新 `README.md` 和 `MATERIAL_INVENTORY_LOG.md`，补充仓库模块入口、脚本用法和库存业务口径。
+- 同步结果：待提交并推送后确认。
+- 验证情况：已尝试运行后端测试；`../.venv/bin/python` 不存在，Codex 自带 Python 和系统 Python 均未安装 `pytest`，因此本次未能完成自动化测试。
+- 回退参考：如需撤销本次仓库模块更新，可优先 revert 本次待生成提交；如只撤销演示数据脚本，可单独恢复 `mis_mvp/tools/reset_warehouse_demo.py`。
+- 备注：新构建资源受 `.gitignore` 忽略，需要强制纳入提交，避免 `frontend_dist/index.html` 指向缺失 bundle。
+
 ### 2026-06-14 20:58 CST | 快进同步远端 main 最新提交
 
 - 分支：main

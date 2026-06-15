@@ -12,6 +12,7 @@ type NavItem<TView extends string> = {
   key: TView;
   label: string;
   icon: ReactNode;
+  children?: Array<{ key: TView; label: string }>;
 };
 
 type AppShellLayoutProps<TView extends string> = {
@@ -50,11 +51,26 @@ export function AppShellLayout<TView extends string>({
       <aside className="sidebar">
         <div className="brand"><div><strong>沐辰科技</strong><span>专业维修与销售</span></div></div>
         <nav className="primary-nav">
-          {primaryNav.map(item => (
-            <button key={item.key} className={view === item.key || (view === "orderDetail" && item.key === "repairPool") ? "active" : ""} onClick={() => setView(item.key)} type="button">
-              {item.icon}{item.label}
-            </button>
-          ))}
+          {primaryNav.map(item => {
+            const childActive = item.children?.some(child => child.key === view);
+            const active = view === item.key || childActive || (view === "orderDetail" && item.key === "repairPool");
+            return (
+              <div className="primary-nav-item" key={item.key}>
+                <button className={active ? "active" : ""} onClick={() => setView(item.key)} type="button">
+                  {item.icon}{item.label}
+                </button>
+                {item.children && active && (
+                  <div className="secondary-nav">
+                    {item.children.map(child => (
+                      <button key={child.key} className={view === child.key || (view === item.key && child.key === item.key) ? "active" : ""} onClick={() => setView(child.key)} type="button">
+                        {child.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </nav>
         <div className="sidebar-footer">
           <button type="button" className="plain-nav-button" onClick={() => notify("帮助中心已接入当前业务说明文档，可先查看 README 和 BUSINESS_FLOW。")}><HelpCircle size={20} />帮助中心</button>

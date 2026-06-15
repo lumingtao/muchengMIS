@@ -612,7 +612,7 @@ class Repository:
 
     def _device_model_row(self, row: sqlite3.Row) -> dict[str, Any]:
         data = dict(row)
-        for source, target in (("colors_json", "colors"), ("capacities_json", "capacities")):
+        for source, target in (("colors_json", "colors"), ("capacities_json", "capacities"), ("model_numbers_json", "model_numbers")):
             try:
                 data[target] = json.loads(data.get(source) or "[]")
             except json.JSONDecodeError:
@@ -626,8 +626,8 @@ class Repository:
             clauses.append("enabled=1")
         if keyword:
             like = f"%{keyword}%"
-            clauses.append("(brand LIKE ? OR model_name LIKE ? OR remark LIKE ?)")
-            params.extend([like, like, like])
+            clauses.append("(brand LIKE ? OR model_name LIKE ? OR model_numbers_json LIKE ? OR remark LIKE ?)")
+            params.extend([like, like, like, like])
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = self.conn.execute(
             f"SELECT * FROM device_models {where} ORDER BY enabled DESC, sort_order, brand, model_name",
@@ -644,11 +644,13 @@ class Repository:
         model_name = str(data.get("model_name") or "").strip()
         colors = [str(item).strip() for item in data.get("colors", []) if str(item).strip()]
         capacities = [str(item).strip() for item in data.get("capacities", []) if str(item).strip()]
+        model_numbers = [str(item).strip() for item in data.get("model_numbers", []) if str(item).strip()]
         payload = (
             brand,
             model_name,
             json.dumps(colors, ensure_ascii=False),
             json.dumps(capacities, ensure_ascii=False),
+            json.dumps(model_numbers, ensure_ascii=False),
             1 if data.get("enabled", True) else 0,
             int(data.get("sort_order") or 100),
             str(data.get("remark") or ""),
@@ -658,7 +660,7 @@ class Repository:
             self.conn.execute(
                 """
                 UPDATE device_models
-                SET brand=?, model_name=?, colors_json=?, capacities_json=?,
+                SET brand=?, model_name=?, colors_json=?, capacities_json=?, model_numbers_json=?,
                     enabled=?, sort_order=?, remark=?, updated_at=CURRENT_TIMESTAMP
                 WHERE device_model_id=?
                 """,
@@ -674,18 +676,18 @@ class Repository:
             self.conn.execute(
                 """
                 UPDATE device_models
-                SET colors_json=?, capacities_json=?, enabled=?, sort_order=?,
+                SET colors_json=?, capacities_json=?, model_numbers_json=?, enabled=?, sort_order=?,
                     remark=?, updated_at=CURRENT_TIMESTAMP
                 WHERE device_model_id=?
                 """,
-                (payload[2], payload[3], payload[4], payload[5], payload[6], device_model_id),
+                (payload[2], payload[3], payload[4], payload[5], payload[6], payload[7], device_model_id),
             )
             return device_model_id
         cur = self.conn.execute(
             """
             INSERT INTO device_models
-            (brand, model_name, colors_json, capacities_json, enabled, sort_order, remark)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            (brand, model_name, colors_json, capacities_json, model_numbers_json, enabled, sort_order, remark)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             payload,
         )

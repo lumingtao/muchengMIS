@@ -17,6 +17,25 @@
 .brand strong { display: block; font-size: 16px; }
 .brand span { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; }
 .primary-nav { display: grid; gap: 13px; padding: 0 0 0; }
+.primary-nav-item { display: grid; gap: 6px; }
+.secondary-nav {
+  display: grid;
+  gap: 4px;
+  padding: 0 0 0 42px;
+}
+.secondary-nav button {
+  min-height: 34px;
+  padding: 0 10px;
+  border-radius: 6px;
+  color: #526174;
+  font-size: 14px;
+  font-weight: 600;
+}
+.secondary-nav button.active {
+  color: var(--accent);
+  background: rgba(0, 61, 155, .08);
+  font-weight: 800;
+}
 .nav-group { display: grid; gap: 6px; margin-top: 18px; }
 .nav-group > span { margin: 0 12px 4px; color: var(--subtle); font-size: 12px; font-weight: 700; }
 nav button {

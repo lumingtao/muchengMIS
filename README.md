@@ -102,6 +102,18 @@ npm.cmd run build
 
 构建产物会写入 `mis_mvp/frontend_dist/`，该目录是生成物，不作为 Stitch 或人工 UI 修改入口。
 
+## 维修物料仓
+
+维修物料仓前端入口已拆到 `frontend/src/pages/warehouse/WarehousePage.tsx`，覆盖库存看板、物料档案、入库批次、单件码、申领、退料、盘点、调整、流水和基础资料。
+
+后端仓库能力集中在 `mis_mvp/backend/service.py` 与 `/api/warehouse`、`/api/materials`、`/api/material-batches`、`/api/material-requests`、`/api/material-returns`、`/api/stock-*` 等接口。演示库需要重建维修物料仓数据时，可使用：
+
+```powershell
+& 'C:\Users\admini\AppData\Local\Python\bin\python.exe' mis_mvp\tools\reset_warehouse_demo.py --yes
+```
+
+该脚本会清空维修物料仓相关表并重建演示物料、库区、库位和入库批次，不能对真实生产库直接执行。
+
 ## 测试
 
 后端：

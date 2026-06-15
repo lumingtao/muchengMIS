@@ -53,8 +53,9 @@ import { notify as feedbackNotify } from "./components/feedback/notify";
 import { AppFormSection } from "./components/forms/AppFormSection";
 import { AppShellLayout } from "./components/layout/AppShellLayout";
 import { AppPanel } from "./components/layout/AppPanel";
+import { WarehousePage as WarehouseManagementPage } from "./pages/warehouse/WarehousePage";
 
-type ViewKey = "dashboard" | "repairPool" | "orderDetail" | "recyclePool" | "repair" | "recycle" | "warehouse" | "inventory" | "sales" | "customers" | "payments" | "reports" | "audit";
+type ViewKey = "dashboard" | "repairPool" | "orderDetail" | "recyclePool" | "repair" | "recycle" | "warehouse" | "warehouseMaterials" | "warehouseBatches" | "warehouseUnits" | "warehouseRequests" | "warehouseReturns" | "warehouseCounts" | "warehouseMovements" | "warehouseBasics" | "inventory" | "sales" | "customers" | "payments" | "reports" | "audit" | "settingsDeviceModels" | "settingsRepairSkus";
 type OrderMode = "new" | "view" | "edit" | "cancel";
 type SortState = { key: string; direction: "asc" | "desc" };
 
@@ -65,22 +66,56 @@ const viewMeta: Record<ViewKey, { label: string; subtitle: string }> = {
   recyclePool: { label: "回收工单池", subtitle: "跟进回收机器、入库和销售流转。" },
   repair: { label: "维修开单", subtitle: "创建维修单并推进检测、报价、交付和收款。" },
   recycle: { label: "回收开单", subtitle: "创建回收单，完成验机报价、付款入库和定价。" },
-  warehouse: { label: "库存管理", subtitle: "管理物料、批次、单件码、申领发放、退料和库存流水。" },
-  inventory: { label: "回收库存", subtitle: "查看维修物料库存与回收机器库存。" },
+  warehouse: { label: "库存看板", subtitle: "查看维修物料仓库存金额、预警、待办和近期流水。" },
+  warehouseMaterials: { label: "物料档案", subtitle: "维护维修配件、适配范围、默认库位和低库存线。" },
+  warehouseBatches: { label: "入库批次", subtitle: "处理采购入库、临采入库和采购退货。" },
+  warehouseUnits: { label: "单件码", subtitle: "查看配件单件码、状态、库位、工程师和关联工单。" },
+  warehouseRequests: { label: "申领审批", subtitle: "创建申领单，完成审批、发放和取消。" },
+  warehouseReturns: { label: "退料验收", subtitle: "处理工程师退料、复用入库、报损和供应商可退。" },
+  warehouseCounts: { label: "盘点调整", subtitle: "创建盘点单、确认差异、处理盘盈盘亏和报损。" },
+  warehouseMovements: { label: "库存流水", subtitle: "追踪所有维修物料仓出入库和成本留痕。" },
+  warehouseBasics: { label: "基础资料", subtitle: "维护物料类别、库区和库位。" },
+  inventory: { label: "回收库存", subtitle: "查看回收机器库存与销售流转状态。" },
   sales: { label: "快速卖机", subtitle: "从回收库存创建销售单。" },
   customers: { label: "会员管理", subtitle: "维护客户档案、业务记录、欠款结算和回访备注。" },
   payments: { label: "财务流水", subtitle: "登记维修、销售收入和回收支出。" },
   reports: { label: "财务报表", subtitle: "查看库存成本、收入支出和经营概览。" },
-  audit: { label: "系统设置", subtitle: "查看关键写操作的审计记录。" },
+  audit: { label: "操作日志", subtitle: "查看关键写操作的审计记录。" },
+  settingsDeviceModels: { label: "设备型号", subtitle: "维护开单页可选的设备品牌、型号、颜色和容量。" },
+  settingsRepairSkus: { label: "故障代码", subtitle: "维护维修故障代码、维修方案、默认成本和收费。" },
 };
 
-const primaryNav: Array<{ key: ViewKey; label: string; icon: ReactNode }> = [
+const primaryNav: Array<{ key: ViewKey; label: string; icon: ReactNode; children?: Array<{ key: ViewKey; label: string }> }> = [
   { key: "dashboard", label: "个人工作台", icon: <Grid2X2 size={22} /> },
   { key: "repairPool", label: "订单中心", icon: <ClipboardList size={22} /> },
   { key: "customers", label: "会员管理", icon: <Users size={22} /> },
-  { key: "warehouse", label: "库存管理", icon: <Wrench size={22} /> },
+  {
+    key: "warehouse",
+    label: "库存管理",
+    icon: <Wrench size={22} />,
+    children: [
+      { key: "warehouse", label: "库存看板" },
+      { key: "warehouseMaterials", label: "物料档案" },
+      { key: "warehouseBatches", label: "入库批次" },
+      { key: "warehouseUnits", label: "单件码" },
+      { key: "warehouseRequests", label: "申领审批" },
+      { key: "warehouseReturns", label: "退料验收" },
+      { key: "warehouseCounts", label: "盘点调整" },
+      { key: "warehouseMovements", label: "库存流水" },
+      { key: "warehouseBasics", label: "基础资料" },
+    ],
+  },
   { key: "reports", label: "财务报表", icon: <BarChart3 size={22} /> },
-  { key: "audit", label: "系统设置", icon: <Settings size={22} /> },
+  {
+    key: "audit",
+    label: "系统设置",
+    icon: <Settings size={22} />,
+    children: [
+      { key: "audit", label: "操作日志" },
+      { key: "settingsDeviceModels", label: "设备型号" },
+      { key: "settingsRepairSkus", label: "故障代码" },
+    ],
+  },
 ];
 
 const moneyKeys = new Set(["quoted_amount", "cost_amount", "charge_amount", "paid_amount", "pay_amount", "sale_price", "amount", "inventory_cost", "avg_cost", "unit_cost", "total_cost", "refund_amount"]);
@@ -475,12 +510,12 @@ function ViewRouter({
   if (view === "orderDetail") return <OrderDetailPage orderId={selectedRepairOrderId} mode={orderMode} notify={notify} onBack={onLeaveOrderDetail} onCreated={(id) => { setSelectedRepairOrderId(id); setOrderMode("view"); }} onModeChange={setOrderMode} />;
   if (view === "repairPool") return <RepairPool notify={notify} openNewOrder={() => openNewOrder("repairPool")} openOrderDetail={(row, mode) => openOrderDetail(row, "repairPool", mode)} />;
   if (view === "recyclePool") return <RecyclePool openModal={openModal} />;
-  if (view === "warehouse") return <WarehousePage notify={notify} />;
+  if (view.startsWith("warehouse")) return <WarehouseManagementPage notify={notify} section={view} />;
   if (view === "inventory") return <InventoryPage />;
   if (view === "customers") return <CustomersPage />;
   if (view === "payments") return <PaymentsPage notify={notify} />;
   if (view === "reports") return <ReportsPage />;
-  if (view === "audit") return <AuditPage notify={notify} />;
+  if (view === "audit" || view === "settingsDeviceModels" || view === "settingsRepairSkus") return <AuditPage notify={notify} section={view} />;
   if (view === "repair") return <OrderDetailPage orderId={null} mode="new" notify={notify} onBack={() => setView("repairPool")} onCreated={(id) => { setSelectedRepairOrderId(id); setOrderMode("view"); setView("orderDetail"); }} onModeChange={setOrderMode} />;
   if (view === "recycle") return <RecycleOpenPage notify={notify} />;
   return <SalesPage notify={notify} />;
@@ -1053,9 +1088,14 @@ function OrderDetailPage({
     enabled: mode === "new" && machineLookupOpen && hasTextValue(machineLookupKeyword),
   });
   const repairSkuQuery = useQuery({
-    queryKey: ["repair-skus", form.model || ""],
-    queryFn: () => api<AnyRecord[]>(`/api/repair-skus?model=${encodeURIComponent(String(form.model || ""))}`),
-    enabled: mode === "new" && showItemForm,
+    queryKey: ["repair-skus", form.model || order.model || ""],
+    queryFn: () => api<AnyRecord[]>(`/api/repair-skus?model=${encodeURIComponent(String(form.model || order.model || ""))}`),
+    enabled: (mode === "new" || mode === "edit") && showItemForm,
+  });
+  const materialHintsQuery = useQuery({
+    queryKey: ["repair-sku-material-hints", itemForm.sku_id],
+    queryFn: () => api<AnyRecord>(`/api/repair-skus/${itemForm.sku_id}/material-hints`),
+    enabled: Boolean(itemForm.sku_id) && showItemForm,
   });
   const deviceModelsQuery = useQuery({
     queryKey: ["device-models", "enabled"],
@@ -1066,6 +1106,7 @@ function OrderDetailPage({
   const events = ((data.events as AnyRecord[] | undefined) || []);
   const savedInspections = useMemo(() => ((data.inspections as AnyRecord[] | undefined) || []), [data.inspections]);
   const repairItems = ((data.repair_items as AnyRecord[] | undefined) || []);
+  const materialReservations = ((data.material_reservations as AnyRecord[] | undefined) || []);
   const incomeItems = ((data.income_items as AnyRecord[] | undefined) || []);
   const costItems = ((data.cost_items as AnyRecord[] | undefined) || []);
   const payments = ((data.payments as AnyRecord[] | undefined) || []);
@@ -1122,6 +1163,9 @@ function OrderDetailPage({
   const currentOperator = String(currentUserQuery.data?.username || "当前用户");
   const currentPermissions = ((currentUserQuery.data?.permissions as string[] | undefined) || []);
   const canDeleteOrder = currentPermissions.includes("repair_order:delete");
+  const materialHintRows = ((materialHintsQuery.data?.materials as AnyRecord[] | undefined) || []);
+  const materialHintCost = materialHintRows.reduce((sum, row) => sum + Number(row.estimated_cost || 0), 0);
+  const materialHintShortage = materialHintRows.reduce((sum, row) => sum + Number(row.shortage_qty || 0), 0);
 
   function updateCustomerLookup(anchor: "name" | "phone", value: unknown) {
     setCustomerLookupAnchor(anchor);
@@ -1696,11 +1740,32 @@ function OrderDetailPage({
             </div>
             <p className="order-muted">{mode === "new" ? "可选择已有故障代码，也可手动输入新故障；系统会为新故障自动生成代码并加入列表。" : String(order.fault_description || "客户反馈设备异常，需要检测并维修。")}</p>
             {showItemForm && (mode === "new" || mode === "edit") && <div className="inline-item-editor repair-item-editor">
-              {mode === "new" && <div className="sku-picker">
+              <div className="sku-picker">
                 {repairSkuQuery.isLoading && <div className="lookup-empty">正在读取故障代码...</div>}
                 {!repairSkuQuery.isLoading && ((repairSkuQuery.data as AnyRecord[] | undefined) || []).map(row => <button type="button" key={String(row.sku_id)} className={String(itemForm.sku_id || "") === String(row.sku_id) ? "selected" : ""} onClick={() => selectRepairSku(row)}><b>{String(row.fault_name || row.solution_name)}</b><span>{String(row.sku_code)} · {String(row.model || "通用")} · {poolMoney(row.charge_amount)}</span></button>)}
                 {!repairSkuQuery.isLoading && !((repairSkuQuery.data as AnyRecord[] | undefined) || []).length && <div className="lookup-empty">当前机型暂无可用故障代码</div>}
-              </div>}
+              </div>
+              {Boolean(itemForm.sku_id) && (
+                <div className="material-hint-panel">
+                  <div className="material-hint-summary">
+                    <span>推荐物料 {materialHintRows.length} 项</span>
+                    <span>预计成本 {poolMoney(materialHintCost)}</span>
+                    <span className={materialHintShortage > 0 ? "danger-text" : ""}>缺口 {materialHintShortage}</span>
+                    <span>预计毛利 {poolMoney(Number(itemForm.cost_amount || 0) + Number(itemForm.charge_amount || 0) - materialHintCost)}</span>
+                  </div>
+                  <AppTable
+                    rows={materialHintRows}
+                    columns={[["name", "物料"], ["qty", "默认数量"], ["current_qty", "在库"], ["reserved_qty", "已预占"], ["available_qty", "可销售"], ["shortage_qty", "缺口"], ["estimated_cost", "预计成本"]]}
+                    formatValue={(row, key) => {
+                      if (key === "estimated_cost") return poolMoney(row.estimated_cost);
+                      if (key === "name") return String(row.name || row.sku || "-");
+                      return displayValue(row, key);
+                    }}
+                    isStatusKey={() => false}
+                    empty={materialHintsQuery.isLoading ? "正在读取推荐物料..." : "该故障尚未绑定默认物料"}
+                  />
+                </div>
+              )}
               <OrderField label="故障名称" value={itemForm.item_name} editable onChange={v => setItemField("item_name", v)} />
               <OrderField label="数量" value={itemForm.quantity || 1} editable type="number" onChange={v => setItemField("quantity", v)} />
               <OrderField label="配件价格" value={itemForm.cost_amount} editable type="number" onChange={v => setItemField("cost_amount", v)} />
@@ -1727,6 +1792,21 @@ function OrderDetailPage({
     actions={{ title: "操作", render: (_row, index) => mode === "new" ? <AppButton className="table-link danger" type="link" danger onClick={() => removeNewRepairItem(index)}>删除</AppButton> : "-" }}
   />
 </div>
+            {mode !== "new" && (
+              <div className="repair-lines material-reservation-block">
+                <h4>物料预占 / 消耗</h4>
+                <AppTable
+                  rows={materialReservations}
+                  columns={[["item_name", "故障项目"], ["material_name", "物料"], ["qty", "需求"], ["reserved_qty", "已预占"], ["consumed_qty", "已扣减"], ["available_qty", "当前可销售"], ["status", "状态"]]}
+                  formatValue={(row, key) => {
+                    if (key === "material_name") return String(row.material_name || row.sku || "-");
+                    return displayValue(row, key);
+                  }}
+                  isStatusKey={(key) => key === "status"}
+                  empty="暂无物料预占记录"
+                />
+              </div>
+            )}
             <div className="order-fee-summary stacked-fee-summary"><span>费用总计 <b>{poolMoney(quoted)}</b></span><span>折扣优惠 <b className="danger-text">- {poolMoney(0)}</b></span><span>应收总额 <b>{poolMoney(quoted)}</b></span>{mode === "edit" && <OrderField label="修改报价" value={form.quoted_amount ?? order.quoted_amount} editable type="number" onChange={v => setField("quoted_amount", v)} />}</div>
           </section>
 
@@ -2421,33 +2501,10 @@ function customerPayload(data: AnyRecord) {
   return { name: data.customer_name, phone: data.phone || "", wechat: data.wechat || "", category: data.customer_type || "个人客户", remark: data.customer_remark || "" };
 }
 
-function WarehousePage({ notify }: { notify: (message: string, error?: boolean) => void }) {
-  const queryClient = useQueryClient();
-  const query = useQuery({ queryKey: ["warehouse"], queryFn: () => api<AnyRecord>("/api/warehouse") });
-  const post = useMutation({ mutationFn: ({ path, payload }: { path: string; payload: AnyRecord }) => api(path, { method: "POST", body: JSON.stringify(payload) }), onSuccess: () => { notify("仓库单据已保存"); queryClient.invalidateQueries({ queryKey: ["warehouse"] }); }, onError: e => notify(e instanceof Error ? e.message : "保存失败", true) });
-  const data = query.data || {};
-  if (query.isLoading || query.error) return <QueryState loading={query.isLoading} error={query.error} />;
-  return <div className="stack"><Panel title="库存管理" note="物料编码、批次、单件码、申领发放、退料退货和库存流水。" action={<AppButton onClick={() => query.refetch()}><RefreshCw size={16} />刷新</AppButton>}><DataTable rows={data.materials as AnyRecord[]} columns={[["material_id", "ID"], ["material_code", "物料代码"], ["sku", "SKU"], ["name", "物料"], ["category_code", "类别"], ["compatible_range", "适配"], ["current_qty", "可用"], ["min_qty", "低库存"]]} /></Panel><div className="dashboard-grid"><AppFormSection title="采购/临采入库" loading={post.isPending} onSubmit={(payload, helpers) => { const kind = String(payload.batch_kind || "purchase"); const { batch_kind, ...rest } = payload; post.mutate({ path: `/api/material-batches/${kind}`, payload: rest }); helpers.reset(); }} fields={[
-    { name: "batch_kind", label: "入库类型", initialValue: "purchase", options: [{ value: "purchase", label: "采购入库" }, { value: "ad-hoc", label: "临采入库" }] },
-    { name: "material_id", label: "物料 ID", placeholder: "物料 ID", required: true, type: "number" },
-    { name: "supplier", label: "供应商", placeholder: "供应商", initialValue: "待确认" },
-    { name: "qty", label: "数量", min: 1, placeholder: "数量", required: true, type: "number" },
-    { name: "unit_cost", label: "单价", placeholder: "单价", step: "0.01", type: "number" },
-    { name: "remark", label: "备注", placeholder: "备注", area: true },
-  ]} /><AppFormSection title="申领发放" loading={post.isPending} onSubmit={(payload, helpers) => { post.mutate({ path: "/api/material-requests", payload: { repair_order_id: payload.repair_order_id || null, engineer_user: payload.engineer_user || "", items: [{ material_id: payload.material_id, repair_sku_id: payload.repair_sku_id, qty: payload.qty || 1, remark: payload.remark || "" }], remark: payload.remark || "" } }); helpers.reset(); }} fields={[
-    { name: "repair_order_id", label: "维修工单 ID", placeholder: "维修工单 ID", type: "number" },
-    { name: "engineer_user", label: "工程师账号", placeholder: "工程师账号" },
-    { name: "material_id", label: "物料 ID", placeholder: "物料 ID", required: true, type: "number" },
-    { name: "qty", label: "数量", defaultValue: "1", min: 1, placeholder: "数量", type: "number" },
-    { name: "remark", label: "申领备注", placeholder: "申领备注", area: true },
-  ]} /></div><div className="dashboard-grid"><Panel title="申领单"><DataTable rows={data.requests as AnyRecord[]} columns={[["request_id", "ID"], ["request_no", "申领单"], ["status", "状态"], ["engineer_user", "工程师"], ["repair_order_id", "工单"], ["created_at", "时间"], ["remark", "备注"]]} /></Panel><Panel title="库存流水"><DataTable rows={data.movements as AnyRecord[]} columns={[["happened_at", "时间"], ["movement_type", "类型"], ["direction", "方向"], ["material_code", "物料代码"], ["name", "物料"], ["qty", "数量"], ["actor", "操作人"]]} /></Panel></div></div>;
-}
-
 function InventoryPage() {
-  const materials = useQuery({ queryKey: ["materials"], queryFn: () => api<AnyRecord>("/api/materials") });
   const inventory = useQuery({ queryKey: ["inventory"], queryFn: () => api<AnyRecord[]>("/api/inventory") });
-  if (materials.isLoading || inventory.isLoading || materials.error || inventory.error) return <QueryState loading={materials.isLoading || inventory.isLoading} error={materials.error || inventory.error} />;
-  return <div className="stack"><Panel title="维修物料库存"><DataTable rows={materials.data?.materials as AnyRecord[]} columns={[["sku", "SKU"], ["name", "物料"], ["compatible_range", "适配范围"], ["current_qty", "库存"], ["avg_cost", "均价"], ["status", "状态"]]} /></Panel><Panel title="回收机器库存"><DataTable rows={inventory.data} columns={[["inventory_item_id", "库存ID"], ["machine_id", "机器ID"], ["imei", "IMEI"], ["model", "机型"], ["status", "库存状态"], ["cost_amount", "成本"], ["sale_price", "销售定价"]]} /></Panel></div>;
+  if (inventory.isLoading || inventory.error) return <QueryState loading={inventory.isLoading} error={inventory.error} />;
+  return <div className="stack"><Panel title="回收机器库存" note="回收机器库存独立于维修物料仓，销售出库仍从这里流转。"><DataTable rows={inventory.data} columns={[["inventory_item_id", "库存ID"], ["machine_id", "机器ID"], ["imei", "IMEI"], ["model", "机型"], ["status", "库存状态"], ["cost_amount", "成本"], ["sale_price", "销售定价"]]} /></Panel></div>;
 }
 
 
@@ -2717,7 +2774,10 @@ function DeviceModelSettings({ notify }: { notify: (message: string, error?: boo
   const queryClient = useQueryClient();
   const emptyModelForm = { brand: "Apple", enabled: "true", sort_order: 100 };
   const [modelForm, setModelForm] = useState<AnyRecord>(emptyModelForm);
+  const [formOpen, setFormOpen] = useState(false);
   const [keyword, setKeyword] = useState("");
+  const [brandFilter, setBrandFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
   const query = useQuery({ queryKey: ["device-models-settings", keyword], queryFn: () => api<AnyRecord[]>(`/api/device-models?q=${encodeURIComponent(keyword)}`) });
   const mutation = useMutation({
     mutationFn: (payload: AnyRecord) => api<AnyRecord>("/api/device-models", {
@@ -2726,6 +2786,7 @@ function DeviceModelSettings({ notify }: { notify: (message: string, error?: boo
         ...payload,
         colors: splitOptionText(payload.colors_text ?? payload.colors),
         capacities: splitOptionText(payload.capacities_text ?? payload.capacities),
+        model_numbers: splitOptionText(payload.model_numbers_text ?? payload.model_numbers),
         enabled: payload.enabled !== false && payload.enabled !== "false",
         sort_order: Number(payload.sort_order || 100),
       }),
@@ -2733,55 +2794,148 @@ function DeviceModelSettings({ notify }: { notify: (message: string, error?: boo
     onSuccess: () => {
       notify("设备型号已保存");
       setModelForm(emptyModelForm);
+      setFormOpen(false);
       queryClient.invalidateQueries({ queryKey: ["device-models-settings"] });
       queryClient.invalidateQueries({ queryKey: ["device-models"] });
     },
     onError: error => notify(error instanceof Error ? error.message : "保存失败", true),
   });
-  const rows = query.data || [];
+  const syncAppleMutation = useMutation({
+    mutationFn: () => api<AnyRecord>("/api/device-models/sync/apple", { method: "POST", body: JSON.stringify({}) }),
+    onSuccess: result => {
+      notify(`已从 Apple 官网同步 ${String(result.synced_count || 0)} 个 iPhone/iPad/Mac 型号，新增 ${String(result.created_count || 0)} 个，更新 ${String(result.updated_count || 0)} 个`);
+      queryClient.invalidateQueries({ queryKey: ["device-models-settings"] });
+      queryClient.invalidateQueries({ queryKey: ["device-models"] });
+    },
+    onError: error => notify(error instanceof Error ? error.message : "同步失败", true),
+  });
+  const allRows = query.data || [];
+  const brandOptions = useMemo(() => uniqueStrings(allRows.map(row => row.brand)).map(value => ({ value, label: value })), [allRows]);
+  const rows = useMemo(() => allRows.filter(row => {
+    const matchesBrand = !brandFilter || String(row.brand || "") === brandFilter;
+    const enabledText = row.enabled ? "true" : "false";
+    const matchesStatus = !statusFilter || enabledText === statusFilter;
+    return matchesBrand && matchesStatus;
+  }), [allRows, brandFilter, statusFilter]);
+  const enabledCount = allRows.filter(row => row.enabled).length;
+  const disabledCount = Math.max(allRows.length - enabledCount, 0);
+
+  function openNewModelForm() {
+    setModelForm(emptyModelForm);
+    setFormOpen(true);
+  }
+
+  function openEditModelForm(row: AnyRecord) {
+    setModelForm({
+      ...row,
+      enabled: row.enabled ? "true" : "false",
+      model_numbers_text: optionArray(row.model_numbers).join("、"),
+      colors_text: optionArray(row.colors).join("、"),
+      capacities_text: optionArray(row.capacities).join("、"),
+    });
+    setFormOpen(true);
+  }
+
+  const modelFields = [
+    { name: "brand", label: "品牌", placeholder: "Apple", initialValue: "Apple" },
+    { name: "model_name", label: "型号名称", placeholder: "iPhone 16 Pro", required: true },
+    { name: "sort_order", label: "排序", initialValue: 100, type: "number" },
+    { name: "enabled", label: "状态", initialValue: "true", options: [{ value: "true", label: "启用" }, { value: "false", label: "停用" }] },
+    { name: "model_numbers_text", label: "小型号", placeholder: "A1822、A1823、iPad7,5", area: true },
+    { name: "colors_text", label: "颜色", placeholder: "黑色、白色、蓝色", area: true },
+    { name: "capacities_text", label: "容量/内存", placeholder: "128GB、256GB、512GB", area: true },
+    { name: "remark", label: "备注", placeholder: "备注", area: true },
+  ];
+
   return (
-    <Panel title="设备型号管理" note="维护开单页可选的设备型号、颜色和容量。颜色/容量可用逗号、顿号或换行分隔。">
-      <AppFormSection
-        clearText="清空"
-        fields={[
-          { name: "brand", label: "品牌", placeholder: "Apple", initialValue: "Apple" },
-          { name: "model_name", label: "型号名称", placeholder: "iPhone 16 Pro", required: true },
-          { name: "sort_order", label: "排序", initialValue: 100, type: "number" },
-          { name: "enabled", label: "状态", initialValue: "true", options: [{ value: "true", label: "启用" }, { value: "false", label: "停用" }] },
-          { name: "colors_text", label: "颜色", placeholder: "黑色、白色、蓝色", area: true },
-          { name: "capacities_text", label: "容量/内存", placeholder: "128GB、256GB、512GB", area: true },
-          { name: "remark", label: "备注", placeholder: "备注", area: true },
-        ]}
-        loading={mutation.isPending}
-        values={modelForm}
-        onClear={() => setModelForm(emptyModelForm)}
-        onSubmit={(payload, helpers) => { mutation.mutate(payload); helpers.reset(); }}
-        submitText="保存设备型号"
-        title="设备型号"
-      />
-      <div className="toolbar filters"><Input value={keyword} onChange={event => setKeyword(event.target.value)} placeholder="搜索品牌、型号" allowClear /></div>
+    <div className="device-model-page">
+      <section className="device-model-control">
+        <div className="device-model-search">
+          <Input prefix={<Search size={16} />} value={keyword} onChange={event => setKeyword(event.target.value)} placeholder="搜索品牌、型号" allowClear />
+          <Select allowClear value={brandFilter || undefined} onChange={value => setBrandFilter(value || "")} placeholder="全部品牌" options={brandOptions} />
+          <Select allowClear value={statusFilter || undefined} onChange={value => setStatusFilter(value || "")} placeholder="全部状态" options={[{ value: "true", label: "启用" }, { value: "false", label: "停用" }]} />
+        </div>
+        <div className="device-model-actions">
+          <AppButton onClick={() => syncAppleMutation.mutate()} disabled={syncAppleMutation.isPending}><RefreshCw size={16} />{syncAppleMutation.isPending ? "正在更新" : "同步 Apple 型号"}</AppButton>
+          <AppButton type="primary" onClick={openNewModelForm}><Plus size={16} />新增型号</AppButton>
+        </div>
+      </section>
+
+      <section className="device-model-stats">
+        <div><span>全部型号</span><strong>{allRows.length}</strong></div>
+        <div><span>启用</span><strong>{enabledCount}</strong></div>
+        <div><span>停用</span><strong>{disabledCount}</strong></div>
+      </section>
+
+      <section className="device-model-table-card">
+        <div className="device-model-table-title">
+          <div>
+            <h2>设备型号维护</h2>
+            <p>维护开单页可选的设备型号、颜色和容量。颜色/容量可用逗号、顿号或换行分隔。</p>
+          </div>
+          <span>{rows.length} / {allRows.length} 条</span>
+        </div>
       <QueryState loading={query.isLoading} error={query.error} />
       <AppTable
         rows={rows}
-        columns={[["brand", "品牌"], ["model_name", "型号"], ["colors", "颜色"], ["capacities", "容量/内存"], ["sort_order", "排序"], ["enabled", "状态"]]}
+        columns={[["brand", "品牌"], ["model_name", "型号"], ["sort_order", "排序"], ["enabled", "状态"], ["model_numbers", "小型号"], ["colors", "颜色"], ["capacities", "容量/内存"]]}
         formatValue={(row, key) => {
-          if (key === "colors" || key === "capacities") return optionArray(row[key]).join("、") || "-";
+          if (key === "colors" || key === "capacities" || key === "model_numbers") return optionArray(row[key]).join("、") || "-";
           if (key === "enabled") return row.enabled ? "启用" : "停用";
           return displayValue(row, key);
         }}
         isStatusKey={(key) => key === "enabled"}
-        actions={{ render: row => <AppButton onClick={() => setModelForm({ ...row, enabled: row.enabled ? "true" : "false", colors_text: optionArray(row.colors).join("、"), capacities_text: optionArray(row.capacities).join("、") })}>编辑</AppButton> }}
+        renderers={{
+          brand: row => <b className="device-model-brand">{String(row.brand || "-")}</b>,
+          model_numbers: row => <OptionPreview values={optionArray(row.model_numbers)} />,
+          colors: row => <OptionPreview values={optionArray(row.colors)} />,
+          capacities: row => <OptionPreview values={optionArray(row.capacities)} />,
+        }}
+        actions={{ render: row => <AppButton onClick={() => openEditModelForm(row)}><Edit3 size={15} />编辑</AppButton> }}
       />
-    </Panel>
+      </section>
+
+      <AppModal
+        open={formOpen}
+        onClose={() => setFormOpen(false)}
+        width={920}
+      >
+        <AppFormSection
+          clearText="清空"
+          fields={modelFields}
+          loading={mutation.isPending}
+          values={modelForm}
+          onClear={() => setModelForm(emptyModelForm)}
+          onSubmit={(payload) => mutation.mutate(payload)}
+          submitText="保存设备型号"
+          title="设备型号"
+        />
+      </AppModal>
+    </div>
+  );
+}
+
+function OptionPreview({ values }: { values: string[] }) {
+  if (!values.length) return <span className="muted">-</span>;
+  const visible = values.slice(0, 3);
+  return (
+    <div className="option-preview">
+      {visible.map(value => <span key={value}>{value}</span>)}
+      {values.length > visible.length && <em>+{values.length - visible.length}</em>}
+    </div>
   );
 }
 
 function RepairSkuSettings({ notify }: { notify: (message: string, error?: boolean) => void }) {
   const queryClient = useQueryClient();
   const emptySkuForm = { model: "", enabled: "true" };
+  const emptyBomForm = { qty: 1, priority: 1, is_required: "true" };
   const [skuForm, setSkuForm] = useState<AnyRecord>(emptySkuForm);
+  const [bomForm, setBomForm] = useState<AnyRecord>(emptyBomForm);
   const [skuKeyword, setSkuKeyword] = useState("");
   const query = useQuery({ queryKey: ["repair-skus-settings", skuKeyword], queryFn: () => api<AnyRecord[]>(`/api/repair-skus?q=${encodeURIComponent(skuKeyword)}`) });
+  const bindingsQuery = useQuery({ queryKey: ["repair-fault-materials-settings"], queryFn: () => api<AnyRecord[]>("/api/repair-fault-materials") });
+  const materialsQuery = useQuery({ queryKey: ["materials-for-repair-sku-settings"], queryFn: () => api<AnyRecord>("/api/materials") });
   const mutation = useMutation({
     mutationFn: (payload: AnyRecord) => api<AnyRecord>("/api/repair-skus", { method: "POST", body: JSON.stringify({ ...payload, cost_amount: Number(payload.cost_amount || 0), charge_amount: Number(payload.charge_amount || 0), enabled: payload.enabled !== false && payload.enabled !== "false" }) }),
     onSuccess: () => {
@@ -2792,7 +2946,40 @@ function RepairSkuSettings({ notify }: { notify: (message: string, error?: boole
     },
     onError: error => notify(error instanceof Error ? error.message : "保存失败", true),
   });
-  const rows = query.data || [];
+  const bomMutation = useMutation({
+    mutationFn: (payload: AnyRecord) => api<AnyRecord>("/api/repair-fault-materials", {
+      method: "POST",
+      body: JSON.stringify({
+        repair_sku_id: Number(payload.repair_sku_id || 0),
+        material_id: Number(payload.material_id || 0),
+        qty: Number(payload.qty || 1),
+        priority: Number(payload.priority || 1),
+        is_required: payload.is_required !== false && payload.is_required !== "false",
+        remark: payload.remark || "",
+      }),
+    }),
+    onSuccess: () => {
+      notify("故障默认物料已保存");
+      setBomForm(emptyBomForm);
+      queryClient.invalidateQueries({ queryKey: ["repair-fault-materials-settings"] });
+      queryClient.invalidateQueries({ queryKey: ["repair-sku-material-hints"] });
+    },
+    onError: error => notify(error instanceof Error ? error.message : "保存失败", true),
+  });
+  const bindings = bindingsQuery.data || [];
+  const rows: AnyRecord[] = (query.data || []).map(row => {
+    const skuBindings = bindings.filter(binding => String(binding.repair_sku_id) === String(row.sku_id));
+    const estimatedMaterialCost = skuBindings.reduce((sum, binding) => sum + Number(binding.qty || 0) * Number(binding.avg_cost || 0), 0);
+    return {
+      ...row,
+      default_material_count: skuBindings.length,
+      estimated_material_cost: estimatedMaterialCost,
+      gross_profit: Number(row.cost_amount || 0) + Number(row.charge_amount || 0) - estimatedMaterialCost,
+    };
+  });
+  const materials = (((materialsQuery.data?.materials as AnyRecord[] | undefined) || []));
+  const selectedSkuId = Number(bomForm.repair_sku_id || skuForm.sku_id || 0);
+  const selectedBindings = selectedSkuId ? bindings.filter(row => Number(row.repair_sku_id) === selectedSkuId) : [];
   return (
     <Panel title="故障代码维护" note="维护按机型匹配的维修故障代码、维修方案/SKU 和默认价格。空机型表示通用。">
       <AppFormSection
@@ -2818,23 +3005,48 @@ function RepairSkuSettings({ notify }: { notify: (message: string, error?: boole
       <QueryState loading={query.isLoading} error={query.error} />
       <AppTable
         rows={rows}
-        columns={[["model", "机型"], ["sku_code", "故障代码"], ["fault_name", "故障名称"], ["solution_name", "维修方案/SKU"], ["cost_amount", "配件价格"], ["charge_amount", "人工费"], ["enabled", "状态"]]}
+        columns={[["model", "机型"], ["sku_code", "故障代码"], ["fault_name", "故障名称"], ["solution_name", "维修方案/SKU"], ["cost_amount", "配件价格"], ["charge_amount", "人工费"], ["default_material_count", "默认物料"], ["estimated_material_cost", "预估物料成本"], ["gross_profit", "毛利"], ["enabled", "状态"]]}
         formatValue={(row, key) => {
           if (key === "model") return String(row.model || "通用");
-          if (key === "cost_amount" || key === "charge_amount") return formatMoney(row[key]);
+          if (key === "cost_amount" || key === "charge_amount" || key === "estimated_material_cost" || key === "gross_profit") return formatMoney(row[key]);
           if (key === "enabled") return row.enabled ? "启用" : "停用";
           return displayValue(row, key);
         }}
         isStatusKey={(key) => key === "enabled"}
-        actions={{ render: row => <AppButton onClick={() => setSkuForm({ ...row, enabled: row.enabled ? "true" : "false" })}>编辑</AppButton> }}
+        actions={{ render: row => <div className="inline-actions"><AppButton onClick={() => setSkuForm({ ...row, enabled: row.enabled ? "true" : "false" })}>编辑</AppButton><AppButton onClick={() => setBomForm(prev => ({ ...prev, repair_sku_id: row.sku_id }))}>绑定物料</AppButton></div> }}
       />
+      <section className="settings-subpanel">
+        <h3>绑定默认维修物料</h3>
+        <div className="form-grid">
+          <label><span>故障 SKU</span><Select value={bomForm.repair_sku_id ? String(bomForm.repair_sku_id) : undefined} placeholder="选择故障代码" onChange={value => setBomForm(prev => ({ ...prev, repair_sku_id: Number(value) }))} options={rows.map(row => ({ value: String(row.sku_id), label: `${String(row.sku_code)} · ${String(row.fault_name || row.solution_name)}` }))} /></label>
+          <label><span>物料</span><Select showSearch optionFilterProp="label" value={bomForm.material_id ? String(bomForm.material_id) : undefined} placeholder="搜索物料" onChange={value => setBomForm(prev => ({ ...prev, material_id: Number(value) }))} options={materials.map(row => ({ value: String(row.material_id), label: `${String(row.sku || row.material_code)} · ${String(row.name)} · 可销售 ${String(row.sellable_qty ?? row.current_qty ?? 0)}` }))} /></label>
+          <label><span>数量</span><Input type="number" value={String(bomForm.qty || 1)} onChange={event => setBomForm(prev => ({ ...prev, qty: event.target.value }))} /></label>
+          <label><span>优先级</span><Input type="number" value={String(bomForm.priority || 1)} onChange={event => setBomForm(prev => ({ ...prev, priority: event.target.value }))} /></label>
+          <label><span>是否必需</span><Select value={String(bomForm.is_required ?? "true")} onChange={value => setBomForm(prev => ({ ...prev, is_required: value }))} options={[{ value: "true", label: "必需" }, { value: "false", label: "可替代/可选" }]} /></label>
+          <label><span>备注</span><Input value={String(bomForm.remark || "")} onChange={event => setBomForm(prev => ({ ...prev, remark: event.target.value }))} placeholder="例如优先原厂、可替换副厂" /></label>
+        </div>
+        <div className="inline-editor-actions"><button type="button" className="mini-add-button" onClick={() => bomMutation.mutate(bomForm)} disabled={bomMutation.isPending || !bomForm.repair_sku_id || !bomForm.material_id}>保存绑定</button><button type="button" className="ghost-mini-button" onClick={() => setBomForm(emptyBomForm)}>清空</button></div>
+        <AppTable
+          rows={selectedBindings}
+          columns={[["sku_code", "故障代码"], ["name", "物料"], ["qty", "数量"], ["priority", "优先级"], ["is_required", "必需"], ["current_qty", "在库"], ["remark", "备注"]]}
+          formatValue={(row, key) => {
+            if (key === "is_required") return Number(row.is_required ?? 1) ? "必需" : "可选";
+            if (key === "name") return String(row.name || row.sku || "-");
+            return displayValue(row, key);
+          }}
+          isStatusKey={(key) => key === "is_required"}
+          empty={selectedSkuId ? "该故障尚未绑定默认物料" : "选择故障 SKU 后查看已绑定物料"}
+        />
+      </section>
     </Panel>
   );
 }
 
-function AuditPage({ notify }: { notify: (message: string, error?: boolean) => void }) {
+function AuditPage({ notify, section }: { notify: (message: string, error?: boolean) => void; section: ViewKey }) {
+  if (section === "settingsDeviceModels") return <DeviceModelSettings notify={notify} />;
+  if (section === "settingsRepairSkus") return <RepairSkuSettings notify={notify} />;
   const query = useQuery({ queryKey: ["audit"], queryFn: () => api<AnyRecord[]>("/api/audit-logs") });
-  return <div className="stack"><DeviceModelSettings notify={notify} /><RepairSkuSettings notify={notify} /><Panel title="系统设置 / 操作日志"><QueryState loading={query.isLoading} error={query.error} /><DataTable rows={query.data} columns={[["time", "时间"], ["username", "用户"], ["role", "角色"], ["action", "动作"], ["target_type", "对象"], ["target_id", "ID"], ["result", "结果"]]} /></Panel></div>;
+  return <Panel title="操作日志" note="记录关键写操作、对象、操作者和执行结果。"><QueryState loading={query.isLoading} error={query.error} /><DataTable rows={query.data} columns={[["time", "时间"], ["username", "用户"], ["role", "角色"], ["action", "动作"], ["target_type", "对象"], ["target_id", "ID"], ["result", "结果"]]} /></Panel>;
 }
 
 export default App;

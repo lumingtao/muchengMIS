@@ -47,6 +47,8 @@ from .models import (
     RepairQuoteConfirmInput,
     RepairQuoteInput,
     RepairSkuInput,
+    RepairSkuMaterialPlanInput,
+    RepairMaterialReserveInput,
     RepairFaultMaterialInput,
     RepairWorkflowActionInput,
     RepairStatusInput,
@@ -274,13 +276,30 @@ def repair_module_action(repair_order_id: int, module: str, action: str, data: R
 
 
 @app.get("/api/materials")
-def materials(user: User = Depends(current_user), service: MisService = Depends(get_service)):
-    return endpoint(lambda: service.list_materials(user))
+def materials(
+    q: str = Query(default=""),
+    status: str = Query(default=""),
+    category_id: int | None = Query(default=None),
+    low_stock: bool = Query(default=False),
+    user: User = Depends(current_user),
+    service: MisService = Depends(get_service),
+):
+    return endpoint(lambda: service.list_materials(user, q=q, status=status, category_id=category_id, low_stock=low_stock))
+
+
+@app.get("/api/materials/{material_id}")
+def material_detail(material_id: int, user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.material_detail(user, material_id))
 
 
 @app.get("/api/warehouse")
 def warehouse(user: User = Depends(current_user), service: MisService = Depends(get_service)):
     return endpoint(lambda: service.warehouse_overview(user))
+
+
+@app.get("/api/warehouse/dashboard")
+def warehouse_dashboard(user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.warehouse_dashboard(user))
 
 
 @app.get("/api/warehouse/areas")
@@ -319,13 +338,34 @@ def create_material(data: MaterialInput, user: User = Depends(current_user), ser
 
 
 @app.get("/api/material-units")
-def material_units(user: User = Depends(current_user), service: MisService = Depends(get_service)):
-    return endpoint(lambda: service.material_units(user))
+def material_units(
+    q: str = Query(default=""),
+    status: str = Query(default=""),
+    material_id: int | None = Query(default=None),
+    batch_id: int | None = Query(default=None),
+    location_id: int | None = Query(default=None),
+    repair_order_id: int | None = Query(default=None),
+    user: User = Depends(current_user),
+    service: MisService = Depends(get_service),
+):
+    return endpoint(lambda: service.material_units(user, q=q, status=status, material_id=material_id, batch_id=batch_id, location_id=location_id, repair_order_id=repair_order_id))
 
 
 @app.get("/api/material-batches")
-def material_batches(user: User = Depends(current_user), service: MisService = Depends(get_service)):
-    return endpoint(lambda: service.material_batches(user))
+def material_batches(
+    q: str = Query(default=""),
+    material_id: int | None = Query(default=None),
+    location_id: int | None = Query(default=None),
+    batch_type: str = Query(default=""),
+    user: User = Depends(current_user),
+    service: MisService = Depends(get_service),
+):
+    return endpoint(lambda: service.material_batches(user, q=q, material_id=material_id, location_id=location_id, batch_type=batch_type))
+
+
+@app.get("/api/material-batches/{batch_id}")
+def material_batch_detail(batch_id: int, user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.material_batch_detail(user, batch_id))
 
 
 @app.post("/api/material-batches/purchase")
@@ -344,13 +384,24 @@ def return_material_batch(batch_id: int, data: MaterialBatchReturnInput, user: U
 
 
 @app.get("/api/material-requests")
-def material_requests(user: User = Depends(current_user), service: MisService = Depends(get_service)):
-    return endpoint(lambda: service.material_requests(user))
+def material_requests(
+    q: str = Query(default=""),
+    status: str = Query(default=""),
+    repair_order_id: int | None = Query(default=None),
+    user: User = Depends(current_user),
+    service: MisService = Depends(get_service),
+):
+    return endpoint(lambda: service.material_requests(user, q=q, status=status, repair_order_id=repair_order_id))
 
 
 @app.get("/api/material-requests/mine")
 def my_material_requests(user: User = Depends(current_user), service: MisService = Depends(get_service)):
     return endpoint(lambda: service.material_requests(user, mine=True))
+
+
+@app.get("/api/material-requests/{request_id}")
+def material_request_detail(request_id: int, user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.material_request_detail(user, request_id))
 
 
 @app.post("/api/material-requests")
@@ -388,9 +439,35 @@ def inspect_material_return(return_id: int, data: MaterialReturnInspectInput, us
     return endpoint(lambda: service.inspect_material_return(user, return_id, data))
 
 
+@app.get("/api/material-returns")
+def material_returns(
+    q: str = Query(default=""),
+    status: str = Query(default=""),
+    repair_order_id: int | None = Query(default=None),
+    user: User = Depends(current_user),
+    service: MisService = Depends(get_service),
+):
+    return endpoint(lambda: service.material_returns(user, q=q, status=status, repair_order_id=repair_order_id))
+
+
+@app.get("/api/material-returns/{return_id}")
+def material_return_detail(return_id: int, user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.material_return_detail(user, return_id))
+
+
 @app.post("/api/stock-counts")
 def create_stock_count(data: StockCountInput, user: User = Depends(current_user), service: MisService = Depends(get_service)):
     return endpoint(lambda: service.create_stock_count(user, data))
+
+
+@app.get("/api/stock-counts")
+def stock_counts(status: str = Query(default=""), user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.stock_counts(user, status=status))
+
+
+@app.get("/api/stock-counts/{count_id}")
+def stock_count_detail(count_id: int, user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.stock_count_detail(user, count_id))
 
 
 @app.post("/api/stock-counts/{count_id}/confirm")
@@ -403,9 +480,31 @@ def create_stock_adjustment(data: StockAdjustmentInput, user: User = Depends(cur
     return endpoint(lambda: service.create_stock_adjustment(user, data))
 
 
+@app.get("/api/stock-adjustments")
+def stock_adjustments(
+    q: str = Query(default=""),
+    adjustment_type: str = Query(default=""),
+    material_id: int | None = Query(default=None),
+    user: User = Depends(current_user),
+    service: MisService = Depends(get_service),
+):
+    return endpoint(lambda: service.stock_adjustments(user, q=q, adjustment_type=adjustment_type, material_id=material_id))
+
+
 @app.get("/api/stock-movements")
-def stock_movements(user: User = Depends(current_user), service: MisService = Depends(get_service)):
-    return endpoint(lambda: service.stock_movements(user))
+def stock_movements(
+    q: str = Query(default=""),
+    material_id: int | None = Query(default=None),
+    batch_id: int | None = Query(default=None),
+    request_id: int | None = Query(default=None),
+    repair_order_id: int | None = Query(default=None),
+    source_type: str = Query(default=""),
+    source_id: int | None = Query(default=None),
+    direction: str = Query(default=""),
+    user: User = Depends(current_user),
+    service: MisService = Depends(get_service),
+):
+    return endpoint(lambda: service.stock_movements(user, q=q, material_id=material_id, batch_id=batch_id, request_id=request_id, repair_order_id=repair_order_id, source_type=source_type, source_id=source_id, direction=direction))
 
 
 @app.get("/api/repair-fault-materials")
@@ -416,6 +515,11 @@ def repair_fault_materials(user: User = Depends(current_user), service: MisServi
 @app.post("/api/repair-fault-materials")
 def upsert_repair_fault_material(data: RepairFaultMaterialInput, user: User = Depends(current_user), service: MisService = Depends(get_service)):
     return endpoint(lambda: service.upsert_repair_fault_material(user, data))
+
+
+@app.post("/api/repair-skus/{sku_id}/materials")
+def save_repair_sku_materials(sku_id: int, data: RepairSkuMaterialPlanInput, user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.save_repair_sku_materials(user, sku_id, data))
 
 
 @app.get("/api/repair-skus/{sku_id}/material-hints")
@@ -436,6 +540,11 @@ def upsert_repair_sku(data: RepairSkuInput, user: User = Depends(current_user), 
 @app.post("/api/device-models")
 def upsert_device_model(data: DeviceModelInput, user: User = Depends(current_user), service: MisService = Depends(get_service)):
     return endpoint(lambda: service.upsert_device_model(user, data))
+
+
+@app.post("/api/device-models/sync/apple")
+def sync_apple_device_models(user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.sync_apple_device_models(user))
 
 
 @app.post("/api/repair-orders/{repair_order_id}/assign")
@@ -461,6 +570,21 @@ def change_repair_order_price(repair_order_id: int, data: PriceChangeInput, user
 @app.post("/api/repair-orders/{repair_order_id}/items")
 def add_repair_item(repair_order_id: int, data: RepairItemInput, user: User = Depends(current_user), service: MisService = Depends(get_service)):
     return endpoint(lambda: service.add_repair_item(user, repair_order_id, data))
+
+
+@app.post("/api/repair-orders/{repair_order_id}/materials/reserve")
+def reserve_repair_materials(repair_order_id: int, data: RepairMaterialReserveInput, user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.reserve_repair_materials(user, repair_order_id, data))
+
+
+@app.post("/api/repair-orders/{repair_order_id}/materials/consume")
+def consume_repair_materials(repair_order_id: int, data: RepairMaterialReserveInput, user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.consume_repair_materials(user, repair_order_id, data))
+
+
+@app.post("/api/repair-orders/{repair_order_id}/materials/release")
+def release_repair_materials(repair_order_id: int, data: RepairMaterialReserveInput, user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.release_repair_materials(user, repair_order_id, data))
 
 
 @app.post("/api/repair-orders/{repair_order_id}/status")

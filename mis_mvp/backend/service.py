@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import sqlite3
+import json
 import re
+from html import unescape
 from pathlib import Path
 from typing import Any
+from urllib.error import URLError
+from urllib.request import Request, urlopen
 from uuid import uuid4
 
 from .auth import hash_password, permissions_for, require_permission
@@ -51,6 +55,8 @@ from .models import (
     RepairQuoteConfirmInput,
     RepairQuoteInput,
     RepairSkuInput,
+    RepairSkuMaterialPlanInput,
+    RepairMaterialReserveInput,
     RepairWorkflowActionInput,
     RepairFaultMaterialInput,
     RepairStatusInput,
@@ -426,6 +432,7 @@ class MisService:
                 item["remark"],
                 item["sku_id"],
             )
+            self._reserve_for_repair_item(user, order_id, item_id, item["remark"])
             quoted_amount += (float(item["cost_amount"]) + float(item["charge_amount"])) * int(item["quantity"])
             self.repo.add_machine_event(machine_id, "repair", "维修项目", f"{item['item_name']} x{item['quantity']}", user.username, "repair_item", item_id)
         if repair_items:
@@ -482,6 +489,255 @@ class MisService:
         self._log_success(user, "device_model:upsert", "device_model", str(device_model_id), request_summary=data.model_name)
         self.conn.commit()
         return self.repo.get_device_model(device_model_id) or {}
+
+    def sync_apple_device_models(self, user: User) -> dict[str, Any]:
+        self._allowed(user, "device_model:write")
+        sources = [
+            {"product": "iPhone", "url": "https://support.apple.com/en-us/108044", "kind": "mobile", "prefixes": ["iPhone"]},
+            {"product": "iPad", "url": "https://support.apple.com/en-us/108043", "kind": "mobile", "prefixes": ["iPad"]},
+            {"product": "MacBook Pro", "url": "https://support.apple.com/en-us/108052", "kind": "mac", "prefixes": ["MacBook Pro"]},
+            {"product": "MacBook Air", "url": "https://support.apple.com/en-us/102869", "kind": "mac", "prefixes": ["MacBook Air"]},
+            {"product": "MacBook", "url": "https://support.apple.com/en-us/103257", "kind": "mac", "prefixes": ["MacBook"]},
+            {"product": "iMac", "url": "https://support.apple.com/en-us/108054", "kind": "mac", "prefixes": ["iMac"]},
+            {"product": "Mac mini", "url": "https://support.apple.com/en-us/102852", "kind": "mac", "prefixes": ["Mac mini"]},
+            {"product": "Mac Studio", "url": "https://support.apple.com/en-us/102231", "kind": "mac", "prefixes": ["Mac Studio"]},
+            {"product": "Mac Pro", "url": "https://support.apple.com/en-us/102887", "kind": "mac", "prefixes": ["Mac Pro"]},
+        ]
+        models: list[dict[str, Any]] = []
+        source_counts: list[dict[str, Any]] = []
+        for source in sources:
+            html = self._fetch_text(str(source["url"]))
+            if source["kind"] == "mobile":
+                parsed = self._parse_apple_mobile_models(html, list(source["prefixes"]), str(source["product"]), str(source["url"]))
+            else:
+                parsed = self._parse_apple_mac_models(html, list(source["prefixes"]), str(source["product"]), str(source["url"]))
+            source_counts.append({"product": source["product"], "source_url": source["url"], "count": len(parsed)})
+            models.extend(parsed)
+        if not models:
+            raise BusinessError("未能从 Apple 官方页面解析到设备型号，请稍后重试")
+        before = {str(row["model_name"]) for row in self.repo.list_device_models(keyword="", enabled_only=False) if str(row.get("brand") or "") == "Apple"}
+        synced_ids: list[int] = []
+        for index, model in enumerate(models):
+            device_model_id = self.repo.upsert_device_model(
+                {
+                    "brand": "Apple",
+                    "model_name": model["model_name"],
+                    "colors": model["colors"],
+                    "capacities": model["capacities"],
+                    "model_numbers": model["model_numbers"],
+                    "enabled": True,
+                    "sort_order": index + 1,
+                    "remark": f"Apple 官方同步；产品：{model['product']}；年份：{model['year'] or '未知'}；小型号：{self._format_model_numbers(model['model_numbers']) or '无'}；来源：{model['source_url']}",
+                }
+            )
+            synced_ids.append(device_model_id)
+        self._log_success(user, "device_model:sync_apple", "device_model", "apple", request_summary=f"同步 {len(synced_ids)} 个 Apple 型号")
+        self.conn.commit()
+        after = {model["model_name"] for model in models}
+        return {
+            "source_url": "Apple Support",
+            "sources": source_counts,
+            "synced_count": len(synced_ids),
+            "created_count": len(after - before),
+            "updated_count": len(after & before),
+            "models": models,
+        }
+
+    def _fetch_text(self, url: str) -> str:
+        request = Request(url, headers={"User-Agent": "Mozilla/5.0 (compatible; MISDeviceModelSync/1.0)"})
+        try:
+            with urlopen(request, timeout=20) as response:
+                charset = response.headers.get_content_charset() or "utf-8"
+                return response.read().decode(charset, errors="replace")
+        except URLError as exc:
+            raise BusinessError(f"无法连接 Apple 官方页面：{exc}") from exc
+
+    def _parse_apple_iphone_models(self, html: str) -> list[dict[str, Any]]:
+        return self._parse_apple_mobile_models(html, ["iPhone"], "iPhone", "https://support.apple.com/en-us/108044")
+
+    def _parse_apple_mobile_models(self, html: str, prefixes: list[str], product: str, source_url: str) -> list[dict[str, Any]]:
+        sections = self._apple_heading_sections(html)
+        models: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for heading, block in sections:
+            model_name = self._normalize_apple_model_name(heading)
+            if not self._is_apple_mobile_model_name(model_name, prefixes):
+                continue
+            if model_name in seen:
+                continue
+            year_match = re.search(r"Year(?: introduced)?:\s*([0-9]{4})", block, flags=re.I)
+            if not year_match:
+                continue
+            capacity_match = re.search(r"Capacity:\s*([^\n]+)", block, flags=re.I)
+            color_match = re.search(r"Colors?:\s*([^\n]+)", block, flags=re.I)
+            capacities = self._split_apple_options(capacity_match.group(1) if capacity_match else "")
+            colors = self._split_apple_options(color_match.group(1) if color_match else "", translate_colors=True)
+            model_numbers = self._extract_apple_model_numbers(block)
+            models.append(
+                {
+                    "model_name": model_name,
+                    "year": year_match.group(1) if year_match else "",
+                    "capacities": capacities,
+                    "colors": colors,
+                    "model_numbers": model_numbers,
+                    "product": product,
+                    "source_url": source_url,
+                }
+            )
+            seen.add(model_name)
+        return models
+
+    def _parse_apple_mac_models(self, html: str, prefixes: list[str], product: str, source_url: str) -> list[dict[str, Any]]:
+        sections = self._apple_heading_sections(html)
+        headings: list[tuple[str, str]] = [(heading, block) for heading, block in sections]
+        if not any(self._is_apple_mac_model_name(self._normalize_apple_model_name(heading), prefixes) for heading, _ in headings):
+            lines = self._apple_text_lines(html)
+            headings = [(line, "\n".join(lines[index + 1 : index + 5])) for index, line in enumerate(lines)]
+        models: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for heading, block in headings:
+            model_name = self._normalize_apple_model_name(heading)
+            if not self._is_apple_mac_model_name(model_name, prefixes) or model_name in seen:
+                continue
+            year_match = re.search(r"(20[0-9]{2}|19[0-9]{2})", model_name)
+            models.append(
+                {
+                    "model_name": model_name,
+                    "year": year_match.group(1) if year_match else "",
+                    "capacities": [],
+                    "colors": [],
+                    "model_numbers": self._extract_apple_model_numbers(block),
+                    "product": product,
+                    "source_url": source_url,
+                }
+            )
+            seen.add(model_name)
+        return models
+
+    def _apple_text_lines(self, html: str) -> list[str]:
+        text = re.sub(r"(?is)<(script|style).*?>.*?</\\1>", "", html)
+        text = re.sub(r"(?i)</(h2|h3|p|li|div|a)>", "\n", text)
+        text = re.sub(r"(?s)<[^>]+>", " ", text)
+        text = unescape(text)
+        text = re.sub(r"[ \t\r\f\v]+", " ", text)
+        return [line.strip() for line in text.splitlines() if line.strip()]
+
+    def _apple_heading_sections(self, html: str) -> list[tuple[str, str]]:
+        cleaned = re.sub(r"(?is)<(script|style).*?>.*?</\\1>", "", html)
+        matches = list(re.finditer(r"(?is)<h[23][^>]*>(.*?)</h[23]>", cleaned))
+        sections: list[tuple[str, str]] = []
+        for index, match in enumerate(matches):
+            heading = re.sub(r"(?s)<[^>]+>", " ", match.group(1))
+            heading = unescape(re.sub(r"\s+", " ", heading)).strip()
+            end = matches[index + 1].start() if index + 1 < len(matches) else len(cleaned)
+            body = cleaned[match.end() : end]
+            body = re.sub(r"(?i)</(p|li|div)>", "\n", body)
+            body = re.sub(r"(?s)<[^>]+>", " ", body)
+            body = unescape(re.sub(r"[ \t\r\f\v]+", " ", body))
+            if heading:
+                sections.append((heading, body))
+        return sections
+
+    def _apple_heading_texts(self, html: str) -> list[str]:
+        headings: list[str] = []
+        for match in re.finditer(r"(?is)<h[23][^>]*>(.*?)</h[23]>", html):
+            value = re.sub(r"(?s)<[^>]+>", " ", match.group(1))
+            value = unescape(re.sub(r"\s+", " ", value)).strip()
+            if value:
+                headings.append(value)
+        return headings
+
+    def _is_apple_mobile_model_name(self, value: str, prefixes: list[str]) -> bool:
+        if not any(value.startswith(f"{prefix} ") or value == prefix for prefix in prefixes):
+            return False
+        if len(value) > 80 or ":" in value:
+            return False
+        lowered = value.lower()
+        blocked = ["compatible", "models purchased", "screen", "serial", "button", "sim", "support"]
+        return not any(word in lowered for word in blocked)
+
+    def _is_apple_mac_model_name(self, value: str, prefixes: list[str]) -> bool:
+        if not any(value.startswith(f"{prefix} ") or value.startswith(f"{prefix}(") for prefix in prefixes):
+            return False
+        if len(value) > 120 or ":" in value:
+            return False
+        lowered = value.lower()
+        blocked = ["identify", "tech specs", "user guide", "other", "learn", "about", "find"]
+        return "(" in value and not any(word in lowered for word in blocked)
+
+    def _normalize_apple_model_name(self, value: str) -> str:
+        normalized = value.replace("\xa0", " ").replace("‑", "-")
+        return re.sub(r"\s+", " ", normalized).strip()
+
+    def _split_apple_options(self, value: str, *, translate_colors: bool = False) -> list[str]:
+        cleaned = re.sub(r"\([^)]*\)", "", value)
+        cleaned = cleaned.replace(" and ", ", ")
+        parts = re.split(r"[,;]", cleaned)
+        result: list[str] = []
+        for part in parts:
+            option = part.strip().replace(" GB", "GB").replace(" TB", "TB")
+            if not option:
+                continue
+            result.append(self._translate_apple_color(option) if translate_colors else option)
+        return result
+
+    def _extract_apple_model_numbers(self, value: str) -> list[str]:
+        numbers: list[str] = []
+        for pattern in (r"\bA[0-9]{4}\b", r"\b(?:MacBook|MacBookPro|MacBookAir|iMac|Macmini|MacPro|Mac)[0-9]+,[0-9]+\b"):
+            for match in re.findall(pattern, value, flags=re.I):
+                normalized = match.upper() if re.fullmatch(r"A[0-9]{4}", match, flags=re.I) else match
+                if normalized not in numbers:
+                    numbers.append(normalized)
+        return numbers
+
+    def _format_model_numbers(self, values: list[str]) -> str:
+        return "、".join(values)
+
+    def _translate_apple_color(self, value: str) -> str:
+        normalized = re.sub(r"\s+", " ", value).strip()
+        color_map = {
+            "Alpine Green": "苍岭绿色",
+            "Black": "黑色",
+            "Black Titanium": "黑色钛金属",
+            "Blue": "蓝色",
+            "Blue Titanium": "蓝色钛金属",
+            "Cloud White": "云白色",
+            "Cosmic Orange": "星宇橙色",
+            "Deep Blue": "深蓝色",
+            "Deep Purple": "暗紫色",
+            "Desert Titanium": "沙漠色钛金属",
+            "Gold": "金色",
+            "Graphite": "石墨色",
+            "Green": "绿色",
+            "Jet Black": "亮黑色",
+            "Lavender": "薰衣草紫色",
+            "Light Gold": "浅金色",
+            "Midnight": "午夜色",
+            "Midnight Green": "暗夜绿色",
+            "Mist Blue": "雾蓝色",
+            "Natural Titanium": "原色钛金属",
+            "Orange": "橙色",
+            "Pacific Blue": "海蓝色",
+            "Pink": "粉色",
+            "Purple": "紫色",
+            "Red": "红色",
+            "Rose Gold": "玫瑰金色",
+            "Sage": "鼠尾草绿色",
+            "Sierra Blue": "远峰蓝色",
+            "Silver": "银色",
+            "Sky Blue": "天蓝色",
+            "Soft Pink": "柔粉色",
+            "Space Black": "深空黑色",
+            "Space Gray": "深空灰色",
+            "Space Grey": "深空灰色",
+            "Starlight": "星光色",
+            "Teal": "青绿色",
+            "Ultramarine": "群青色",
+            "White": "白色",
+            "White Titanium": "白色钛金属",
+            "Yellow": "黄色",
+        }
+        return {key.lower(): text for key, text in color_map.items()}.get(normalized.lower(), normalized)
 
     def _rows(self, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
         return [dict(row) for row in self.conn.execute(sql, params).fetchall()]
@@ -678,6 +934,7 @@ class MisService:
                 """,
                 (repair_order_id,),
             ),
+            "material_reservations": self._reservation_rows(repair_order_id),
             "payments": payments,
             "receivables": self._rows("SELECT * FROM receivables WHERE repair_order_id=? ORDER BY receivable_id", (repair_order_id,)),
             "events": self.repo.repair_order_events(int(order["machine_id"]), repair_order_id),
@@ -992,10 +1249,40 @@ class MisService:
         self.conn.commit()
         return {"repair_order_id": repair_order_id, "stage": stage, "items": normalized_items, "note": note}
 
-    def list_materials(self, user: User) -> dict[str, Any]:
-        self._allowed(user, "inventory:read")
+    def list_materials(self, user: User, q: str = "", status: str = "", category_id: int | None = None, low_stock: bool = False) -> dict[str, Any]:
+        self._allowed(user, "warehouse:read")
+        clauses: list[str] = []
+        params: list[Any] = []
+        if q.strip():
+            _, like = self._warehouse_like(q)
+            clauses.append("(sku LIKE ? OR material_code LIKE ? OR name LIKE ? OR brand LIKE ? OR spec LIKE ? OR compatible_range LIKE ?)")
+            params.extend([like, like, like, like, like, like])
+        if status.strip():
+            clauses.append("status=?")
+            params.append(status.strip())
+        if category_id:
+            clauses.append("category_id=?")
+            params.append(category_id)
+        if low_stock:
+            clauses.append("min_qty > 0 AND current_qty <= min_qty")
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        materials = self._rows(
+                f"""
+                SELECT m.*, c.category_code, c.name AS category_name, l.location_code AS default_location_code
+                FROM materials m
+                LEFT JOIN material_categories c ON c.category_id=m.category_id
+                LEFT JOIN warehouse_locations l ON l.location_id=m.default_location_id
+                {where}
+                ORDER BY COALESCE(NULLIF(m.material_code, ''), m.sku)
+                """,
+                tuple(params),
+            )
+        for material in materials:
+            reserved_qty = self._material_reserved_qty(int(material["material_id"]))
+            material["reserved_qty"] = reserved_qty
+            material["sellable_qty"] = max(float(material.get("current_qty") or 0) - reserved_qty, 0)
         return {
-            "materials": self._rows("SELECT * FROM materials ORDER BY sku"),
+            "materials": materials,
             "batches": self._rows(
                 """
                 SELECT b.*, m.sku, m.name
@@ -1015,6 +1302,28 @@ class MisService:
                 """
             ),
         }
+
+    def material_detail(self, user: User, material_id: int) -> dict[str, Any]:
+        self._allowed(user, "warehouse:read")
+        material = self._one(
+            """
+            SELECT m.*, c.category_code, c.name AS category_name, l.location_code AS default_location_code
+            FROM materials m
+            LEFT JOIN material_categories c ON c.category_id=m.category_id
+            LEFT JOIN warehouse_locations l ON l.location_id=m.default_location_id
+            WHERE m.material_id=?
+            """,
+            (material_id,),
+        )
+        if not material:
+            raise BusinessError("物料不存在")
+        reserved_qty = self._material_reserved_qty(material_id)
+        material["reserved_qty"] = reserved_qty
+        material["sellable_qty"] = max(float(material.get("current_qty") or 0) - reserved_qty, 0)
+        material["units"] = self.material_units(user, material_id=material_id)
+        material["batches"] = self.material_batches(user, material_id=material_id)
+        material["movements"] = self.stock_movements(user, material_id=material_id)
+        return material
 
     def _warehouse_code(self, prefix: str, table: str, column: str) -> str:
         like = f"{prefix}-%"
@@ -1086,9 +1395,62 @@ class MisService:
             ),
         )
 
+    def _warehouse_like(self, keyword: str) -> tuple[str, str]:
+        text = keyword.strip()
+        return text, f"%{text}%"
+
+    def warehouse_dashboard(self, user: User) -> dict[str, Any]:
+        self._allowed(user, "warehouse:read")
+        value_row = self._one(
+            """
+            SELECT COALESCE(SUM(unit_cost), 0) AS amount, COUNT(*) AS qty
+            FROM material_units
+            WHERE current_status='在库可用'
+            """
+        ) or {}
+        today_rows = self._rows(
+            """
+            SELECT direction, COALESCE(SUM(ABS(qty)), 0) AS qty
+            FROM stock_movements
+            WHERE date(happened_at)=date('now', 'localtime')
+            GROUP BY direction
+            """
+        )
+        today = {row["direction"]: row["qty"] for row in today_rows}
+        pending_requests = self._one(
+            "SELECT COUNT(*) AS count FROM material_requests WHERE status IN ('待审核', '已审核待发放')"
+        ) or {}
+        pending_returns = self._one(
+            "SELECT COUNT(*) AS count FROM material_returns WHERE status='待验收'"
+        ) or {}
+        reserved_qty = self._material_reserved_qty()
+        shortage_row = self._one("SELECT COUNT(*) AS count FROM repair_material_reservations WHERE status='库存不足'") or {}
+        return {
+            "metrics": {
+                "material_count": (self._one("SELECT COUNT(*) AS count FROM materials") or {}).get("count", 0),
+                "available_qty": value_row.get("qty", 0),
+                "reserved_qty": reserved_qty,
+                "sellable_qty": max(float(value_row.get("qty") or 0) - reserved_qty, 0),
+                "stock_value": value_row.get("amount", 0),
+                "low_stock_count": (self._one("SELECT COUNT(*) AS count FROM materials WHERE min_qty > 0 AND current_qty <= min_qty") or {}).get("count", 0),
+                "pending_request_count": pending_requests.get("count", 0),
+                "pending_return_count": pending_returns.get("count", 0),
+                "shortage_reservation_count": shortage_row.get("count", 0),
+                "today_in_qty": today.get("入库", 0),
+                "today_out_qty": today.get("出库", 0),
+            },
+            "low_stock": self.low_stock_materials(user),
+            "pending_requests": self.material_requests(user, status="待审核")[:10],
+            "pending_issues": self.material_requests(user, status="已审核待发放")[:10],
+            "pending_returns": self.material_returns(user, status="待验收")[:10],
+            "recent_movements": self.stock_movements(user)[:20],
+        }
+
     def warehouse_overview(self, user: User) -> dict[str, Any]:
         self._allowed(user, "warehouse:read")
+        dashboard = self.warehouse_dashboard(user)
         return {
+            **dashboard,
             "categories": self._rows("SELECT * FROM material_categories ORDER BY category_code"),
             "areas": self._rows("SELECT * FROM warehouse_areas ORDER BY area_code"),
             "locations": self._rows(
@@ -1132,6 +1494,17 @@ class MisService:
             ),
             "mine": self.material_requests(user, mine=True),
         }
+
+    def low_stock_materials(self, user: User) -> list[dict[str, Any]]:
+        self._allowed(user, "warehouse:read")
+        return self._rows(
+            """
+            SELECT material_id, sku, material_code, name, current_qty, min_qty, avg_cost
+            FROM materials
+            WHERE min_qty > 0 AND current_qty <= min_qty
+            ORDER BY current_qty ASC, name
+            """
+        )
 
     def create_warehouse_area(self, user: User, data: WarehouseAreaInput) -> dict[str, Any]:
         self._allowed(user, "warehouse:write")
@@ -1351,29 +1724,107 @@ class MisService:
         self.conn.commit()
         return {"batch_id": batch_id, "returned_units": units, "refund_status": data.refund_status}
 
-    def material_batches(self, user: User) -> list[dict[str, Any]]:
+    def material_batches(
+        self,
+        user: User,
+        q: str = "",
+        material_id: int | None = None,
+        location_id: int | None = None,
+        batch_type: str = "",
+    ) -> list[dict[str, Any]]:
         self._allowed(user, "warehouse:read")
+        clauses: list[str] = []
+        params: list[Any] = []
+        if q.strip():
+            _, like = self._warehouse_like(q)
+            clauses.append("(b.batch_no LIKE ? OR b.supplier LIKE ? OR b.purchase_no LIKE ? OR m.sku LIKE ? OR m.material_code LIKE ? OR m.name LIKE ?)")
+            params.extend([like, like, like, like, like, like])
+        if material_id:
+            clauses.append("b.material_id=?")
+            params.append(material_id)
+        if location_id:
+            clauses.append("b.location_id=?")
+            params.append(location_id)
+        if batch_type.strip():
+            clauses.append("b.batch_type=?")
+            params.append(batch_type.strip())
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         return self._rows(
+            f"""
+            SELECT b.*, m.sku, m.material_code, m.name, l.location_code
+            FROM material_batches b
+            JOIN materials m ON m.material_id=b.material_id
+            LEFT JOIN warehouse_locations l ON l.location_id=b.location_id
+            {where}
+            ORDER BY b.purchased_at DESC, b.batch_id DESC
+            """,
+            tuple(params),
+        )
+
+    def material_batch_detail(self, user: User, batch_id: int) -> dict[str, Any]:
+        self._allowed(user, "warehouse:read")
+        batch = self._one(
             """
             SELECT b.*, m.sku, m.material_code, m.name, l.location_code
             FROM material_batches b
             JOIN materials m ON m.material_id=b.material_id
             LEFT JOIN warehouse_locations l ON l.location_id=b.location_id
-            ORDER BY b.purchased_at DESC, b.batch_id DESC
-            """
+            WHERE b.batch_id=?
+            """,
+            (batch_id,),
         )
+        if not batch:
+            raise BusinessError("入库批次不存在")
+        batch["units"] = self.material_units(user, batch_id=batch_id)
+        batch["movements"] = self.stock_movements(user, batch_id=batch_id)
+        return batch
 
-    def material_units(self, user: User) -> list[dict[str, Any]]:
+    def material_units(
+        self,
+        user: User,
+        q: str = "",
+        status: str = "",
+        material_id: int | None = None,
+        batch_id: int | None = None,
+        location_id: int | None = None,
+        repair_order_id: int | None = None,
+    ) -> list[dict[str, Any]]:
         self._allowed(user, "warehouse:read")
+        clauses: list[str] = []
+        params: list[Any] = []
+        if q.strip():
+            _, like = self._warehouse_like(q)
+            clauses.append("(u.unit_code LIKE ? OR u.engineer_user LIKE ? OR m.sku LIKE ? OR m.material_code LIKE ? OR m.name LIKE ?)")
+            params.extend([like, like, like, like, like])
+        if status.strip():
+            clauses.append("u.current_status=?")
+            params.append(status.strip())
+        if material_id:
+            clauses.append("u.material_id=?")
+            params.append(material_id)
+        if batch_id:
+            clauses.append("u.batch_id=?")
+            params.append(batch_id)
+        if location_id:
+            clauses.append("u.location_id=?")
+            params.append(location_id)
+        if repair_order_id:
+            clauses.append("u.repair_order_id=?")
+            params.append(repair_order_id)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         return self._rows(
-            """
-            SELECT u.*, m.sku, m.material_code, m.name, l.location_code
+            f"""
+            SELECT u.*, m.sku, m.material_code, m.name, l.location_code, b.batch_no, ro.order_no
             FROM material_units u
             JOIN materials m ON m.material_id=u.material_id
+            LEFT JOIN material_batches b ON b.batch_id=u.batch_id
             LEFT JOIN warehouse_locations l ON l.location_id=u.location_id
+            LEFT JOIN repair_orders ro ON ro.repair_order_id=u.repair_order_id AND COALESCE(ro.archived_at, '')=''
+            {where}
             ORDER BY u.updated_at DESC, u.unit_id DESC
             LIMIT 500
-            """
+            """,
+            tuple(params),
         )
 
     def create_material_request(self, user: User, data: MaterialRequestInput) -> dict[str, Any]:
@@ -1404,22 +1855,40 @@ class MisService:
         self.conn.commit()
         return self.material_request_detail(user, request_id)
 
-    def material_requests(self, user: User, mine: bool = False) -> list[dict[str, Any]]:
+    def material_requests(
+        self,
+        user: User,
+        mine: bool = False,
+        q: str = "",
+        status: str = "",
+        repair_order_id: int | None = None,
+    ) -> list[dict[str, Any]]:
         self._allowed(user, "warehouse:read")
-        params: tuple[Any, ...] = ()
-        where = ""
+        clauses: list[str] = []
+        params: list[Any] = []
         if mine or user.role == Role.engineer:
-            where = "WHERE r.engineer_user=? OR r.requested_by=?"
-            params = (user.username, user.username)
+            clauses.append("(r.engineer_user=? OR r.requested_by=?)")
+            params.extend([user.username, user.username])
+        if q.strip():
+            _, like = self._warehouse_like(q)
+            clauses.append("(r.request_no LIKE ? OR r.engineer_user LIKE ? OR r.requested_by LIKE ? OR r.remark LIKE ? OR ro.order_no LIKE ?)")
+            params.extend([like, like, like, like, like])
+        if status.strip():
+            clauses.append("r.status=?")
+            params.append(status.strip())
+        if repair_order_id:
+            clauses.append("r.repair_order_id=?")
+            params.append(repair_order_id)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         requests = self._rows(
             f"""
             SELECT r.*, ro.order_no
             FROM material_requests r
-            LEFT JOIN repair_orders ro ON ro.repair_order_id=r.repair_order_id AND ro.archived_at=''
+            LEFT JOIN repair_orders ro ON ro.repair_order_id=r.repair_order_id AND COALESCE(ro.archived_at, '')=''
             {where}
             ORDER BY r.created_at DESC, r.request_id DESC
             """,
-            params,
+            tuple(params),
         )
         for row in requests:
             row["items"] = self._rows(
@@ -1762,6 +2231,7 @@ class MisService:
                         adjustment_type="盘盈入库",
                         reason=item.get("reason") or "盘点盘盈",
                     ),
+                    commit=False,
                 )
             elif diff < 0:
                 self.create_stock_adjustment(
@@ -1773,6 +2243,7 @@ class MisService:
                         adjustment_type="盘亏出库",
                         reason=item.get("reason") or "盘点盘亏",
                     ),
+                    commit=False,
                 )
         self.conn.execute(
             "UPDATE stock_counts SET status='已确认', confirmed_by=?, confirmed_at=CURRENT_TIMESTAMP WHERE count_id=?",
@@ -1781,7 +2252,7 @@ class MisService:
         self.conn.commit()
         return self._one("SELECT * FROM stock_counts WHERE count_id=?", (count_id,)) or {}
 
-    def create_stock_adjustment(self, user: User, data: StockAdjustmentInput) -> dict[str, Any]:
+    def create_stock_adjustment(self, user: User, data: StockAdjustmentInput, commit: bool = True) -> dict[str, Any]:
         self._allowed(user, "warehouse:count")
         material = self._one("SELECT * FROM materials WHERE material_id=?", (data.material_id,))
         if not material:
@@ -1842,40 +2313,231 @@ class MisService:
             source_id=int(cur.lastrowid),
         )
         self._update_material_qty(data.material_id)
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
         return self._one("SELECT * FROM stock_adjustments WHERE adjustment_id=?", (int(cur.lastrowid),)) or {}
 
-    def stock_movements(self, user: User) -> list[dict[str, Any]]:
+    def stock_counts(self, user: User, status: str = "") -> list[dict[str, Any]]:
         self._allowed(user, "warehouse:read")
+        clauses: list[str] = []
+        params: list[Any] = []
+        if status.strip():
+            clauses.append("status=?")
+            params.append(status.strip())
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         return self._rows(
+            f"""
+            SELECT sc.*,
+                   COUNT(sci.count_item_id) AS item_count,
+                   COALESCE(SUM(ABS(sci.diff_qty)), 0) AS diff_qty
+            FROM stock_counts sc
+            LEFT JOIN stock_count_items sci ON sci.count_id=sc.count_id
+            {where}
+            GROUP BY sc.count_id
+            ORDER BY sc.created_at DESC, sc.count_id DESC
+            """,
+            tuple(params),
+        )
+
+    def stock_count_detail(self, user: User, count_id: int) -> dict[str, Any]:
+        self._allowed(user, "warehouse:read")
+        count = self._one("SELECT * FROM stock_counts WHERE count_id=?", (count_id,))
+        if not count:
+            raise BusinessError("盘点单不存在")
+        count["items"] = self._rows(
             """
+            SELECT sci.*, m.sku, m.material_code, m.name, l.location_code
+            FROM stock_count_items sci
+            JOIN materials m ON m.material_id=sci.material_id
+            LEFT JOIN warehouse_locations l ON l.location_id=sci.location_id
+            WHERE sci.count_id=?
+            ORDER BY sci.count_item_id
+            """,
+            (count_id,),
+        )
+        return count
+
+    def stock_adjustments(self, user: User, q: str = "", adjustment_type: str = "", material_id: int | None = None) -> list[dict[str, Any]]:
+        self._allowed(user, "warehouse:read")
+        clauses: list[str] = []
+        params: list[Any] = []
+        if q.strip():
+            _, like = self._warehouse_like(q)
+            clauses.append("(a.adjustment_no LIKE ? OR a.reason LIKE ? OR m.sku LIKE ? OR m.material_code LIKE ? OR m.name LIKE ?)")
+            params.extend([like, like, like, like, like])
+        if adjustment_type.strip():
+            clauses.append("a.adjustment_type=?")
+            params.append(adjustment_type.strip())
+        if material_id:
+            clauses.append("a.material_id=?")
+            params.append(material_id)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        return self._rows(
+            f"""
+            SELECT a.*, m.sku, m.material_code, m.name, u.unit_code, l.location_code
+            FROM stock_adjustments a
+            JOIN materials m ON m.material_id=a.material_id
+            LEFT JOIN material_units u ON u.unit_id=a.unit_id
+            LEFT JOIN warehouse_locations l ON l.location_id=a.location_id
+            {where}
+            ORDER BY a.created_at DESC, a.adjustment_id DESC
+            """,
+            tuple(params),
+        )
+
+    def material_returns(self, user: User, q: str = "", status: str = "", repair_order_id: int | None = None) -> list[dict[str, Any]]:
+        self._allowed(user, "warehouse:read")
+        clauses: list[str] = []
+        params: list[Any] = []
+        if q.strip():
+            _, like = self._warehouse_like(q)
+            clauses.append("(u.unit_code LIKE ? OR r.engineer_user LIKE ? OR r.return_type LIKE ? OR r.remark LIKE ? OR m.sku LIKE ? OR m.material_code LIKE ? OR m.name LIKE ? OR ro.order_no LIKE ?)")
+            params.extend([like, like, like, like, like, like, like, like])
+        if status.strip():
+            clauses.append("r.status=?")
+            params.append(status.strip())
+        if repair_order_id:
+            clauses.append("r.repair_order_id=?")
+            params.append(repair_order_id)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        return self._rows(
+            f"""
+            SELECT r.*, u.unit_code, u.current_status AS unit_status, m.sku, m.material_code, m.name, ro.order_no
+            FROM material_returns r
+            JOIN material_units u ON u.unit_id=r.unit_id
+            JOIN materials m ON m.material_id=u.material_id
+            LEFT JOIN repair_orders ro ON ro.repair_order_id=r.repair_order_id AND COALESCE(ro.archived_at, '')=''
+            {where}
+            ORDER BY r.created_at DESC, r.return_id DESC
+            LIMIT 500
+            """,
+            tuple(params),
+        )
+
+    def material_return_detail(self, user: User, return_id: int) -> dict[str, Any]:
+        self._allowed(user, "warehouse:read")
+        ret = self._one(
+            """
+            SELECT r.*, u.unit_code, u.current_status AS unit_status, m.sku, m.material_code, m.name, ro.order_no
+            FROM material_returns r
+            JOIN material_units u ON u.unit_id=r.unit_id
+            JOIN materials m ON m.material_id=u.material_id
+            LEFT JOIN repair_orders ro ON ro.repair_order_id=r.repair_order_id AND COALESCE(ro.archived_at, '')=''
+            WHERE r.return_id=?
+            """,
+            (return_id,),
+        )
+        if not ret:
+            raise BusinessError("退料单不存在")
+        ret["movements"] = self.stock_movements(user, source_type="material_return", source_id=return_id)
+        return ret
+
+    def stock_movements(
+        self,
+        user: User,
+        q: str = "",
+        material_id: int | None = None,
+        batch_id: int | None = None,
+        request_id: int | None = None,
+        repair_order_id: int | None = None,
+        source_type: str = "",
+        source_id: int | None = None,
+        direction: str = "",
+    ) -> list[dict[str, Any]]:
+        self._allowed(user, "warehouse:read")
+        clauses: list[str] = []
+        params: list[Any] = []
+        if q.strip():
+            _, like = self._warehouse_like(q)
+            clauses.append("(sm.movement_type LIKE ? OR sm.actor LIKE ? OR sm.counterparty LIKE ? OR sm.note LIKE ? OR m.sku LIKE ? OR m.material_code LIKE ? OR m.name LIKE ? OR u.unit_code LIKE ? OR ro.order_no LIKE ?)")
+            params.extend([like, like, like, like, like, like, like, like, like])
+        if material_id:
+            clauses.append("sm.material_id=?")
+            params.append(material_id)
+        if batch_id:
+            clauses.append("sm.batch_id=?")
+            params.append(batch_id)
+        if request_id:
+            clauses.append("sm.request_id=?")
+            params.append(request_id)
+        if repair_order_id:
+            clauses.append("sm.repair_order_id=?")
+            params.append(repair_order_id)
+        if source_type.strip():
+            clauses.append("sm.source_type=?")
+            params.append(source_type.strip())
+        if source_id:
+            clauses.append("sm.source_id=?")
+            params.append(source_id)
+        if direction.strip():
+            clauses.append("sm.direction=?")
+            params.append(direction.strip())
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        return self._rows(
+            f"""
             SELECT sm.*, m.sku, m.material_code, m.name, u.unit_code, ro.order_no, l.location_code
             FROM stock_movements sm
             JOIN materials m ON m.material_id=sm.material_id
             LEFT JOIN material_units u ON u.unit_id=sm.unit_id
-            LEFT JOIN repair_orders ro ON ro.repair_order_id=sm.repair_order_id AND ro.archived_at=''
+            LEFT JOIN repair_orders ro ON ro.repair_order_id=sm.repair_order_id AND COALESCE(ro.archived_at, '')=''
             LEFT JOIN warehouse_locations l ON l.location_id=sm.location_id
+            {where}
             ORDER BY sm.happened_at DESC, sm.stock_movement_id DESC
             LIMIT 500
-            """
+            """,
+            tuple(params),
         )
 
     def upsert_repair_fault_material(self, user: User, data: RepairFaultMaterialInput) -> dict[str, Any]:
         self._allowed(user, "warehouse:write")
         self.conn.execute(
             """
-            INSERT INTO repair_fault_materials (repair_sku_id, material_id, qty, priority, remark)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO repair_fault_materials (repair_sku_id, material_id, qty, priority, is_required, remark)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(repair_sku_id, material_id) DO UPDATE SET qty=excluded.qty,
-                priority=excluded.priority, remark=excluded.remark, updated_at=CURRENT_TIMESTAMP
+                priority=excluded.priority, is_required=excluded.is_required,
+                remark=excluded.remark, updated_at=CURRENT_TIMESTAMP
             """,
-            (data.repair_sku_id, data.material_id, data.qty, data.priority, data.remark),
+            (data.repair_sku_id, data.material_id, data.qty, data.priority, int(data.is_required), data.remark),
         )
         self.conn.commit()
         return self._one(
             "SELECT * FROM repair_fault_materials WHERE repair_sku_id=? AND material_id=?",
             (data.repair_sku_id, data.material_id),
         ) or {}
+
+    def save_repair_sku_materials(self, user: User, sku_id: int, data: RepairSkuMaterialPlanInput) -> dict[str, Any]:
+        self._allowed(user, "warehouse:write")
+        sku = self.repo.get_repair_sku(sku_id)
+        if not sku:
+            raise BusinessError("维修故障 SKU 不存在")
+        material_ids: list[int] = []
+        for item in data.items:
+            material = self._one("SELECT material_id FROM materials WHERE material_id=?", (item.material_id,))
+            if not material:
+                raise BusinessError("物料不存在")
+            material_ids.append(item.material_id)
+            self.conn.execute(
+                """
+                INSERT INTO repair_fault_materials (repair_sku_id, material_id, qty, priority, is_required, remark)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(repair_sku_id, material_id) DO UPDATE SET qty=excluded.qty,
+                    priority=excluded.priority, is_required=excluded.is_required,
+                    remark=excluded.remark, updated_at=CURRENT_TIMESTAMP
+                """,
+                (sku_id, item.material_id, item.qty, item.priority, int(item.is_required), item.remark),
+            )
+        if material_ids:
+            placeholders = ",".join("?" for _ in material_ids)
+            self.conn.execute(
+                f"DELETE FROM repair_fault_materials WHERE repair_sku_id=? AND material_id NOT IN ({placeholders})",
+                (sku_id, *material_ids),
+            )
+        else:
+            self.conn.execute("DELETE FROM repair_fault_materials WHERE repair_sku_id=?", (sku_id,))
+        self._log_success(user, "repair_sku:materials", "repair_sku", str(sku_id), request_summary=f"{len(data.items)} 个物料绑定")
+        self.conn.commit()
+        return self.material_hints_for_sku(user, sku_id)
 
     def repair_fault_materials(self, user: User) -> list[dict[str, Any]]:
         self._allowed(user, "warehouse:read")
@@ -1890,6 +2552,33 @@ class MisService:
             """
         )
 
+    def _active_material_reservations(self, material_id: int | None = None) -> list[dict[str, Any]]:
+        params: tuple[Any, ...] = ()
+        where = "WHERE status='已预占'"
+        if material_id:
+            where += " AND material_id=?"
+            params = (material_id,)
+        return self._rows(f"SELECT * FROM repair_material_reservations {where}", params)
+
+    def _active_reserved_unit_ids(self, material_id: int | None = None) -> set[int]:
+        unit_ids: set[int] = set()
+        for row in self._active_material_reservations(material_id):
+            for raw in json.loads(row.get("unit_ids_json") or "[]"):
+                try:
+                    unit_ids.add(int(raw))
+                except (TypeError, ValueError):
+                    continue
+        return unit_ids
+
+    def _material_reserved_qty(self, material_id: int | None = None) -> float:
+        params: tuple[Any, ...] = ()
+        where = "WHERE status='已预占'"
+        if material_id:
+            where += " AND material_id=?"
+            params = (material_id,)
+        row = self._one(f"SELECT COALESCE(SUM(reserved_qty), 0) AS qty FROM repair_material_reservations {where}", params)
+        return float((row or {}).get("qty") or 0)
+
     def material_hints_for_sku(self, user: User, sku_id: int) -> dict[str, Any]:
         self._allowed(user, "warehouse:read")
         sku = self._one("SELECT * FROM repair_skus WHERE sku_id=?", (sku_id,))
@@ -1898,6 +2587,7 @@ class MisService:
         hints = self._rows(
             """
             SELECT b.*, m.sku, m.material_code, m.name, m.current_qty, m.min_qty,
+                   m.avg_cost,
                    GROUP_CONCAT(DISTINCT l.location_code) AS locations,
                    SUM(CASE WHEN u.current_status='已发放' THEN 1 ELSE 0 END) AS pending_issue_qty
             FROM repair_fault_materials b
@@ -1911,8 +2601,18 @@ class MisService:
             (sku_id,),
         )
         for hint in hints:
-            hint["low_stock"] = float(hint.get("min_qty") or 0) > 0 and float(hint.get("current_qty") or 0) <= float(hint.get("min_qty") or 0)
-            hint["stock_warning"] = "库存不足，需临采入库" if float(hint.get("current_qty") or 0) < float(hint.get("qty") or 0) else ""
+            needed_qty = float(hint.get("qty") or 0)
+            current_qty = float(hint.get("current_qty") or 0)
+            reserved_qty = self._material_reserved_qty(int(hint["material_id"]))
+            available_qty = max(current_qty - reserved_qty, 0)
+            shortage_qty = max(needed_qty - available_qty, 0)
+            avg_cost = float(hint.get("avg_cost") or 0)
+            hint["reserved_qty"] = reserved_qty
+            hint["available_qty"] = available_qty
+            hint["shortage_qty"] = shortage_qty
+            hint["estimated_cost"] = needed_qty * avg_cost
+            hint["low_stock"] = float(hint.get("min_qty") or 0) > 0 and available_qty <= float(hint.get("min_qty") or 0)
+            hint["stock_warning"] = "库存不足，需临采入库" if shortage_qty > 0 else ""
         return {"repair_sku": sku, "materials": hints}
 
     def material_hints_for_order(self, user: User, repair_order_id: int) -> dict[str, Any]:
@@ -1923,6 +2623,245 @@ class MisService:
         sku_ids = [int(row["sku_id"]) for row in self._rows("SELECT DISTINCT sku_id FROM repair_items WHERE repair_order_id=? AND sku_id IS NOT NULL", (repair_order_id,))]
         hints = [self.material_hints_for_sku(user, sku_id) for sku_id in sku_ids]
         return {"repair_order": order, "hints": hints}
+
+    def _available_material_units(self, material_id: int, qty: int) -> list[dict[str, Any]]:
+        if qty <= 0:
+            return []
+        reserved_ids = self._active_reserved_unit_ids(material_id)
+        rows = self._rows(
+            """
+            SELECT u.*, COALESCE(u.unit_cost, b.unit_cost, 0) AS effective_cost,
+                   CASE WHEN m.default_location_id IS NOT NULL AND u.location_id=m.default_location_id THEN 0 ELSE 1 END AS location_rank
+            FROM material_units u
+            JOIN materials m ON m.material_id=u.material_id
+            LEFT JOIN material_batches b ON b.batch_id=u.batch_id
+            WHERE u.material_id=? AND u.current_status='在库可用'
+            ORDER BY location_rank, COALESCE(b.purchased_at, u.created_at), u.unit_id
+            """,
+            (material_id,),
+        )
+        available = [row for row in rows if int(row["unit_id"]) not in reserved_ids]
+        return available[:qty]
+
+    def _reservation_rows(self, repair_order_id: int, repair_item_id: int | None = None) -> list[dict[str, Any]]:
+        params: list[Any] = [repair_order_id]
+        extra = ""
+        if repair_item_id:
+            extra = "AND rr.repair_item_id=?"
+            params.append(repair_item_id)
+        rows = self._rows(
+            f"""
+            SELECT rr.*, ri.item_name, ri.quantity AS repair_item_qty, rs.sku_code, rs.fault_name,
+                   m.sku, m.material_code, m.name AS material_name, m.current_qty, m.avg_cost, m.min_qty
+            FROM repair_material_reservations rr
+            JOIN repair_items ri ON ri.repair_item_id=rr.repair_item_id
+            LEFT JOIN repair_skus rs ON rs.sku_id=rr.repair_sku_id
+            JOIN materials m ON m.material_id=rr.material_id
+            WHERE rr.repair_order_id=? {extra}
+            ORDER BY rr.reservation_id
+            """,
+            tuple(params),
+        )
+        for row in rows:
+            row["unit_ids"] = json.loads(row.get("unit_ids_json") or "[]")
+            row["available_qty"] = max(float(row.get("current_qty") or 0) - self._material_reserved_qty(int(row["material_id"])), 0)
+            row["shortage_qty"] = max(float(row.get("qty") or 0) - float(row.get("reserved_qty") or 0), 0) if row.get("status") == "库存不足" else 0
+        return rows
+
+    def _reserve_for_repair_item(self, user: User, repair_order_id: int, repair_item_id: int, remark: str = "") -> list[dict[str, Any]]:
+        item = self._one("SELECT * FROM repair_items WHERE repair_item_id=? AND repair_order_id=?", (repair_item_id, repair_order_id))
+        if not item:
+            raise BusinessError("维修项目不存在")
+        sku_id = item.get("sku_id")
+        if not sku_id:
+            return []
+        existing = self._rows(
+            "SELECT * FROM repair_material_reservations WHERE repair_item_id=? AND status IN ('已预占', '库存不足', '已消耗')",
+            (repair_item_id,),
+        )
+        if existing:
+            return self._reservation_rows(repair_order_id, repair_item_id)
+        bindings = self._rows(
+            """
+            SELECT b.*, m.current_qty
+            FROM repair_fault_materials b
+            JOIN materials m ON m.material_id=b.material_id
+            WHERE b.repair_sku_id=?
+            ORDER BY b.priority, b.binding_id
+            """,
+            (int(sku_id),),
+        )
+        multiplier = max(int(item.get("quantity") or 1), 1)
+        for binding in bindings:
+            qty = max(int(float(binding.get("qty") or 0) * multiplier), 0)
+            if qty <= 0:
+                continue
+            units = self._available_material_units(int(binding["material_id"]), qty)
+            unit_ids = [int(row["unit_id"]) for row in units]
+            status = "已预占" if len(unit_ids) >= qty else "库存不足"
+            source_key = f"repair-item:{repair_item_id}:material:{binding['material_id']}"
+            self.conn.execute(
+                """
+                INSERT INTO repair_material_reservations
+                (repair_order_id, repair_item_id, repair_sku_id, material_id, qty, reserved_qty,
+                 status, unit_ids_json, reserved_by, note, source_key)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(repair_item_id, material_id) DO UPDATE SET
+                    qty=excluded.qty, reserved_qty=excluded.reserved_qty, status=excluded.status,
+                    unit_ids_json=excluded.unit_ids_json, reserved_by=excluded.reserved_by,
+                    note=excluded.note, updated_at=CURRENT_TIMESTAMP
+                """,
+                (
+                    repair_order_id,
+                    repair_item_id,
+                    int(sku_id),
+                    int(binding["material_id"]),
+                    qty,
+                    len(unit_ids),
+                    status,
+                    json.dumps(unit_ids, ensure_ascii=False),
+                    user.username,
+                    remark or str(binding.get("remark") or ""),
+                    source_key,
+                ),
+            )
+        return self._reservation_rows(repair_order_id, repair_item_id)
+
+    def reserve_repair_materials(self, user: User, repair_order_id: int, data: RepairMaterialReserveInput) -> dict[str, Any]:
+        self._allowed(user, "repair_order:update")
+        order = self.repo.get_repair_order(repair_order_id)
+        if not order:
+            raise BusinessError("维修单不存在")
+        self._ensure_engineer_owns_repair(user, order)
+        items = self._rows("SELECT repair_item_id FROM repair_items WHERE repair_order_id=?", (repair_order_id,))
+        for item in items:
+            item_id = int(item["repair_item_id"])
+            if data.repair_item_id and item_id != data.repair_item_id:
+                continue
+            self._reserve_for_repair_item(user, repair_order_id, item_id, data.remark)
+        self.conn.commit()
+        return {"repair_order_id": repair_order_id, "reservations": self._reservation_rows(repair_order_id, data.repair_item_id)}
+
+    def release_repair_materials(self, user: User, repair_order_id: int, data: RepairMaterialReserveInput) -> dict[str, Any]:
+        self._allowed(user, "repair_order:update")
+        order = self.repo.get_repair_order(repair_order_id)
+        if not order:
+            raise BusinessError("维修单不存在")
+        self._ensure_engineer_owns_repair(user, order)
+        params: list[Any] = [user.username, data.remark, repair_order_id]
+        extra = ""
+        if data.repair_item_id:
+            extra = "AND repair_item_id=?"
+            params.append(data.repair_item_id)
+        self.conn.execute(
+            f"""
+            UPDATE repair_material_reservations
+            SET status='已释放', released_by=?, released_at=CURRENT_TIMESTAMP,
+                note=CASE WHEN ?='' THEN note ELSE ? END, updated_at=CURRENT_TIMESTAMP
+            WHERE repair_order_id=? {extra} AND status IN ('已预占', '库存不足')
+            """,
+            (params[0], params[1], params[1], *params[2:]),
+        )
+        self.repo.add_machine_event(int(order["machine_id"]), "repair", "释放物料预占", data.remark, user.username, "repair", repair_order_id)
+        self.conn.commit()
+        return {"repair_order_id": repair_order_id, "reservations": self._reservation_rows(repair_order_id, data.repair_item_id)}
+
+    def _consume_repair_materials(self, user: User, repair_order_id: int, data: RepairMaterialReserveInput, *, commit: bool = True) -> dict[str, Any]:
+        order = self.repo.get_repair_order(repair_order_id)
+        if not order:
+            raise BusinessError("维修单不存在")
+        self._ensure_engineer_owns_repair(user, order)
+        reservations = self._reservation_rows(repair_order_id, data.repair_item_id)
+        active = [row for row in reservations if row.get("status") == "已预占"]
+        shortage = [row for row in reservations if row.get("status") == "库存不足"]
+        if shortage:
+            names = "、".join(str(row.get("material_name") or row.get("sku")) for row in shortage[:3])
+            raise BusinessError(f"存在缺料预占，不能扣库：{names}")
+        for reservation in active:
+            unit_ids = [int(unit_id) for unit_id in reservation.get("unit_ids") or []]
+            if len(unit_ids) < int(float(reservation.get("qty") or 0)):
+                raise BusinessError(f"{reservation.get('material_name')} 预占单件码不完整，不能扣库")
+            for unit_id in unit_ids:
+                unit = self._one("SELECT * FROM material_units WHERE unit_id=? AND current_status='在库可用'", (unit_id,))
+                if not unit:
+                    raise BusinessError(f"{reservation.get('material_name')} 预占单件码状态已变化，请重新预占")
+                source_key = f"reservation:{reservation['reservation_id']}:unit:{unit_id}"
+                self.conn.execute(
+                    """
+                    UPDATE material_units
+                    SET current_status='已使用', repair_order_id=?, updated_at=CURRENT_TIMESTAMP
+                    WHERE unit_id=?
+                    """,
+                    (repair_order_id, unit_id),
+                )
+                self._stock_movement(
+                    int(reservation["material_id"]),
+                    "维修耗用出库",
+                    -1,
+                    user.username,
+                    batch_id=unit.get("batch_id"),
+                    unit_id=unit_id,
+                    repair_order_id=repair_order_id,
+                    location_id=unit.get("location_id"),
+                    unit_cost=float(unit.get("unit_cost") or 0),
+                    note=data.remark or f"{reservation.get('item_name') or ''} 维修耗用",
+                    source_type="repair_material_reservation",
+                    source_id=int(reservation["reservation_id"]),
+                )
+                if not self._one("SELECT repair_material_id FROM repair_materials WHERE source_key=?", (source_key,)):
+                    self.conn.execute(
+                        """
+                        INSERT INTO repair_materials
+                        (repair_order_id, material_id, qty, unit_cost, total_cost, source_type, issued_by, issued_to, source_key, remark)
+                        VALUES (?, ?, 1, ?, ?, '维修SKU自动扣库', ?, ?, ?, ?)
+                        """,
+                        (
+                            repair_order_id,
+                            int(reservation["material_id"]),
+                            float(unit.get("unit_cost") or 0),
+                            float(unit.get("unit_cost") or 0),
+                            user.username,
+                            str(order.get("assigned_to") or user.username),
+                            source_key,
+                            data.remark or f"{reservation.get('item_name') or ''} 自动耗用",
+                        ),
+                    )
+                cost_key = f"repair-material-cost:{source_key}"
+                if not self._one("SELECT cost_item_id FROM repair_cost_items WHERE source_key=?", (cost_key,)):
+                    self.conn.execute(
+                        """
+                        INSERT INTO repair_cost_items
+                        (repair_order_id, item_type, item_name, qty, unit_cost, total_cost, status, source_key, remark)
+                        VALUES (?, '库存物料', ?, 1, ?, ?, '已确认', ?, ?)
+                        """,
+                        (
+                            repair_order_id,
+                            str(reservation.get("material_name") or reservation.get("sku") or "维修物料"),
+                            float(unit.get("unit_cost") or 0),
+                            float(unit.get("unit_cost") or 0),
+                            cost_key,
+                            data.remark or "维修 SKU 自动扣库",
+                        ),
+                    )
+            self.conn.execute(
+                """
+                UPDATE repair_material_reservations
+                SET status='已消耗', consumed_qty=reserved_qty, consumed_by=?,
+                    consumed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+                WHERE reservation_id=?
+                """,
+                (user.username, int(reservation["reservation_id"])),
+            )
+            self._update_material_qty(int(reservation["material_id"]))
+        if active:
+            self.repo.add_machine_event(int(order["machine_id"]), "repair", "维修物料扣库", data.remark or f"{len(active)} 项预占转耗用", user.username, "repair", repair_order_id)
+        if commit:
+            self.conn.commit()
+        return {"repair_order_id": repair_order_id, "reservations": self._reservation_rows(repair_order_id, data.repair_item_id)}
+
+    def consume_repair_materials(self, user: User, repair_order_id: int, data: RepairMaterialReserveInput) -> dict[str, Any]:
+        self._allowed(user, "repair_order:update")
+        return self._consume_repair_materials(user, repair_order_id, data)
 
     def apply_repair_workflow_action(self, user: User, repair_order_id: int, data: RepairWorkflowActionInput) -> dict[str, Any]:
         self._allowed(user, "repair_order:update")
@@ -2264,6 +3203,7 @@ class MisService:
             machine = self.repo.get_machine(int(order["machine_id"]))
             sku_id = self._ensure_manual_repair_sku(item_name, str((machine or {}).get("model") or ""), cost_amount, charge_amount)
         item_id = self.repo.add_repair_item(repair_order_id, item_name, data.quantity, cost_amount, charge_amount, data.remark, sku_id)
+        self._reserve_for_repair_item(user, repair_order_id, item_id, data.remark)
         self.repo.quote_repair_order(
             repair_order_id,
             order["diagnosis"],
@@ -2320,6 +3260,9 @@ class MisService:
             self.repo.update_machine_status(int(order["machine_id"]), self._repair_machine_status(data.status).value)
             self.repo.add_machine_event(int(order["machine_id"]), "repair", f"维修{data.status.value}", data.remark, user.username, "repair", repair_order_id)
         self._log_success(user, "repair_order:status", "repair_order", str(repair_order_id), customer_id=order["customer_id"], request_summary=data.status.value)
+        if data.status == OrderStatus.cancelled:
+            self.release_repair_materials(user, repair_order_id, RepairMaterialReserveInput(remark=data.remark))
+            return self._repair_order_response(repair_order_id)
         self.conn.commit()
         return self._repair_order_response(repair_order_id)
 
@@ -2334,6 +3277,7 @@ class MisService:
             raise BusinessError("只有维修中或待交付订单可以工程师结单")
         if not self.repo.list_repair_items(repair_order_id):
             raise BusinessError("请先记录维修项目后再工程师结单")
+        self._consume_repair_materials(user, repair_order_id, RepairMaterialReserveInput(remark=data.remark or "工程师结单自动扣库"), commit=False)
         self.repo.engineer_close_repair_order(repair_order_id, data.remark)
         self.repo.update_machine_status(int(order["machine_id"]), MachineStatus.ready_for_delivery.value)
         self.repo.add_machine_event(int(order["machine_id"]), "repair", "工程师结单", data.remark, user.username, "repair", repair_order_id)

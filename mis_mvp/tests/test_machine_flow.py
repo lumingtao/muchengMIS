@@ -87,6 +87,60 @@ def warehouse_seed(service: MisService) -> tuple[dict, dict, dict, dict]:
     return area, location, category, material
 
 
+def test_parse_apple_iphone_model_support_page(service: MisService) -> None:
+    html = """
+    <html><body>
+      <h2>iPhone 17 Pro</h2>
+      <p>Year introduced: 2025</p>
+      <p>Capacity: 256 GB, 512 GB, 1 TB</p>
+      <p>Colors: Silver, Cosmic Orange, Deep Blue</p>
+      <p>Model number: A3256, A3257</p>
+      <h2>iPhone 16e</h2>
+      <p>Year introduced: 2025</p>
+      <p>Capacity: 128 GB, 256 GB, 512 GB</p>
+      <p>Colors: Black, White</p>
+    </body></html>
+    """
+
+    models = service._parse_apple_iphone_models(html)
+
+    assert models == [
+        {"model_name": "iPhone 17 Pro", "year": "2025", "capacities": ["256GB", "512GB", "1TB"], "colors": ["银色", "星宇橙色", "深蓝色"], "model_numbers": ["A3256", "A3257"], "product": "iPhone", "source_url": "https://support.apple.com/en-us/108044"},
+        {"model_name": "iPhone 16e", "year": "2025", "capacities": ["128GB", "256GB", "512GB"], "colors": ["黑色", "白色"], "model_numbers": [], "product": "iPhone", "source_url": "https://support.apple.com/en-us/108044"},
+    ]
+
+
+def test_parse_apple_ipad_and_mac_model_support_pages(service: MisService) -> None:
+    ipad_html = """
+    <html><body>
+      <h2>iPad Pro</h2>
+      <h2>iPad Pro 13-inch (M5)</h2>
+      <p>Year: 2025</p>
+      <p>Capacity: 256 GB, 512 GB, 1 TB, 2 TB</p>
+      <p>Model number: A1822</p>
+      <h2>iPad Air 11-inch (M3)</h2>
+      <p>Year: 2025</p>
+      <p>Capacity: 128 GB, 256 GB, 512 GB, 1 TB</p>
+    </body></html>
+    """
+    mac_html = """
+    <html><body>
+      <h2>List of MacBook models</h2>
+      <h2>2017</h2>
+      <p>MacBook (Retina, 12-inch, 2017)</p>
+      <p>Model Identifier: MacBook10,1</p>
+    </body></html>
+    """
+
+    ipads = service._parse_apple_mobile_models(ipad_html, ["iPad"], "iPad", "ipad-url")
+    macs = service._parse_apple_mac_models(mac_html, ["MacBook"], "MacBook", "mac-url")
+
+    assert [row["model_name"] for row in ipads] == ["iPad Pro 13-inch (M5)", "iPad Air 11-inch (M3)"]
+    assert ipads[0]["capacities"] == ["256GB", "512GB", "1TB", "2TB"]
+    assert ipads[0]["model_numbers"] == ["A1822"]
+    assert macs == [{"model_name": "MacBook (Retina, 12-inch, 2017)", "year": "2017", "capacities": [], "colors": [], "model_numbers": ["MacBook10,1"], "product": "MacBook", "source_url": "mac-url"}]
+
+
 def test_machine_unique_imei_and_temp_no(service: MisService) -> None:
     first = service.create_machine(user(), MachineInput(imei="861111111111111", model="iPhone 15"))
     assert first["imei"] == "861111111111111"
