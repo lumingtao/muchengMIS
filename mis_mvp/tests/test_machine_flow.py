@@ -34,6 +34,7 @@ from backend.models import (
     RepairInspectionInput,
     RepairInspectionItemInput,
     RepairItemInput,
+    RepairItemUpdateInput,
     RepairOrderInput,
     RepairOrderNoteDeleteInput,
     RepairOrderNoteInput,
@@ -564,6 +565,37 @@ def test_delete_repair_order_item_recalculates_quote(service: MisService) -> Non
     assert updated["quoted_amount"] == 0
     timeline = service.machine_timeline(user(Role.frontdesk), order["machine_id"])
     assert any(event["title"] == "删除维修项目" for event in timeline["events"])
+
+
+def test_update_repair_order_item_price_only_changes_current_order(service: MisService) -> None:
+    sku = service.upsert_repair_sku(
+        user(Role.staff),
+        RepairSkuInput(model="iPhone 13", sku_code="IP13-SCREEN", fault_name="屏幕损坏", solution_name="更换屏幕", cost_amount=320, charge_amount=580),
+    )
+    order = service.create_repair_order(
+        user(Role.frontdesk),
+        RepairOrderInput(
+            machine=MachineInput(imei="862222222222236", model="iPhone 13"),
+            customer=CustomerInput(name="改价客户"),
+            fault_description="屏幕损坏",
+            repair_items=[RepairItemInput(sku_id=sku["sku_id"], item_name=sku["solution_name"], quantity=1)],
+        ),
+    )
+
+    item_id = order["items"][0]["repair_item_id"]
+    updated = service.update_repair_item(
+        user(Role.frontdesk),
+        order["repair_order_id"],
+        item_id,
+        RepairItemUpdateInput(quantity=1, cost_amount=300, charge_amount=500),
+    )
+
+    assert updated["quoted_amount"] == 800
+    assert updated["items"][0]["cost_amount"] == 300
+    assert updated["items"][0]["charge_amount"] == 500
+    stored_sku = next(row for row in service.list_repair_skus(user(Role.frontdesk), model="iPhone 13") if row["sku_id"] == sku["sku_id"])
+    assert stored_sku["cost_amount"] == 320
+    assert stored_sku["charge_amount"] == 580
 
 
 def test_repair_order_discount_reduces_receivable_and_survives_item_changes(service: MisService) -> None:

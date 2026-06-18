@@ -40,6 +40,7 @@ from .models import (
     RepairInspectionInput,
     RepairInput,
     RepairItemInput,
+    RepairItemUpdateInput,
     RepairOrderDeleteInput,
     RepairOrderNoteDeleteInput,
     RepairOrderNoteUpdateInput,
@@ -593,6 +594,11 @@ def change_repair_order_discount(repair_order_id: int, data: RepairDiscountInput
 @app.post("/api/repair-orders/{repair_order_id}/items")
 def add_repair_item(repair_order_id: int, data: RepairItemInput, user: User = Depends(current_user), service: MisService = Depends(get_service)):
     return endpoint(lambda: service.add_repair_item(user, repair_order_id, data))
+
+
+@app.put("/api/repair-orders/{repair_order_id}/items/{repair_item_id}")
+def update_repair_item(repair_order_id: int, repair_item_id: int, data: RepairItemUpdateInput, user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.update_repair_item(user, repair_order_id, repair_item_id, data))
 
 
 @app.delete("/api/repair-orders/{repair_order_id}/items/{repair_item_id}")

@@ -188,6 +188,7 @@ class RepairOrderInput(BaseModel):
     inspections: list["RepairInspectionInput"] = []
     notes: list["RepairOrderNoteInput"] = []
     note_logs: list["RepairOrderLogInput"] = []
+    quoted_amount: float | None = Field(default=None, ge=0)
     discount_amount: float = Field(default=0, ge=0)
 
 
@@ -263,6 +264,13 @@ class RepairItemInput(BaseModel):
     sku_id: int | None = None
     item_name: str = Field(min_length=1)
     quantity: int = Field(default=1, ge=1)
+    cost_amount: float = Field(default=0, ge=0)
+    charge_amount: float = Field(default=0, ge=0)
+    remark: str = ""
+
+
+class RepairItemUpdateInput(BaseModel):
+    quantity: int | None = Field(default=None, ge=1)
     cost_amount: float = Field(default=0, ge=0)
     charge_amount: float = Field(default=0, ge=0)
     remark: str = ""

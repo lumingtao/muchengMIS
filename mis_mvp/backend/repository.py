@@ -1092,6 +1092,16 @@ class Repository:
             ).fetchone()
         )
 
+    def update_repair_item(self, repair_order_id: int, repair_item_id: int, quantity: int, cost_amount: float, charge_amount: float, remark: str) -> None:
+        self.conn.execute(
+            """
+            UPDATE repair_items
+            SET quantity=?, cost_amount=?, charge_amount=?, remark=?
+            WHERE repair_order_id=? AND repair_item_id=?
+            """,
+            (quantity, cost_amount, charge_amount, remark, repair_order_id, repair_item_id),
+        )
+
     def repair_item_consumed_material_count(self, repair_order_id: int, repair_item_id: int) -> int:
         row = self.conn.execute(
             """

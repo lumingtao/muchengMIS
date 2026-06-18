@@ -2381,6 +2381,78 @@
   margin-top: 0;
 }
 
+.price-edit-modal .ant-modal-content {
+  border-radius: 16px;
+  padding: 22px;
+}
+
+.price-edit-modal .ant-modal-header {
+  margin-bottom: 18px;
+}
+
+.price-edit-modal .ant-modal-title {
+  color: #0f172a;
+  font-size: 20px;
+  font-weight: 900;
+}
+
+.price-edit-dialog {
+  display: grid;
+  gap: 14px;
+}
+
+.price-edit-dialog label {
+  display: grid;
+  gap: 8px;
+}
+
+.price-edit-dialog label span {
+  color: #475569;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.price-edit-dialog .ant-input-affix-wrapper,
+.price-edit-dialog .ant-input {
+  height: 44px;
+  border-radius: 10px;
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.price-edit-dialog p {
+  margin: 0;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.price-edit-preview {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 14px;
+  border: 1px solid #dbeafe;
+  border-radius: 12px;
+  background: #eff6ff;
+}
+
+.price-edit-preview span {
+  color: #475569;
+  font-weight: 800;
+}
+
+.price-edit-preview b {
+  color: #0b4da2;
+  font-size: 22px;
+}
+
+.price-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 4px;
+}
+
 .fee-discount-button {
   height: 24px;
   padding: 0 4px;
