@@ -85,8 +85,10 @@ npm.cmd run build
 启动服务：
 
 ```powershell
-.\start_project.ps1 start
+.\start_project.cmd start
 ```
+
+Win10 优先使用 `start_project.cmd`，避免 PowerShell 执行策略拦截；`start_project.ps1` 仅在脚本执行策略允许时使用。
 
 ## 5. 文档同步规则
 

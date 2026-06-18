@@ -26,6 +26,7 @@ frontend/
 docs/                   UI 组件库和迁移参考
 project_ctl.py          命令行启动、重启、停止控制器
 project_launcher.py     图形化启动入口
+start_project.cmd       Windows 10 CMD 启动脚本，不受 PowerShell 执行策略限制
 start_project.ps1       Windows PowerShell 启动脚本
 start_project.command   macOS 本地启动脚本
 ```
@@ -73,8 +74,10 @@ macOS / Codex 本地虚拟环境：
 或使用启动器：
 
 ```powershell
-.\start_project.ps1 start
+.\start_project.cmd start
 ```
+
+如果当前 Windows 允许 PowerShell 脚本，也可以继续使用 `.\start_project.ps1 start`；Win10 执行策略受限时优先使用 `start_project.cmd`。
 
 访问：
 

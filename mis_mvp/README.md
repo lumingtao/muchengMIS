@@ -50,6 +50,13 @@ python3 -m venv .venv
 & 'C:\Users\admini\AppData\Local\Python\bin\python.exe' -m uvicorn backend.app:app --host 0.0.0.0 --port 8088 --app-dir mis_mvp
 ```
 
+Windows 10 推荐从仓库根目录启动：
+```powershell
+.\start_project.cmd start
+```
+
+`start_project.ps1` 仅在 PowerShell 脚本执行策略允许时使用。
+
 macOS / Codex 本地虚拟环境：
 
 ```bash
