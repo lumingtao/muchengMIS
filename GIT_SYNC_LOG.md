@@ -38,7 +38,7 @@
 - 分支：main
 - 远端：origin/main
 - 操作：提交当前未提交变更，基于时间戳创建内部测试标签并推送远端
-- 提交：8a91626 Record internal test build and pricing updates
+- 提交：5cc326c Record internal test build and pricing updates
 - 标签：test/v20260618-192700
 - 变更内容：
   - 前端工作台统计改为按真实当日/本月流水实时计算，去除示例兜底金额。
