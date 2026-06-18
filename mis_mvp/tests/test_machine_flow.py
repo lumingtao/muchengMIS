@@ -544,6 +544,27 @@ def test_create_repair_order_with_initial_repair_items(service: MisService) -> N
     assert any(event["title"] == "维修项目" for event in timeline["events"])
 
 
+def test_delete_repair_order_item_recalculates_quote(service: MisService) -> None:
+    order = service.create_repair_order(
+        user(Role.frontdesk),
+        RepairOrderInput(
+            machine=MachineInput(imei="862222222222234", model="iPhone 13"),
+            customer=CustomerInput(name="删除明细客户"),
+            fault_description="电池老化",
+            repair_items=[RepairItemInput(item_name="电池老化", quantity=1, cost_amount=80, charge_amount=180)],
+        ),
+    )
+
+    item_id = order["items"][0]["repair_item_id"]
+    updated = service.delete_repair_item(user(Role.frontdesk), order["repair_order_id"], item_id)
+
+    assert updated["deleted_repair_item_id"] == item_id
+    assert updated["items"] == []
+    assert updated["quoted_amount"] == 0
+    timeline = service.machine_timeline(user(Role.frontdesk), order["machine_id"])
+    assert any(event["title"] == "删除维修项目" for event in timeline["events"])
+
+
 def test_create_repair_order_with_manual_item_auto_creates_sku(service: MisService) -> None:
     order = service.create_repair_order(
         user(Role.frontdesk),

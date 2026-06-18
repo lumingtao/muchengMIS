@@ -1073,6 +1073,45 @@ class Repository:
         )
         return int(cur.lastrowid)
 
+    def get_repair_item(self, repair_order_id: int, repair_item_id: int) -> dict[str, Any] | None:
+        return row_to_dict(
+            self.conn.execute(
+                """
+                SELECT ri.*, rs.sku_code, rs.fault_name, rs.solution_name, rs.model
+                FROM repair_items ri
+                LEFT JOIN repair_skus rs ON rs.sku_id=ri.sku_id
+                WHERE ri.repair_order_id=? AND ri.repair_item_id=?
+                """,
+                (repair_order_id, repair_item_id),
+            ).fetchone()
+        )
+
+    def repair_item_consumed_material_count(self, repair_order_id: int, repair_item_id: int) -> int:
+        row = self.conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM repair_material_reservations
+            WHERE repair_order_id=? AND repair_item_id=? AND consumed_qty>0
+            """,
+            (repair_order_id, repair_item_id),
+        ).fetchone()
+        return int(row["count"] if row else 0)
+
+    def delete_repair_item_reservations(self, repair_order_id: int, repair_item_id: int) -> None:
+        self.conn.execute(
+            """
+            DELETE FROM repair_material_reservations
+            WHERE repair_order_id=? AND repair_item_id=? AND consumed_qty<=0
+            """,
+            (repair_order_id, repair_item_id),
+        )
+
+    def delete_repair_item(self, repair_order_id: int, repair_item_id: int) -> None:
+        self.conn.execute(
+            "DELETE FROM repair_items WHERE repair_order_id=? AND repair_item_id=?",
+            (repair_order_id, repair_item_id),
+        )
+
     def list_repair_skus(self, include_disabled: bool = False, model: str = "", keyword: str = "") -> list[dict[str, Any]]:
         clauses: list[str] = []
         params: list[Any] = []

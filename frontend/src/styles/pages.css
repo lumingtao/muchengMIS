@@ -2293,6 +2293,18 @@
   font-weight: 800;
 }
 
+.fault-picker-add-block .ant-btn-primary,
+.fault-picker-add-block .ant-btn-primary span {
+  color: #ffffff !important;
+  font-weight: 800 !important;
+}
+
+.fault-picker-add-block .ant-btn-primary .anticon,
+.fault-picker-add-block .ant-btn-primary svg {
+  color: #ffffff !important;
+  stroke: #ffffff !important;
+}
+
 .fault-picker-panel {
   display: grid;
   gap: 12px;

@@ -22,6 +22,10 @@ $LogDir = Join-Path $RuntimeDir "logs"
 if (-not $DatabasePath) {
     $DatabasePath = Join-Path $DataDir "mis_mvp.sqlite3"
 }
+if (-not [System.IO.Path]::IsPathRooted($DatabasePath)) {
+    $DatabasePath = Join-Path $RootDir $DatabasePath
+}
+$DatabasePath = [System.IO.Path]::GetFullPath($DatabasePath)
 
 function Ensure-RuntimeDirs {
     New-Item -ItemType Directory -Force -Path $DataDir | Out-Null

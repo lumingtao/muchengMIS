@@ -1766,6 +1766,22 @@ function OrderDetailPage({
     },
     onError: error => notify(error instanceof Error ? error.message : "添加失败", true),
   });
+  const deleteItemMutation = useMutation({
+    mutationFn: (payload: AnyRecord) => {
+      if (!orderId) throw new Error("缺少工单 ID");
+      const repairItemId = payload.repair_item_id;
+      if (!repairItemId) throw new Error("缺少维修项目 ID");
+      return api<AnyRecord>(`/api/repair-orders/${orderId}/items/${repairItemId}`, { method: "DELETE" });
+    },
+    onSuccess: () => {
+      notify("维修故障已删除");
+      query.refetch();
+      queryClient.invalidateQueries({ queryKey: ["repair-workbench"] });
+      queryClient.invalidateQueries({ queryKey: ["repair-workbench-detail", orderId] });
+      queryClient.invalidateQueries({ queryKey: ["machine-timeline", order.machine_id] });
+    },
+    onError: error => notify(error instanceof Error ? error.message : "删除失败", true),
+  });
   const photoMutation = useMutation({
     mutationFn: ({ stage, file }: { stage: "pre" | "post"; file: File }) => {
       if (!orderId) throw new Error("缺少工单 ID");
@@ -2129,6 +2145,18 @@ function OrderDetailPage({
   function removeNewRepairItem(index: number) {
     setNewRepairItems(prev => prev.filter((_, i) => i !== index));
   }
+  function removeDetailRepairItem(row: AnyRecord) {
+    if (isOrderReadonly) {
+      notify("当前订单状态不可删除维修故障", true);
+      return;
+    }
+    if (!row.repair_item_id) {
+      notify("缺少维修项目 ID", true);
+      return;
+    }
+    if (!window.confirm("确认删除该维修故障？")) return;
+    deleteItemMutation.mutate({ repair_item_id: row.repair_item_id });
+  }
   function inspectionPayload(stage: "pre" | "post", state: Record<string, boolean>, note: string) {
     return {
       stage,
@@ -2371,7 +2399,16 @@ function OrderDetailPage({
       return displayValue(row, key);
     }}
     isStatusKey={() => false}
-    actions={{ title: "操作", render: (_row, index) => mode === "new" ? <AppButton className="table-link danger" type="link" danger onClick={() => removeNewRepairItem(index)}>删除</AppButton> : "-" }}
+    actions={{
+      title: "操作",
+      render: (row, index) => {
+        if (mode === "new") {
+          return <AppButton className="table-link danger" type="link" danger onClick={() => removeNewRepairItem(index)}>删除</AppButton>;
+        }
+        if (isOrderReadonly || !row.repair_item_id) return "-";
+        return <AppButton className="table-link danger" type="link" danger disabled={deleteItemMutation.isPending} onClick={() => removeDetailRepairItem(row)}>删除</AppButton>;
+      },
+    }}
     empty="尚未选择故障；创建订单时会生成“待确认故障”明细。"
   />
 </div>

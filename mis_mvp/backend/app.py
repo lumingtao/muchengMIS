@@ -589,6 +589,11 @@ def add_repair_item(repair_order_id: int, data: RepairItemInput, user: User = De
     return endpoint(lambda: service.add_repair_item(user, repair_order_id, data))
 
 
+@app.delete("/api/repair-orders/{repair_order_id}/items/{repair_item_id}")
+def delete_repair_item(repair_order_id: int, repair_item_id: int, user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.delete_repair_item(user, repair_order_id, repair_item_id))
+
+
 @app.post("/api/repair-orders/{repair_order_id}/materials/reserve")
 def reserve_repair_materials(repair_order_id: int, data: RepairMaterialReserveInput, user: User = Depends(current_user), service: MisService = Depends(get_service)):
     return endpoint(lambda: service.reserve_repair_materials(user, repair_order_id, data))

@@ -64,6 +64,10 @@ def stop_port(port: int) -> None:
 
 def start_app(host: str, port: int, database_path: str, open_browser: bool) -> None:
     ensure_runtime_dirs()
+    db_path = Path(database_path).expanduser()
+    if not db_path.is_absolute():
+        db_path = ROOT_DIR / db_path
+    database_path = str(db_path.resolve())
     existing = port_pids(port)
     url = f"http://{host}:{port}/"
     if existing:

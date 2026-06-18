@@ -3334,6 +3334,33 @@ class MisService:
         detail["repair_item_id"] = item_id
         return detail
 
+    def delete_repair_item(self, user: User, repair_order_id: int, repair_item_id: int) -> dict[str, Any]:
+        self._allowed(user, "repair_order:update")
+        order = self.repo.get_repair_order(repair_order_id)
+        if not order:
+            raise BusinessError("维修单不存在")
+        self._ensure_engineer_owns_repair(user, order)
+        readonly_statuses = {OrderStatus.cancelled.value, OrderStatus.closed.value, "已取消", "已删除", "已完结"}
+        if str(order.get("status") or "") in readonly_statuses or order.get("archived_at"):
+            raise BusinessError("当前订单为只读状态，不能修改故障明细")
+        item = self.repo.get_repair_item(repair_order_id, repair_item_id)
+        if not item:
+            raise BusinessError("维修项目不存在")
+        if self.repo.repair_item_consumed_material_count(repair_order_id, repair_item_id):
+            raise BusinessError("该维修项目已有物料消耗，不能直接删除")
+        item_name = str(item.get("item_name") or item.get("fault_name") or "维修项目")
+        self.repo.delete_repair_item_reservations(repair_order_id, repair_item_id)
+        self.repo.delete_repair_item(repair_order_id, repair_item_id)
+        repair_items = self.repo.list_repair_items(repair_order_id)
+        quoted_amount = sum((float(row.get("cost_amount") or 0) + float(row.get("charge_amount") or 0)) * int(row.get("quantity") or 1) for row in repair_items)
+        self.repo.update_repair_order_price(repair_order_id, quoted_amount)
+        self.repo.add_machine_event(int(order["machine_id"]), "repair", "删除维修项目", item_name, user.username, "repair_item", repair_item_id)
+        self._log_success(user, "repair_order:item:delete", "repair_item", str(repair_item_id), customer_id=order["customer_id"], request_summary=item_name)
+        self.conn.commit()
+        detail = self._repair_order_response(repair_order_id)
+        detail["deleted_repair_item_id"] = repair_item_id
+        return detail
+
     def update_repair_order_status(self, user: User, repair_order_id: int, data: RepairOrderStatusInput) -> dict[str, Any]:
         self._allowed(user, "repair_order:update")
         order = self.repo.get_repair_order(repair_order_id)

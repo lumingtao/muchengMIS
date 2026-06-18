@@ -639,6 +639,7 @@ def test_customer_member_no_backfilled_on_migration(tmp_path: Path) -> None:
         """
     )
     migrate(conn)
-    row = conn.execute("SELECT member_no, status FROM customers WHERE name='老客户'").fetchone()
+    row = conn.execute("SELECT member_no, gender, status FROM customers WHERE name='老客户'").fetchone()
     assert row["member_no"] == "M000001"
+    assert row["gender"] == ""
     assert row["status"] == "正常"

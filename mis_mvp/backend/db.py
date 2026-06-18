@@ -759,6 +759,7 @@ def ensure_columns(conn: sqlite3.Connection) -> None:
     columns: dict[str, list[tuple[str, str]]] = {
         "customers": [
             ("member_no", "TEXT NOT NULL DEFAULT ''"),
+            ("gender", "TEXT NOT NULL DEFAULT ''"),
             ("status", "TEXT NOT NULL DEFAULT '正常'"),
             ("source", "TEXT NOT NULL DEFAULT ''"),
             ("birthday", "TEXT NOT NULL DEFAULT ''"),
