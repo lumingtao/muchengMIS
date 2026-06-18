@@ -157,3 +157,23 @@
 - 验证情况：未在当次同步记录中单独留存测试命令输出。
 - 回退参考：如需撤销该轮维修流程调整，可优先评估 revert `2927de5`。
 - 备注：后续 `232e80a` 基于该提交继续修复手动故障录入问题。
+
+### 2026-06-18 11:00 CST | 合并 codex/order-status 分支并同步远端
+
+- 分支：main
+- 远端：origin/main
+- 操作：提交 codex/order-status 分支改动 → 快进合并到 main → 推送远端
+- 提交：99c0461 订单状态特殊开发：前后端功能更新与测试补充
+- 变更内容：
+  - 前端 App.tsx 大幅重构（+1132/-621），支持订单状态特殊管理流程，含备份文件 App.tsx.bak。
+  - 前端样式 components.css 和 pages.css 扩展，StatusTag、AppTable 组件微调。
+  - 后端 app.py 新增订单状态相关接口，db/models/repository/service 层同步扩展。
+  - 新增 docs/order-status-special-development.md 订单状态特殊开发文档。
+  - 新增 mis_mvp/tools/seed_comprehensive_data.py 综合种子数据脚本。
+  - 测试 test_api.py（+118）、test_machine_flow.py（+60/-）补充订单状态相关测试覆盖。
+  - 更新前端构建产物（删除旧 assets，更新 index.html）、package-lock、vite/ts 配置。
+  - 更新 BUG_TIMELINE.md（+178）、README.md、mis_mvp/README.md、requirements.txt、start_project.command。
+- 同步结果：本地 main 已快进到 99c0461，已推送 origin/main（0cbbf27..99c0461），远端一致。
+- 验证情况：本次为快进合并，无冲突；自动化测试未在本次同步中运行。
+- 回退参考：如需撤销本轮订单状态开发，可优先 revert 99c0461。
+- 备注：外层仓库以 gitlink 方式引用 muchengMIS 子目录，本次同步后需更新外层子模块指针；codex/order-status 分支保留，未删除。
