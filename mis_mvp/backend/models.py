@@ -188,6 +188,7 @@ class RepairOrderInput(BaseModel):
     inspections: list["RepairInspectionInput"] = []
     notes: list["RepairOrderNoteInput"] = []
     note_logs: list["RepairOrderLogInput"] = []
+    discount_amount: float = Field(default=0, ge=0)
 
 
 class RepairOrderNoteInput(BaseModel):
@@ -250,6 +251,11 @@ class RepairSkuInput(BaseModel):
 
 class PriceChangeInput(BaseModel):
     quoted_amount: float = Field(ge=0)
+    remark: str = ""
+
+
+class RepairDiscountInput(BaseModel):
+    discount_amount: float = Field(default=0, ge=0)
     remark: str = ""
 
 

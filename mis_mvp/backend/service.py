@@ -44,6 +44,7 @@ from .models import (
     RepairAssignInput,
     RepairInput,
     RepairDeliverInput,
+    RepairDiscountInput,
     RepairEngineerCloseInput,
     RepairInspectionInput,
     RepairItemInput,
@@ -447,6 +448,23 @@ class MisService:
         )
         return sku_id
 
+    def _repair_items_total(self, repair_order_id: int) -> float:
+        return sum(
+            (float(row.get("cost_amount") or 0) + float(row.get("charge_amount") or 0)) * int(row.get("quantity") or 1)
+            for row in self.repo.list_repair_items(repair_order_id)
+        )
+
+    def _update_repair_order_price_from_items(self, repair_order_id: int) -> float:
+        order = self.repo.get_repair_order(repair_order_id) or {}
+        subtotal = self._repair_items_total(repair_order_id)
+        current_discount = float(order.get("discount_amount") or 0)
+        discount_amount = min(current_discount, subtotal)
+        if discount_amount != current_discount:
+            self.repo.update_repair_order_discount(repair_order_id, discount_amount)
+        quoted_amount = max(subtotal - discount_amount, 0)
+        self.repo.update_repair_order_price(repair_order_id, quoted_amount)
+        return quoted_amount
+
     def create_repair_order(self, user: User, data: RepairOrderInput) -> dict[str, Any]:
         self._allowed(user, "repair_order:create")
         order_type = self._repair_order_type(data)
@@ -519,7 +537,11 @@ class MisService:
             quoted_amount += (float(item["cost_amount"]) + float(item["charge_amount"])) * int(item["quantity"])
             self.repo.add_machine_event(machine_id, "repair", "维修项目", f"{item['item_name']} x{item['quantity']}", user.username, "repair_item", item_id)
         if repair_items:
-            self.repo.update_repair_order_price(order_id, quoted_amount)
+            discount_amount = min(float(data.discount_amount or 0), quoted_amount)
+            if discount_amount:
+                self.repo.update_repair_order_discount(order_id, discount_amount)
+                self.repo.add_machine_event(machine_id, "repair", "发券优惠", f"优惠 {discount_amount}", user.username, "repair", order_id)
+            self.repo.update_repair_order_price(order_id, max(quoted_amount - discount_amount, 0))
         for note in data.notes:
             note_type = note.note_type.strip() or "内部备注"
             content = note.content.strip()
@@ -3238,6 +3260,30 @@ class MisService:
         self.conn.commit()
         return self._repair_order_response(repair_order_id)
 
+    def change_repair_order_discount(self, user: User, repair_order_id: int, data: RepairDiscountInput) -> dict[str, Any]:
+        self._allowed(user, "repair_order:update")
+        order = self.repo.get_repair_order(repair_order_id)
+        if not order:
+            raise BusinessError("维修单不存在")
+        self._ensure_engineer_owns_repair(user, order)
+        if str(order.get("status") or "") in {OrderStatus.cancelled.value, OrderStatus.closed.value, "已取消", "已删除", "已完结"} or order.get("archived_at"):
+            raise BusinessError("当前订单为只读状态，不能发券优惠")
+        subtotal = self._repair_items_total(repair_order_id)
+        if subtotal <= 0:
+            subtotal = float(order.get("quoted_amount") or 0) + float(order.get("discount_amount") or 0)
+        discount_amount = min(float(data.discount_amount or 0), subtotal)
+        old_discount = float(order.get("discount_amount") or 0)
+        quoted_amount = max(subtotal - discount_amount, 0)
+        self.repo.update_repair_order_discount(repair_order_id, discount_amount)
+        self.repo.update_repair_order_price(repair_order_id, quoted_amount)
+        detail = f"优惠 {old_discount} -> {discount_amount}；应收 {quoted_amount}"
+        if data.remark:
+            detail = f"{detail}；{data.remark}"
+        self.repo.add_machine_event(int(order["machine_id"]), "repair", "发券优惠", detail, user.username, "repair", repair_order_id)
+        self._log_success(user, "repair_order:discount", "repair_order", str(repair_order_id), customer_id=order["customer_id"], request_summary=str(discount_amount))
+        self.conn.commit()
+        return self._repair_order_response(repair_order_id)
+
     def append_repair_order_remark(self, user: User, repair_order_id: int, data: RepairRemarkInput) -> dict[str, Any]:
         self._allowed(user, "repair_order:update")
         order = self.repo.get_repair_order(repair_order_id)
@@ -3324,9 +3370,7 @@ class MisService:
             sku_id = self._ensure_manual_repair_sku(item_name, str((machine or {}).get("model") or ""), cost_amount, charge_amount)
         item_id = self.repo.add_repair_item(repair_order_id, item_name, data.quantity, cost_amount, charge_amount, data.remark, sku_id)
         self._reserve_for_repair_item(user, repair_order_id, item_id, data.remark)
-        repair_items = self.repo.list_repair_items(repair_order_id)
-        quoted_amount = sum((float(row.get("cost_amount") or 0) + float(row.get("charge_amount") or 0)) * int(row.get("quantity") or 1) for row in repair_items)
-        self.repo.update_repair_order_price(repair_order_id, quoted_amount)
+        self._update_repair_order_price_from_items(repair_order_id)
         self.repo.add_machine_event(int(order["machine_id"]), "repair", "维修项目", f"{item_name} x{data.quantity}", user.username, "repair_item", item_id)
         self._log_success(user, "repair_order:item", "repair_item", str(item_id), customer_id=order["customer_id"], request_summary=item_name)
         self.conn.commit()
@@ -3351,9 +3395,7 @@ class MisService:
         item_name = str(item.get("item_name") or item.get("fault_name") or "维修项目")
         self.repo.delete_repair_item_reservations(repair_order_id, repair_item_id)
         self.repo.delete_repair_item(repair_order_id, repair_item_id)
-        repair_items = self.repo.list_repair_items(repair_order_id)
-        quoted_amount = sum((float(row.get("cost_amount") or 0) + float(row.get("charge_amount") or 0)) * int(row.get("quantity") or 1) for row in repair_items)
-        self.repo.update_repair_order_price(repair_order_id, quoted_amount)
+        self._update_repair_order_price_from_items(repair_order_id)
         self.repo.add_machine_event(int(order["machine_id"]), "repair", "删除维修项目", item_name, user.username, "repair_item", repair_item_id)
         self._log_success(user, "repair_order:item:delete", "repair_item", str(repair_item_id), customer_id=order["customer_id"], request_summary=item_name)
         self.conn.commit()

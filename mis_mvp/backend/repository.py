@@ -1008,6 +1008,12 @@ class Repository:
             (quoted_amount, repair_order_id),
         )
 
+    def update_repair_order_discount(self, repair_order_id: int, discount_amount: float) -> None:
+        self.conn.execute(
+            "UPDATE repair_orders SET discount_amount=?, updated_at=CURRENT_TIMESTAMP WHERE repair_order_id=?",
+            (discount_amount, repair_order_id),
+        )
+
     def update_repair_order_remark(self, repair_order_id: int, remark: str) -> None:
         self.conn.execute(
             "UPDATE repair_orders SET remark=?, updated_at=CURRENT_TIMESTAMP WHERE repair_order_id=?",

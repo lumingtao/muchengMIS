@@ -1115,6 +1115,8 @@ function CreateRepairOrderModal({ notify, onClose, onCreated, open }: { notify: 
     const { lineAmount } = repairLineAmounts(row);
     return sum + lineAmount * firstNumber(row.quantity, row.qty, 1);
   }, 0);
+  const discountAmount = Math.min(firstNumber(form.discount_amount, 0), quoted);
+  const payableAmount = Math.max(quoted - discountAmount, 0);
 
   function setCreateField(key: string, value: unknown) {
     setForm(prev => ({ ...prev, [key]: value }));
@@ -1200,6 +1202,17 @@ function CreateRepairOrderModal({ notify, onClose, onCreated, open }: { notify: 
     setSelectedFaults(prev => prev.filter((_, currentIndex) => currentIndex !== index));
   }
 
+  function applyCreateDiscount() {
+    const input = window.prompt("请输入发券优惠金额", String(discountAmount || ""));
+    if (input === null) return;
+    const amount = Math.max(Number(input || 0), 0);
+    if (!Number.isFinite(amount)) {
+      notify("优惠金额格式不正确", true);
+      return;
+    }
+    setCreateField("discount_amount", Math.min(amount, quoted));
+  }
+
   function addPendingFault() {
     setSelectedFaults(prev => [...prev, { sku_id: null, item_name: "待确认故障", fault_name: "待确认故障", sku_code: "PENDING", material_name: "-", material_code: "-", quantity: 1, cost_amount: 0, charge_amount: 0, remark: "建单时故障待确认" }]);
     setFaultPickerOpen(false);
@@ -1229,6 +1242,7 @@ function CreateRepairOrderModal({ notify, onClose, onCreated, open }: { notify: 
       customer: selectedCustomer?.customer_id ? null : customerPayload({ customer_name: createCustomerName(), phone: form.phone, wechat: form.wechat, customer_type: form.customer_type || "个人客户", customer_remark: form.customer_remark }),
       fault_description: repairItems.map(row => String(row.fault_name || row.item_name || "待确认故障")).join("、"),
       repair_items: repairItems.map(row => ({ sku_id: row.sku_id || null, item_name: row.item_name || row.fault_name || "维修故障", quantity: firstNumber(row.quantity, 1), cost_amount: firstNumber(row.cost_amount), charge_amount: firstNumber(row.charge_amount), remark: row.remark || "" })),
+      discount_amount: discountAmount,
     });
   }
 
@@ -1316,7 +1330,7 @@ function CreateRepairOrderModal({ notify, onClose, onCreated, open }: { notify: 
             empty="尚未选择故障；直接建单时会生成“待确认故障”明细。"
           />
           </div>
-          <div className="order-fee-summary stacked-fee-summary fault-picker-price-module"><span>费用总计 <b>{poolMoney(quoted)}</b></span><span>折扣优惠 <b className="danger-text">- {poolMoney(0)}</b></span><span>应收总额 <b>{poolMoney(quoted)}</b></span></div>
+          <div className="order-fee-summary stacked-fee-summary fault-picker-price-module"><span>费用总计 <b>{poolMoney(quoted)}</b></span><span>发券优惠 <AppButton className="fee-discount-button" type="link" onClick={applyCreateDiscount}>发券</AppButton> <b className="danger-text">- {poolMoney(discountAmount)}</b></span><span>应收总额 <b>{poolMoney(payableAmount)}</b></span></div>
         </section>
         <div className="create-order-actions">
           <AppButton onClick={onClose}>取消</AppButton>
@@ -1568,7 +1582,8 @@ function OrderDetailPage({
     const { lineAmount } = repairLineAmounts(row);
     return sum + lineAmount * firstNumber(row.quantity, row.qty, 1);
   }, 0);
-  const quoted = detailRows.length ? detailQuoted : Number(display.quoted_amount || order.quoted_amount || incomeItems.reduce((sum, row) => sum + Number(row.amount || 0), 0));
+  const discountAmount = Math.min(firstNumber(display.discount_amount, order.discount_amount, 0), detailRows.length ? detailQuoted : Number(display.quoted_amount || order.quoted_amount || 0) + firstNumber(display.discount_amount, order.discount_amount, 0));
+  const quoted = detailRows.length ? Math.max(detailQuoted - discountAmount, 0) : Number(display.quoted_amount || order.quoted_amount || incomeItems.reduce((sum, row) => sum + Number(row.amount || 0), 0));
   const inspections = ["屏幕显示", "触摸功能", "摄像头", "电池健康", "生物识别", "无线网络", "蜂窝网络", "音频模块", "指南针", "扬声器", "听筒", "充电"];
   const inspectionItems = ["屏幕显示", "触摸功能", "前置摄像头", "后置摄像头", "电池健康", "生物识别", "无线网络", "蜂窝网络", "音频模块", "指南针", "扬声器", "听筒", "充电", "不开机", "软件系统", "重装调试", "其他异常"];
   const canAddRepairItem = mode !== "new" && !isOrderReadonly && canModifyRepairItems(statusText);
@@ -1781,6 +1796,23 @@ function OrderDetailPage({
       queryClient.invalidateQueries({ queryKey: ["machine-timeline", order.machine_id] });
     },
     onError: error => notify(error instanceof Error ? error.message : "删除失败", true),
+  });
+  const discountMutation = useMutation({
+    mutationFn: (payload: AnyRecord) => {
+      if (!orderId) throw new Error("缺少工单 ID");
+      return api<AnyRecord>(`/api/repair-orders/${orderId}/discount`, {
+        method: "POST",
+        body: JSON.stringify({ discount_amount: Number(payload.discount_amount || 0), remark: payload.remark || "" }),
+      });
+    },
+    onSuccess: () => {
+      notify("发券优惠已更新");
+      query.refetch();
+      queryClient.invalidateQueries({ queryKey: ["repair-workbench"] });
+      queryClient.invalidateQueries({ queryKey: ["repair-workbench-detail", orderId] });
+      queryClient.invalidateQueries({ queryKey: ["machine-timeline", order.machine_id] });
+    },
+    onError: error => notify(error instanceof Error ? error.message : "发券失败", true),
   });
   const photoMutation = useMutation({
     mutationFn: ({ stage, file }: { stage: "pre" | "post"; file: File }) => {
@@ -2157,6 +2189,25 @@ function OrderDetailPage({
     if (!window.confirm("确认删除该维修故障？")) return;
     deleteItemMutation.mutate({ repair_item_id: row.repair_item_id });
   }
+  function applyDetailDiscount() {
+    if (isOrderReadonly) {
+      notify("当前订单状态不可发券优惠", true);
+      return;
+    }
+    const grossAmount = detailRows.length ? detailQuoted : quoted + discountAmount;
+    const input = window.prompt("请输入发券优惠金额", String(discountAmount || ""));
+    if (input === null) return;
+    const amount = Math.max(Number(input || 0), 0);
+    if (!Number.isFinite(amount)) {
+      notify("优惠金额格式不正确", true);
+      return;
+    }
+    if (mode === "new") {
+      setField("discount_amount", Math.min(amount, grossAmount));
+      return;
+    }
+    discountMutation.mutate({ discount_amount: Math.min(amount, grossAmount), remark: "总价发券优惠" });
+  }
   function inspectionPayload(stage: "pre" | "post", state: Record<string, boolean>, note: string) {
     return {
       stage,
@@ -2249,6 +2300,7 @@ function OrderDetailPage({
         charge_amount: Number(row.charge_amount || 0),
         remark: row.remark || "",
       })),
+      discount_amount: discountAmount,
       inspections: [inspectionPayload("pre", preInspectionState, preInspectionNote)],
     };
     createMutation.mutate(payload);
@@ -2412,7 +2464,7 @@ function OrderDetailPage({
     empty="尚未选择故障；创建订单时会生成“待确认故障”明细。"
   />
 </div>
-            <div className="order-fee-summary stacked-fee-summary fault-picker-price-module"><span>费用总计 <b>{poolMoney(quoted)}</b></span><span>折扣优惠 <b className="danger-text">- {poolMoney(0)}</b></span><span>应收总额 <b>{poolMoney(quoted)}</b></span>{mode === "edit" && <OrderField label="修改报价" value={form.quoted_amount ?? order.quoted_amount} editable type="number" onChange={v => setField("quoted_amount", v)} />}</div>
+            <div className="order-fee-summary stacked-fee-summary fault-picker-price-module"><span>费用总计 <b>{poolMoney(detailRows.length ? detailQuoted : quoted + discountAmount)}</b></span><span>发券优惠 {!isOrderReadonly && <AppButton className="fee-discount-button" type="link" onClick={applyDetailDiscount} disabled={discountMutation.isPending}>发券</AppButton>} <b className="danger-text">- {poolMoney(discountAmount)}</b></span><span>应收总额 <b>{poolMoney(quoted)}</b></span>{mode === "edit" && <OrderField label="修改报价" value={form.quoted_amount ?? order.quoted_amount} editable type="number" onChange={v => setField("quoted_amount", v)} />}</div>
           </section>
 
           {mode !== "new" && <EditableInspectionCard title="维修后检测 (Post-Repair)" inspections={inspectionItems} note={postInspectionNote} compact={false} mode={mode} state={postInspectionState} photos={postPhotos} stage="post" editing={postInspectionEditing} readonly={isOrderReadonly} onStart={() => setPostInspectionEditing(true)} onSave={() => saveInspection("post")} onCancel={() => setPostInspectionEditing(false)} onToggle={item => toggleInspection("post", item)} onNoteChange={setPostInspectionNote} onUpload={uploadPhoto} onOpenPhoto={setSelectedPhoto} uploading={photoMutation.isPending || inspectionMutation.isPending} />}

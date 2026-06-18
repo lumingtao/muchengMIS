@@ -29,6 +29,7 @@ from backend.models import (
     RecycleQuoteInput,
     RepairAssignInput,
     RepairDeliverInput,
+    RepairDiscountInput,
     RepairEngineerCloseInput,
     RepairInspectionInput,
     RepairInspectionItemInput,
@@ -563,6 +564,32 @@ def test_delete_repair_order_item_recalculates_quote(service: MisService) -> Non
     assert updated["quoted_amount"] == 0
     timeline = service.machine_timeline(user(Role.frontdesk), order["machine_id"])
     assert any(event["title"] == "删除维修项目" for event in timeline["events"])
+
+
+def test_repair_order_discount_reduces_receivable_and_survives_item_changes(service: MisService) -> None:
+    order = service.create_repair_order(
+        user(Role.frontdesk),
+        RepairOrderInput(
+            machine=MachineInput(imei="862222222222235", model="iPhone 13"),
+            customer=CustomerInput(name="发券客户"),
+            fault_description="电池老化",
+            repair_items=[RepairItemInput(item_name="电池老化", quantity=1, cost_amount=80, charge_amount=180)],
+            discount_amount=30,
+        ),
+    )
+
+    assert order["discount_amount"] == 30
+    assert order["quoted_amount"] == 230
+
+    discounted = service.change_repair_order_discount(user(Role.frontdesk), order["repair_order_id"], RepairDiscountInput(discount_amount=50))
+    assert discounted["discount_amount"] == 50
+    assert discounted["quoted_amount"] == 210
+
+    updated = service.add_repair_item(user(Role.frontdesk), order["repair_order_id"], RepairItemInput(item_name="清洁维护", cost_amount=20, charge_amount=80))
+    assert updated["discount_amount"] == 50
+    assert updated["quoted_amount"] == 310
+    timeline = service.machine_timeline(user(Role.frontdesk), order["machine_id"])
+    assert any(event["title"] == "发券优惠" for event in timeline["events"])
 
 
 def test_create_repair_order_with_manual_item_auto_creates_sku(service: MisService) -> None:

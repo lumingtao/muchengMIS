@@ -35,6 +35,7 @@ from .models import (
     RecycleQuoteInput,
     RepairAssignInput,
     RepairDeliverInput,
+    RepairDiscountInput,
     RepairEngineerCloseInput,
     RepairInspectionInput,
     RepairInput,
@@ -582,6 +583,11 @@ def confirm_repair_quote(repair_order_id: int, data: RepairQuoteConfirmInput, us
 @app.post("/api/repair-orders/{repair_order_id}/price")
 def change_repair_order_price(repair_order_id: int, data: PriceChangeInput, user: User = Depends(current_user), service: MisService = Depends(get_service)):
     return endpoint(lambda: service.change_repair_order_price(user, repair_order_id, data))
+
+
+@app.post("/api/repair-orders/{repair_order_id}/discount")
+def change_repair_order_discount(repair_order_id: int, data: RepairDiscountInput, user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.change_repair_order_discount(user, repair_order_id, data))
 
 
 @app.post("/api/repair-orders/{repair_order_id}/items")
