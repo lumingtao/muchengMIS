@@ -15,6 +15,7 @@ from .models import (
     CustomerInteractionInput,
     CustomerInteractionUpdateInput,
     DeviceModelInput,
+    EmployeeInput,
     LoginInput,
     MachineInput,
     MachineNoteInput,
@@ -232,6 +233,17 @@ def device_models(
     service: MisService = Depends(get_service),
 ):
     return endpoint(lambda: service.list_device_models(user, keyword=q, enabled_only=enabled_only))
+
+
+@app.get("/api/employees")
+def employees(
+    q: str = Query(default=""),
+    department: str = Query(default=""),
+    accepting_orders: str = Query(default=""),
+    user: User = Depends(current_user),
+    service: MisService = Depends(get_service),
+):
+    return endpoint(lambda: service.list_employees(user, keyword=q, department=department, accepting_orders=accepting_orders))
 
 
 @app.get("/api/repair-workbench")
@@ -542,6 +554,11 @@ def upsert_device_model(data: DeviceModelInput, user: User = Depends(current_use
     return endpoint(lambda: service.upsert_device_model(user, data))
 
 
+@app.post("/api/employees")
+def upsert_employee(data: EmployeeInput, user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.upsert_employee(user, data))
+
+
 @app.post("/api/device-models/sync/apple")
 def sync_apple_device_models(user: User = Depends(current_user), service: MisService = Depends(get_service)):
     return endpoint(lambda: service.sync_apple_device_models(user))
@@ -590,6 +607,11 @@ def release_repair_materials(repair_order_id: int, data: RepairMaterialReserveIn
 @app.post("/api/repair-orders/{repair_order_id}/status")
 def update_repair_order_status(repair_order_id: int, data: RepairOrderStatusInput, user: User = Depends(current_user), service: MisService = Depends(get_service)):
     return endpoint(lambda: service.update_repair_order_status(user, repair_order_id, data))
+
+
+@app.put("/api/repair-orders/{repair_order_id}/machine")
+def update_repair_order_machine(repair_order_id: int, data: MachineUpdateInput, user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.update_repair_order_machine(user, repair_order_id, data))
 
 
 @app.post("/api/repair-orders/{repair_order_id}/remark")

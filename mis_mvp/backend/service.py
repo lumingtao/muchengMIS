@@ -20,6 +20,7 @@ from .models import (
     CustomerInput,
     DeviceModelInput,
     DeviceStatus,
+    EmployeeInput,
     LoginInput,
     MachineInput,
     MachineNoteInput,
@@ -129,6 +130,16 @@ class MisService:
             return existing
         if not machine:
             raise BusinessError("必须提供机器档案或 machine_id")
+        imei = machine.imei.strip()
+        serial = machine.serial.strip()
+        if imei:
+            existing = self.repo.get_machine_by_imei(imei)
+            if existing:
+                return existing
+        if serial:
+            existing = self.repo.get_machine_by_serial(serial)
+            if existing:
+                return existing
         return self.create_machine(user, machine, default_line=default_line)
 
     def create_machine(self, user: User, data: MachineInput, default_line: BusinessLine | None = None) -> dict[str, Any]:
@@ -245,6 +256,34 @@ class MisService:
         self.conn.commit()
         return self.repo.get_machine(machine_id) or {}
 
+    def update_repair_order_machine(self, user: User, repair_order_id: int, data: MachineUpdateInput) -> dict[str, Any]:
+        self._allowed(user, "repair_order:update")
+        order = self.repo.get_repair_order(repair_order_id)
+        if not order:
+            raise BusinessError("维修单不存在")
+        current_machine_id = int(order["machine_id"])
+        imei = data.imei.strip()
+        serial = data.serial.strip()
+        target = self.repo.get_machine_by_imei(imei) if imei else None
+        if not target and serial:
+            target = self.repo.get_machine_by_serial(serial)
+        if target and int(target["machine_id"]) != current_machine_id:
+            target_machine_id = int(target["machine_id"])
+            self.repo.update_repair_order_machine(repair_order_id, target_machine_id)
+            self.repo.update_machine_status(target_machine_id, data.current_status.value, BusinessLine.repair.value)
+            detail = f"工单设备改为已有机器档案 {target.get('machine_no') or target_machine_id}"
+            self.repo.add_machine_event(current_machine_id, "repair", "工单设备移出", detail, user.username, "repair", repair_order_id)
+            self.repo.add_machine_event(target_machine_id, "repair", "工单设备关联", detail, user.username, "repair", repair_order_id)
+            self._log_success(user, "repair_order:machine:update", "repair_order", str(repair_order_id), imei=imei, customer_id=order.get("customer_id"), request_summary=detail)
+            self.conn.commit()
+            return self.repair_workbench_detail(user, repair_order_id)
+        updated = self.update_machine(user, current_machine_id, data)
+        self.repo.add_machine_event(current_machine_id, "repair", "工单设备更新", f"维修单 {order.get('order_no') or repair_order_id}", user.username, "repair", repair_order_id)
+        self.conn.commit()
+        detail = self.repair_workbench_detail(user, repair_order_id)
+        detail["machine"] = updated
+        return detail
+
     def add_machine_note(self, user: User, machine_id: int, data: MachineNoteInput) -> dict[str, Any]:
         self._allowed(user, "machine:update")
         machine = self.repo.get_machine(machine_id)
@@ -302,6 +341,50 @@ class MisService:
     def _ensure_frontdesk_or_admin(self, user: User) -> None:
         if user.role not in {Role.admin, Role.boss, Role.frontdesk, Role.staff}:
             raise PermissionError("当前角色不能执行前台协作动作")
+
+    def _can_delete_repair_order(self, user: User) -> bool:
+        return user.role in {Role.admin, Role.boss, Role.staff}
+
+    def _repair_status_light(self, order: dict[str, Any]) -> dict[str, Any]:
+        status = str(order.get("status") or "")
+        assigned_to = str(order.get("assigned_to") or "")
+        archived = bool(str(order.get("archived_at") or ""))
+        if archived or status == "已删除":
+            light = "已删除"
+            readonly = True
+            reason = "订单已删除归档，仅可通过订单号搜索查看"
+        elif status in {"已作废", "已取消"}:
+            light = "已取消"
+            readonly = True
+            reason = "订单已取消，全部信息只读"
+        elif not assigned_to and status == OrderStatus.opened.value:
+            light = "待指派"
+            readonly = False
+            reason = ""
+        else:
+            light = "维修中"
+            readonly = False
+            reason = ""
+        return {
+            "key": light,
+            "label": light,
+            "readonly": readonly,
+            "readonly_reason": reason,
+        }
+
+    def _repair_order_available_actions_for_user(self, user: User, order: dict[str, Any]) -> list[str]:
+        light = self._repair_status_light(order)
+        if light["readonly"]:
+            return ["view"]
+        actions = ["view"]
+        status = str(order.get("status") or "")
+        if "repair_order:assign" in set(permissions_for(user.role)) and status not in {"已完结", "已结单"}:
+            actions.append("assign" if not order.get("assigned_to") else "reassign")
+        if "repair_order:update" in set(permissions_for(user.role)) and status not in {"已完结", "已结单"}:
+            actions.append("cancel")
+        if self._can_delete_repair_order(user):
+            actions.append("delete")
+        return actions
 
     def _repair_order_response(self, repair_order_id: int) -> dict[str, Any]:
         detail = self.repo.repair_order_detail(repair_order_id)
@@ -489,6 +572,17 @@ class MisService:
         self._log_success(user, "device_model:upsert", "device_model", str(device_model_id), request_summary=data.model_name)
         self.conn.commit()
         return self.repo.get_device_model(device_model_id) or {}
+
+    def list_employees(self, user: User, keyword: str = "", department: str = "", accepting_orders: str = "") -> list[dict[str, Any]]:
+        self._allowed(user, "device_model:read")
+        return self.repo.list_employees(keyword=keyword, department=department, accepting_orders=accepting_orders)
+
+    def upsert_employee(self, user: User, data: EmployeeInput) -> dict[str, Any]:
+        self._allowed(user, "device_model:write")
+        employee_id = self.repo.upsert_employee(data.model_dump())
+        self._log_success(user, "employee:upsert", "employee", str(employee_id), request_summary=f"{data.name} / {data.position}")
+        self.conn.commit()
+        return self.repo.get_employee(employee_id) or {}
 
     def sync_apple_device_models(self, user: User) -> dict[str, Any]:
         self._allowed(user, "device_model:write")
@@ -845,6 +939,7 @@ class MisService:
         for order in orders:
             order["order_no"] = order.get("order_no") or repair_order_no(repair_order_date_key(order.get("created_at")), 1)
             order["customer_name"] = order.get("customer_name") or order.get("linked_customer_name") or "待补"
+            order["gender"] = order.get("gender") or order.get("customer_gender") or ""
             order["customer_type"] = order.get("customer_type") or order.get("linked_customer_type") or "待确认"
             order["payment_status"] = order.get("payment_status") or "未收款"
             order["settlement_status"] = order.get("settlement_status") or "未结"
@@ -853,6 +948,11 @@ class MisService:
             order["pre_inspection_abnormal"] = order.get("pool_pre_inspection_abnormal") or ""
             order["unknown_fields"] = self._repair_unknown_fields(order)
             order["is_overdue"] = bool(order.get("due_at")) and not order.get("closed_at") and order.get("status") not in {"已完结", "已结单"}
+            order["status_light"] = self._repair_status_light(order)
+            order["status_light_key"] = order["status_light"]["key"]
+            order["readonly"] = order["status_light"]["readonly"]
+            order["readonly_reason"] = order["status_light"]["readonly_reason"]
+            order["available_actions"] = self._repair_order_available_actions_for_user(user, order)
         return {
             "orders": orders,
             "status_cards": self._rows(
@@ -899,7 +999,7 @@ class MisService:
             """
             SELECT ro.*, m.machine_no, m.imei, m.serial, m.model, m.memory, m.color,
                    m.condition, m.current_status, c.name AS linked_customer_name,
-                   c.phone AS customer_phone, c.category AS linked_customer_type
+                   c.phone AS customer_phone, c.gender AS customer_gender, c.category AS linked_customer_type
             FROM repair_orders ro
             JOIN machines m ON m.machine_id = ro.machine_id
             LEFT JOIN customers c ON c.customer_id = ro.customer_id
@@ -911,8 +1011,13 @@ class MisService:
             raise BusinessError("维修单不存在")
         order["order_no"] = order.get("order_no") or repair_order_no(repair_order_date_key(order.get("created_at")), 1)
         order["customer_name"] = order.get("customer_name") or order.get("linked_customer_name") or "待补"
+        order["gender"] = order.get("gender") or order.get("customer_gender") or ""
         order["customer_type"] = order.get("customer_type") or order.get("linked_customer_type") or "待确认"
         order["unknown_fields"] = self._repair_unknown_fields(order)
+        order["status_light"] = self._repair_status_light(order)
+        order["status_light_key"] = order["status_light"]["key"]
+        order["readonly"] = order["status_light"]["readonly"]
+        order["readonly_reason"] = order["status_light"]["readonly_reason"]
         payments = self.repo.payments_for_source("repair", repair_order_id)
         inspections = self.repo.list_repair_order_inspections(repair_order_id)
         repair_items = self.repo.list_repair_items(repair_order_id)
@@ -921,6 +1026,7 @@ class MisService:
             "order": order,
             "modules": modules,
             "available_actions": self._repair_module_available_actions(order, modules, repair_items),
+            "order_actions": self._repair_order_available_actions_for_user(user, order),
             "income_items": self._rows("SELECT * FROM repair_income_items WHERE repair_order_id=? ORDER BY income_item_id", (repair_order_id,)),
             "cost_items": self._rows("SELECT * FROM repair_cost_items WHERE repair_order_id=? ORDER BY cost_item_id", (repair_order_id,)),
             "repair_items": repair_items,
@@ -947,6 +1053,8 @@ class MisService:
         reason = reason.strip()
         if not reason:
             raise BusinessError("删除订单必须填写原因")
+        if not self._can_delete_repair_order(user):
+            raise PermissionError("当前角色不能删除订单")
         order = self.repo.get_repair_order(repair_order_id)
         if not order:
             raise BusinessError("维修单不存在")
@@ -985,6 +1093,10 @@ class MisService:
         detail["customer_phone"] = customer.get("phone") or ""
         detail["customer_type"] = detail.get("customer_type") or customer.get("category") or ""
         detail["archived"] = True
+        detail["status_light"] = self._repair_status_light(detail)
+        detail["status_light_key"] = detail["status_light"]["key"]
+        detail["readonly"] = True
+        detail["readonly_reason"] = detail["status_light"]["readonly_reason"] or "归档订单只读"
         detail["archive"] = {
             "archived_at": archive.get("archived_at", ""),
             "archived_by": archive.get("archived_by", ""),
@@ -1000,6 +1112,7 @@ class MisService:
             "notes": detail.get("notes", []),
             "archive": detail["archive"],
             "available_actions": [],
+            "order_actions": ["view"],
             "readonly": True,
             "archived": True,
         }
@@ -3023,10 +3136,18 @@ class MisService:
         engineer = self.repo.get_user(data.engineer_user_id)
         if not engineer or engineer["role"] not in {Role.engineer.value, Role.staff.value, Role.admin.value}:
             raise BusinessError("被指派账号不存在或不是工程师")
+        employee = self.repo.employee_by_username(data.engineer_user_id)
+        if not employee:
+            raise BusinessError("被指派账号未绑定员工档案，不能派单")
+        if not employee.get("accepting_orders"):
+            raise BusinessError("该工程师当前关闭接单，不能派单")
         before = order.get("assigned_to") or "未指派"
         workflow = "工程师待检测" if status == OrderStatus.opened else "工程师维修中"
         self.repo.assign_repair_order(repair_order_id, data.engineer_user_id, workflow)
         self.repo.assign_machine(int(order["machine_id"]), data.engineer_user_id)
+        self.repo.refresh_employee_open_order_count(data.engineer_user_id)
+        if before != "未指派":
+            self.repo.refresh_employee_open_order_count(str(before))
         detail = f"{before} -> {data.engineer_user_id}"
         if data.remark:
             detail = f"{detail}；{data.remark}"
@@ -3183,9 +3304,8 @@ class MisService:
         if not order:
             raise BusinessError("维修单不存在")
         self._ensure_engineer_owns_repair(user, order)
-        self._ensure_repair_transition(order, OrderStatus.processing, {OrderStatus.quoted, OrderStatus.processing})
-        if order.get("assigned_to") and not order.get("quote_confirm_status") and self._repair_order_status(order) == OrderStatus.quoted:
-            raise BusinessError("报价需由前台确认后才能开始维修")
+        if str(order.get("status") or "") in {"已作废", "已取消", "已删除", "已完结", "已结单"} or order.get("archived_at"):
+            raise BusinessError("当前订单为只读状态，不能修改故障明细")
         item_name = data.item_name.strip()
         cost_amount = data.cost_amount
         charge_amount = data.charge_amount
@@ -3204,17 +3324,9 @@ class MisService:
             sku_id = self._ensure_manual_repair_sku(item_name, str((machine or {}).get("model") or ""), cost_amount, charge_amount)
         item_id = self.repo.add_repair_item(repair_order_id, item_name, data.quantity, cost_amount, charge_amount, data.remark, sku_id)
         self._reserve_for_repair_item(user, repair_order_id, item_id, data.remark)
-        self.repo.quote_repair_order(
-            repair_order_id,
-            order["diagnosis"],
-            float(order["quoted_amount"]),
-            OrderStatus.processing.value,
-            order.get("fault_detail", ""),
-            order.get("repair_solution", ""),
-            "工程师维修中",
-        )
-        self.conn.execute("UPDATE repair_orders SET workflow_status='工程师维修中', updated_at=CURRENT_TIMESTAMP WHERE repair_order_id=?", (repair_order_id,))
-        self.repo.update_machine_status(int(order["machine_id"]), MachineStatus.repairing.value)
+        repair_items = self.repo.list_repair_items(repair_order_id)
+        quoted_amount = sum((float(row.get("cost_amount") or 0) + float(row.get("charge_amount") or 0)) * int(row.get("quantity") or 1) for row in repair_items)
+        self.repo.update_repair_order_price(repair_order_id, quoted_amount)
         self.repo.add_machine_event(int(order["machine_id"]), "repair", "维修项目", f"{item_name} x{data.quantity}", user.username, "repair_item", item_id)
         self._log_success(user, "repair_order:item", "repair_item", str(item_id), customer_id=order["customer_id"], request_summary=item_name)
         self.conn.commit()
@@ -3231,6 +3343,14 @@ class MisService:
         allowed = {
             OrderStatus.diagnosing: {OrderStatus.opened},
             OrderStatus.ready: {OrderStatus.processing},
+            OrderStatus.closed: {
+                OrderStatus.opened,
+                OrderStatus.diagnosing,
+                OrderStatus.quoted,
+                OrderStatus.processing,
+                OrderStatus.ready,
+                OrderStatus.delivered,
+            },
             OrderStatus.cancelled: {
                 OrderStatus.opened,
                 OrderStatus.diagnosing,
@@ -3253,6 +3373,16 @@ class MisService:
             if issued:
                 codes = "、".join(row["unit_code"] for row in issued[:3])
                 raise BusinessError(f"工单已有未闭环领料，需先退料或确认报损后才能取消：{codes}")
+        if data.status == OrderStatus.closed:
+            self.conn.execute(
+                "UPDATE repair_orders SET status='已完结', settlement_status='已结', closed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE repair_order_id=?",
+                (repair_order_id,),
+            )
+            self.repo.close_machine(int(order["machine_id"]), MachineStatus.closed.value)
+            self.repo.add_machine_event(int(order["machine_id"]), "repair", "临时完结订单", data.remark or "临时手动完结", user.username, "repair", repair_order_id)
+            self._log_success(user, "repair_order:status:temporary_close", "repair_order", str(repair_order_id), customer_id=order["customer_id"], request_summary="已完结")
+            self.conn.commit()
+            return self._repair_order_response(repair_order_id)
         self.repo.update_repair_order_status(repair_order_id, data.status.value, data.remark)
         if data.status == OrderStatus.cancelled:
             self.repo.add_machine_event(int(order["machine_id"]), "repair", "维修作废", data.remark, user.username, "repair", repair_order_id)

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compactPageItems, maskCode, maskPhone, repairBillHeaders, toRepairBillExportRow } from "./App";
+import { compactPageItems, firstText, maskCode, maskPhone, repairBillHeaders, splitHonorificName, toRepairBillExportRow } from "./App";
 
 describe("repair pool helpers", () => {
   it("builds compact pagination items around the current page", () => {
@@ -15,6 +15,18 @@ describe("repair pool helpers", () => {
   it("masks real phone and imei values without fabricating defaults", () => {
     expect(maskPhone("13812345678")).toBe("138****5678");
     expect(maskCode("359239123456447")).toBe("359239******447");
+  });
+
+  it("normalizes stored customer names with honorific suffixes for detail display", () => {
+    expect(splitHonorificName("徐娜静498女士", "女")).toEqual({ name: "徐娜静498", honorific: "女士" });
+    expect(splitHonorificName("张三先生")).toEqual({ name: "张三", honorific: "先生" });
+    expect(splitHonorificName("李四", "男")).toEqual({ name: "李四", honorific: "先生" });
+  });
+
+  it("keeps missing detail fields blank instead of fabricating demo values", () => {
+    expect(firstText("", null, undefined)).toBe("");
+    expect(firstText("", "869123456789012")).toBe("869123456789012");
+    expect(firstText("")).toBe("");
   });
 
   it("maps filtered repair pool rows to the repair bill template columns", () => {

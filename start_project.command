@@ -3,9 +3,9 @@ set -u
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_DIR="$ROOT_DIR/mis_mvp"
-PYTHON="$ROOT_DIR/.venv/bin/python"
 HOST="127.0.0.1"
 PORT="${MIS_PORT:-8090}"
+OPEN_BROWSER="${MIS_OPEN_BROWSER:-1}"
 REAL_DB="$APP_DIR/data/mis_mvp.sqlite3"
 TEST_DB="$APP_DIR/data/member_demo_500.sqlite3"
 LOG_DIR="$ROOT_DIR/outputs"
@@ -14,11 +14,32 @@ LOG_FILE="$LOG_DIR/mis_mvp_${PORT}.log"
 
 mkdir -p "$LOG_DIR"
 
-if [[ ! -x "$PYTHON" ]]; then
-  echo "未找到 Python 虚拟环境：$PYTHON"
-  echo "请先确认项目根目录下存在 .venv。"
+resolve_python() {
+  local candidate
+  local candidates=("$ROOT_DIR/.venv/bin/python")
+
+  if command -v python3 >/dev/null 2>&1; then
+    candidates+=("$(command -v python3)")
+  fi
+  if command -v python >/dev/null 2>&1; then
+    candidates+=("$(command -v python)")
+  fi
+
+  for candidate in "${candidates[@]}"; do
+    if [[ -x "$candidate" ]] && "$candidate" -c "import fastapi, uvicorn" >/dev/null 2>&1; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+PYTHON="$(resolve_python)" || {
+  echo "未找到可用的 Python 解释器。"
+  echo "请创建 .venv，或确保 python3 已安装 fastapi 和 uvicorn。"
   exit 1
-fi
+}
 
 find_pids() {
   lsof -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || true
@@ -91,7 +112,7 @@ start_app() {
   for _ in {1..30}; do
     if is_running; then
       echo "服务已启动：http://$HOST:$PORT/"
-      if command -v open >/dev/null 2>&1; then
+      if [[ "$OPEN_BROWSER" != "0" ]] && command -v open >/dev/null 2>&1; then
         open "http://$HOST:$PORT/" >/dev/null 2>&1 || true
       fi
       return 0

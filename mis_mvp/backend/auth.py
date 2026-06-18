@@ -143,6 +143,7 @@ PERMISSIONS: dict[Role, set[str]] = {
         "repair_order:update",
         "repair_order:assign",
         "repair_order:confirm",
+        "repair_order:delete",
         "repair_order:engineer_close",
         "repair_order:read",
         "repair_sku:read",

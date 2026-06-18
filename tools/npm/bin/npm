@@ -1,3 +1,3 @@
 #!/bin/sh
-export npm_config_cache="${npm_config_cache:-/Users/mac/Documents/手机维修管理后台/tools/npm/cache}"
-exec /Users/mac/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node /Users/mac/Documents/手机维修管理后台/tools/npm/package/bin/npm-cli.js "$@"
+export npm_config_cache="${npm_config_cache:-/Users/lubeibei/Documents/沐辰科技维修管理系统/muchengMIS/tools/npm/cache}"
+exec /Users/lubeibei/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node /Users/lubeibei/Documents/沐辰科技维修管理系统/muchengMIS/tools/npm/package/bin/npm-cli.js "$@"

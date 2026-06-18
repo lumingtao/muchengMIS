@@ -24,4 +24,9 @@ describe("api", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: "没有权限" }), { status: 403 })));
     await expect(api("/api/secure")).rejects.toThrow("没有权限");
   });
+
+  it("throws plain text error responses without JSON parse failures", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("Internal Server Error", { status: 500 })));
+    await expect(api("/api/broken")).rejects.toThrow("Internal Server Error");
+  });
 });

@@ -22,10 +22,17 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
 
   const response = await fetch(path, { ...options, headers });
   const text = await response.text();
-  const data = text ? JSON.parse(text) : null;
+  let data: unknown = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = text;
+    }
+  }
   if (!response.ok) {
     const detail = data && typeof data === "object" && "detail" in data ? String(data.detail) : "请求失败";
-    throw new Error(detail);
+    throw new Error(detail === "请求失败" && typeof data === "string" && data.trim() ? data.trim() : detail);
   }
   return data as T;
 }

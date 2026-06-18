@@ -8,7 +8,7 @@ export default defineConfig({
     emptyOutDir: true,
     rollupOptions: {
       output: {
-        manualChunks(id) {
+        manualChunks(id: string) {
           const normalized = id.replace(/\\/g, "/");
           if (normalized.indexOf("/node_modules/") === -1) return undefined;
           if (normalized.indexOf("/react/") !== -1 || normalized.indexOf("/react-dom/") !== -1 || normalized.indexOf("/scheduler/") !== -1) return "react";

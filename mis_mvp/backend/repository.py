@@ -61,6 +61,7 @@ class Repository:
                 """
                 UPDATE customers
                 SET phone=CASE WHEN ? = '' THEN phone ELSE ? END,
+                    gender=CASE WHEN ? = '' THEN gender ELSE ? END,
                     wechat=CASE WHEN ? = '' THEN wechat ELSE ? END,
                     category=CASE WHEN ? = '' THEN category ELSE ? END,
                     shop_name=CASE WHEN ? = '' THEN shop_name ELSE ? END,
@@ -79,6 +80,8 @@ class Repository:
                 (
                     data.phone,
                     data.phone,
+                    data.gender,
+                    data.gender,
                     data.wechat,
                     data.wechat,
                     data.category,
@@ -111,14 +114,15 @@ class Repository:
         cur = self.conn.execute(
             """
             INSERT INTO customers
-            (member_no, name, phone, wechat, category, shop_name, address, tags, vip_level,
+            (member_no, name, phone, gender, wechat, category, shop_name, address, tags, vip_level,
              discount_policy, status, source, birthday, last_contact_at, remark)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 member_no,
                 data.name,
                 data.phone,
+                data.gender,
                 data.wechat,
                 data.category,
                 data.shop_name,
@@ -140,14 +144,15 @@ class Repository:
         cur = self.conn.execute(
             """
             INSERT INTO customers
-            (member_no, name, phone, wechat, category, shop_name, address, tags, vip_level,
+            (member_no, name, phone, gender, wechat, category, shop_name, address, tags, vip_level,
              discount_policy, status, source, birthday, last_contact_at, remark)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 member_no,
                 data.name,
                 data.phone,
+                data.gender,
                 data.wechat,
                 data.category,
                 data.shop_name,
@@ -172,7 +177,7 @@ class Repository:
         self.conn.execute(
             """
             UPDATE customers
-            SET member_no=?, name=?, phone=?, wechat=?, category=?, shop_name=?, address=?, tags=?,
+            SET member_no=?, name=?, phone=?, gender=?, wechat=?, category=?, shop_name=?, address=?, tags=?,
                 vip_level=?, discount_policy=?, status=?, source=?, birthday=?, last_contact_at=?,
                 remark=?, updated_at=CURRENT_TIMESTAMP
             WHERE customer_id=?
@@ -181,6 +186,7 @@ class Repository:
                 member_no,
                 data.name,
                 data.phone,
+                data.gender,
                 data.wechat,
                 data.category,
                 data.shop_name,
@@ -550,6 +556,19 @@ class Repository:
     def get_machine_by_imei(self, imei: str) -> dict[str, Any] | None:
         return row_to_dict(self.conn.execute("SELECT * FROM machines WHERE imei = ?", (imei,)).fetchone())
 
+    def get_machine_by_serial(self, serial: str) -> dict[str, Any] | None:
+        return row_to_dict(
+            self.conn.execute(
+                """
+                SELECT * FROM machines
+                WHERE serial = ? AND serial <> ''
+                ORDER BY updated_at DESC, machine_id DESC
+                LIMIT 1
+                """,
+                (serial,),
+            ).fetchone()
+        )
+
     def create_machine(self, data: dict[str, Any]) -> int:
         cur = self.conn.execute(
             """
@@ -693,6 +712,128 @@ class Repository:
         )
         return int(cur.lastrowid)
 
+    def _employee_row(self, row: sqlite3.Row) -> dict[str, Any]:
+        data = dict(row)
+        try:
+            data["skill_tags"] = json.loads(data.get("skill_tags_json") or "[]")
+        except json.JSONDecodeError:
+            data["skill_tags"] = []
+        data["accepting_orders"] = bool(data.get("accepting_orders"))
+        return data
+
+    def list_employees(self, keyword: str = "", department: str = "", accepting_orders: str = "") -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if keyword:
+            like = f"%{keyword}%"
+            clauses.append("(name LIKE ? OR position LIKE ? OR department LIKE ? OR skill_tags_json LIKE ? OR remark LIKE ?)")
+            params.extend([like, like, like, like, like])
+        if department:
+            clauses.append("department=?")
+            params.append(department)
+        if accepting_orders:
+            clauses.append("accepting_orders=?")
+            params.append(1 if accepting_orders == "true" else 0)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self.conn.execute(
+            f"""
+            SELECT e.*,
+                   COALESCE(u.role, '') AS user_role,
+                   (
+                       SELECT COUNT(*)
+                       FROM repair_orders ro
+                       WHERE ro.assigned_to=e.username
+                         AND ro.archived_at=''
+                         AND ro.status NOT IN ('已完结', '已结单', '已作废')
+                   ) AS active_order_count
+            FROM employees e
+            LEFT JOIN users u ON u.username=e.username
+            {where}
+            ORDER BY accepting_orders DESC, department, open_order_count, employee_id DESC
+            """,
+            params,
+        ).fetchall()
+        return [self._employee_row(row) for row in rows]
+
+    def get_employee(self, employee_id: int) -> dict[str, Any] | None:
+        row = self.conn.execute("SELECT * FROM employees WHERE employee_id=?", (employee_id,)).fetchone()
+        return self._employee_row(row) if row else None
+
+    def upsert_employee(self, data: dict[str, Any]) -> int:
+        username = str(data.get("username") or "").strip()
+        name = str(data.get("name") or "").strip()
+        position = str(data.get("position") or "工程师").strip() or "工程师"
+        department = str(data.get("department") or "").strip()
+        skill_tags = [str(item).strip() for item in data.get("skill_tags", []) if str(item).strip()]
+        payload = (
+            username,
+            name,
+            position,
+            department,
+            int(data.get("open_order_count") or 0),
+            json.dumps(skill_tags, ensure_ascii=False),
+            1 if data.get("accepting_orders", True) else 0,
+            str(data.get("remark") or ""),
+        )
+        if data.get("employee_id"):
+            employee_id = int(data["employee_id"])
+            self.conn.execute(
+                """
+                UPDATE employees
+                SET username=?, name=?, position=?, department=?, open_order_count=?, skill_tags_json=?,
+                    accepting_orders=?, remark=?, updated_at=CURRENT_TIMESTAMP
+                WHERE employee_id=?
+                """,
+                (*payload, employee_id),
+            )
+            return employee_id
+        existing = self.conn.execute(
+            "SELECT employee_id FROM employees WHERE name=? AND position=? AND department=?",
+            (name, position, department),
+        ).fetchone()
+        if existing:
+            employee_id = int(existing["employee_id"])
+            self.conn.execute(
+                """
+                UPDATE employees
+                SET username=?, open_order_count=?, skill_tags_json=?, accepting_orders=?, remark=?, updated_at=CURRENT_TIMESTAMP
+                WHERE employee_id=?
+                """,
+                (payload[0], payload[4], payload[5], payload[6], payload[7], employee_id),
+            )
+            return employee_id
+        cur = self.conn.execute(
+            """
+            INSERT INTO employees
+            (username, name, position, department, open_order_count, skill_tags_json, accepting_orders, remark)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            payload,
+        )
+        return int(cur.lastrowid)
+
+    def employee_by_username(self, username: str) -> dict[str, Any] | None:
+        row = self.conn.execute("SELECT * FROM employees WHERE username=?", (username,)).fetchone()
+        return self._employee_row(row) if row else None
+
+    def refresh_employee_open_order_count(self, username: str) -> None:
+        if not username:
+            return
+        row = self.conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM repair_orders
+            WHERE assigned_to=?
+              AND archived_at=''
+              AND status NOT IN ('已完结', '已结单', '已作废')
+            """,
+            (username,),
+        ).fetchone()
+        self.conn.execute(
+            "UPDATE employees SET open_order_count=?, updated_at=CURRENT_TIMESTAMP WHERE username=?",
+            (int(row["count"] if row else 0), username),
+        )
+
     def add_machine_note(self, machine_id: int, content: str, operator: str) -> int:
         cur = self.conn.execute(
             """
@@ -801,6 +942,16 @@ class Repository:
             (engineer, workflow_status, repair_order_id),
         )
 
+    def update_repair_order_machine(self, repair_order_id: int, machine_id: int) -> None:
+        self.conn.execute(
+            """
+            UPDATE repair_orders
+            SET machine_id=?, updated_at=CURRENT_TIMESTAMP
+            WHERE repair_order_id=?
+            """,
+            (machine_id, repair_order_id),
+        )
+
     def assign_machine(self, machine_id: int, engineer: str) -> None:
         self.conn.execute(
             "UPDATE machines SET assigned_to=?, updated_at=CURRENT_TIMESTAMP WHERE machine_id=?",
@@ -872,7 +1023,8 @@ class Repository:
         self.conn.execute(
             """
             UPDATE repair_orders
-            SET archived_at=CURRENT_TIMESTAMP,
+            SET status='已删除',
+                archived_at=CURRENT_TIMESTAMP,
                 archived_by=?,
                 archive_reason=?,
                 purge_after=datetime(CURRENT_TIMESTAMP, '+30 days'),
@@ -925,17 +1077,31 @@ class Repository:
         clauses: list[str] = []
         params: list[Any] = []
         if not include_disabled:
-            clauses.append("enabled=1")
+            clauses.append("rs.enabled=1")
         if model:
-            clauses.append("(model='' OR model=?)")
+            clauses.append("(rs.model='' OR rs.model=?)")
             params.append(model)
         if keyword:
             like = f"%{keyword}%"
-            clauses.append("(sku_code LIKE ? OR fault_name LIKE ? OR solution_name LIKE ? OR remark LIKE ?)")
+            clauses.append("(rs.sku_code LIKE ? OR rs.fault_name LIKE ? OR rs.solution_name LIKE ? OR rs.remark LIKE ?)")
             params.extend([like, like, like, like])
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = self.conn.execute(
-            f"SELECT * FROM repair_skus {where} ORDER BY enabled DESC, CASE WHEN model='' THEN 1 ELSE 0 END, model, sku_id",
+            f"""
+            SELECT rs.*,
+                   m.material_id,
+                   m.name AS material_name,
+                   m.material_code,
+                   m.sku AS material_sku,
+                   m.current_qty AS material_stock_qty,
+                   COALESCE(m.avg_cost, 0) AS material_unit_price
+            FROM repair_skus rs
+            LEFT JOIN repair_fault_materials rfm ON rfm.repair_sku_id=rs.sku_id
+            LEFT JOIN materials m ON m.material_id=rfm.material_id
+            {where}
+            GROUP BY rs.sku_id
+            ORDER BY rs.enabled DESC, CASE WHEN rs.model='' THEN 1 ELSE 0 END, rs.model, rs.sku_id
+            """,
             params,
         ).fetchall()
         return [dict(row) for row in rows]

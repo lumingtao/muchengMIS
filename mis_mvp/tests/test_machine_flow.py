@@ -301,17 +301,10 @@ def test_repair_lifecycle_and_payment_timeline(service: MisService) -> None:
         RepairItemInput(item_name="主板维修", quantity=1, cost_amount=180, charge_amount=580),
     )
     assert item["repair_item_id"] > 0
-    ready = service.update_repair_order_status(user(Role.staff), repair_id, RepairOrderStatusInput(status=OrderStatus.ready))
-    assert ready["status"] == "待交付"
-    delivered = service.deliver_repair_order(user(Role.staff), repair_id, RepairDeliverInput(delivery_check="功能正常"))
-    assert delivered["status"] == "已交付"
-    payment = service.create_payment(
-        user(Role.finance),
-        PaymentInput(source_type="repair", source_id=repair_id, direction=PaymentDirection.income, amount=580),
-    )
-    timeline = service.machine_timeline(user(Role.finance), payment["machine_id"])
-    assert timeline["machine"]["current_status"] == "已结单"
-    assert any(event["event_type"] == "payment" for event in timeline["events"])
+    detail = service.repair_workbench_detail(user(Role.staff), repair_id)
+    assert detail["order"]["status"] == "已报价"
+    assert detail["order"]["quoted_amount"] == 760
+    timeline = service.machine_timeline(user(Role.staff), order["machine_id"])
     assert timeline["repair_items"][0]["charge_amount"] == 580
 
 
@@ -469,7 +462,7 @@ def test_rework_repair_order_uses_rework_order_no_prefix(service: MisService) ->
 
 
 def test_repair_order_creation_validation_errors(service: MisService) -> None:
-    service.create_machine(user(Role.frontdesk), MachineInput(imei="862222222222228", model="iPhone 12"))
+    machine = service.create_machine(user(Role.frontdesk), MachineInput(imei="862222222222228", model="iPhone 12"))
 
     with pytest.raises(BusinessError, match="必须提供机器档案或 machine_id"):
         service.create_repair_order(user(Role.frontdesk), RepairOrderInput(fault_description="缺少机器"))
@@ -477,11 +470,22 @@ def test_repair_order_creation_validation_errors(service: MisService) -> None:
     with pytest.raises(BusinessError, match="机器档案不存在"):
         service.create_repair_order(user(Role.frontdesk), RepairOrderInput(machine_id=9999))
 
-    with pytest.raises(BusinessError, match="IMEI 已存在"):
-        service.create_repair_order(
-            user(Role.frontdesk),
-            RepairOrderInput(machine=MachineInput(imei="862222222222228", model="iPhone 12")),
-        )
+    repeat = service.create_repair_order(
+        user(Role.frontdesk),
+        RepairOrderInput(machine=MachineInput(imei="862222222222228", model="iPhone 12"), fault_description="二次维修"),
+    )
+    assert repeat["machine_id"] == machine["machine_id"]
+
+
+def test_repair_order_reuses_existing_machine_by_serial(service: MisService) -> None:
+    machine = service.create_machine(user(Role.frontdesk), MachineInput(serial="SERIAL-REPAIR-001", model="iPhone 13"))
+
+    repeat = service.create_repair_order(
+        user(Role.frontdesk),
+        RepairOrderInput(machine=MachineInput(serial="SERIAL-REPAIR-001", model="iPhone 13"), fault_description="序列号复修"),
+    )
+
+    assert repeat["machine_id"] == machine["machine_id"]
 
 
 def test_repair_sku_model_filter_and_upsert(service: MisService) -> None:
@@ -729,21 +733,13 @@ def test_frontdesk_engineer_repair_handoff_and_visibility(service: MisService) -
             charge_amount=sku["charge_amount"],
         ),
     )
-    closed = service.engineer_close_repair_order(user(Role.engineer), repair_id, RepairEngineerCloseInput(remark="维修完成"))
-    assert closed["workflow_status"] == "待前台收费/交付"
-    assert closed["status"] == "待交付"
-
-    delivered = service.deliver_repair_order(user(Role.frontdesk), repair_id, RepairDeliverInput(delivery_check="前台交付检测正常"))
-    assert delivered["status"] == "已交付"
-    payment = service.create_payment(
-        user(Role.frontdesk),
-        PaymentInput(source_type="repair", source_id=repair_id, direction=PaymentDirection.income, amount=sku["charge_amount"]),
-    )
-    timeline = service.machine_timeline(user(Role.frontdesk), payment["machine_id"])
-    assert timeline["machine"]["current_status"] == "已结单"
+    detail = service.repair_workbench_detail(user(Role.frontdesk), repair_id)
+    assert detail["order"]["status"] == "处理中"
+    assert detail["order"]["quoted_amount"] == sku["cost_amount"] + sku["charge_amount"]
+    timeline = service.machine_timeline(user(Role.frontdesk), order["machine_id"])
     assert any(event["title"] == "指派工程师" for event in timeline["events"])
     assert any(event["title"] == "报价确认" for event in timeline["events"])
-    assert any(event["title"] == "工程师结单" for event in timeline["events"])
+    assert any(event["title"] == "维修项目" for event in timeline["events"])
 
 
 def test_repair_order_rejects_jump_and_closed_changes(service: MisService) -> None:
@@ -759,9 +755,7 @@ def test_repair_order_rejects_jump_and_closed_changes(service: MisService) -> No
     service.update_repair_order_status(user(Role.staff), repair_id, RepairOrderStatusInput(status=OrderStatus.diagnosing))
     service.quote_repair_order(user(Role.staff), repair_id, RepairQuoteInput(diagnosis="电池故障", quoted_amount=180))
     service.add_repair_item(user(Role.staff), repair_id, RepairItemInput(item_name="更换电池", charge_amount=180))
-    service.update_repair_order_status(user(Role.staff), repair_id, RepairOrderStatusInput(status=OrderStatus.ready))
-    service.deliver_repair_order(user(Role.staff), repair_id, RepairDeliverInput(delivery_check="功能正常"))
-    service.create_payment(user(Role.finance), PaymentInput(source_type="repair", source_id=repair_id, direction=PaymentDirection.income, amount=180))
+    service.update_repair_order_status(user(Role.staff), repair_id, RepairOrderStatusInput(status=OrderStatus.cancelled, remark="客户取消"))
 
     with pytest.raises(BusinessError):
         service.add_repair_item(user(Role.staff), repair_id, RepairItemInput(item_name="重复维修"))

@@ -32,7 +32,8 @@ function compareValues(a: unknown, b: unknown) {
 
 function rowKey(row: AnyRecord) {
   return String(
-    row.id ??
+      row.id ??
+      row.employee_id ??
       row.device_model_id ??
       row.sku_id ??
       row.repair_item_id ??

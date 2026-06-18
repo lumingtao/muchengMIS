@@ -74,6 +74,7 @@ class CustomerInput(BaseModel):
     member_no: str = ""
     name: str = Field(min_length=1)
     phone: str = ""
+    gender: str = ""
     wechat: str = ""
     category: str = "个人客户"
     shop_name: str = ""
@@ -160,6 +161,18 @@ class DeviceModelInput(BaseModel):
     model_numbers: list[str] = []
     enabled: bool = True
     sort_order: int = 100
+    remark: str = ""
+
+
+class EmployeeInput(BaseModel):
+    employee_id: int | None = None
+    username: str = ""
+    name: str = Field(min_length=1)
+    position: str = "工程师"
+    department: str = ""
+    open_order_count: int = Field(default=0, ge=0)
+    skill_tags: list[str] = []
+    accepting_orders: bool = True
     remark: str = ""
 
 

@@ -54,6 +54,7 @@ start_project.command   macOS 本地启动脚本
 macOS / Codex 本地虚拟环境：
 
 ```bash
+python3 -m venv .venv
 .venv/bin/python -m pip install -r mis_mvp/requirements.txt
 ```
 

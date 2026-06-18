@@ -459,6 +459,124 @@ def test_api_member_crm_write_permission_required(client: TestClient) -> None:
     assert response.status_code == 403
 
 
+def test_api_customer_update_persists_gender_and_contact_fields(client: TestClient) -> None:
+    created = client.post(
+        "/api/customers",
+        headers={"X-User": "frontdesk"},
+        json={"name": "旧客户", "phone": "13800003333", "gender": "男", "category": "个人客户"},
+    )
+    assert created.status_code == 200
+    customer_id = created.json()["customer_id"]
+
+    updated = client.put(
+        f"/api/customers/{customer_id}",
+        headers={"X-User": "frontdesk"},
+        json={"name": "新客户", "phone": "13900004444", "gender": "女", "category": "同行客户"},
+    )
+    assert updated.status_code == 200
+    payload = updated.json()
+    assert payload["name"] == "新客户"
+    assert payload["phone"] == "13900004444"
+    assert payload["gender"] == "女"
+    assert payload["category"] == "同行客户"
+
+
+def test_api_machine_update_can_edit_order_customer_info(client: TestClient) -> None:
+    created = client.post(
+        "/api/repair-orders",
+        headers={"X-User": "frontdesk"},
+        json={
+            "customer": {"name": "旧客户先生", "phone": "13800005555", "gender": "男"},
+            "machine": {"imei": "860000000007777", "model": "iPhone 15"},
+            "fault_description": "客户信息修改测试",
+        },
+    )
+    assert created.status_code == 200
+    order_id = created.json()["repair_order_id"]
+
+    detail = client.get(f"/api/repair-workbench/{order_id}", headers={"X-User": "frontdesk"})
+    assert detail.status_code == 200
+    order = detail.json()["order"]
+
+    updated = client.put(
+        f"/api/machines/{order['machine_id']}",
+        headers={"X-User": "frontdesk"},
+        json={
+            "imei": order["imei"],
+            "model": order["model"],
+            "current_status": order["current_status"],
+            "customer_id": order["customer_id"],
+            "customer": {"name": "新客户女士", "phone": "13900006666", "gender": "女", "category": "同行客户"},
+        },
+    )
+    assert updated.status_code == 200
+
+    refreshed = client.get(f"/api/repair-workbench/{order_id}", headers={"X-User": "frontdesk"})
+    assert refreshed.status_code == 200
+    refreshed_order = refreshed.json()["order"]
+    assert refreshed_order["customer_name"] == "新客户女士"
+    assert refreshed_order["customer_phone"] == "13900006666"
+    assert refreshed_order["gender"] == "女"
+    assert refreshed_order["customer_type"] == "同行客户"
+
+    cleared = client.put(
+        f"/api/machines/{order['machine_id']}",
+        headers={"X-User": "frontdesk"},
+        json={
+            "imei": order["imei"],
+            "model": order["model"],
+            "current_status": order["current_status"],
+            "customer_id": order["customer_id"],
+            "customer": {"name": "新客户女士", "phone": "", "gender": "女", "category": "同行客户"},
+        },
+    )
+    assert cleared.status_code == 200
+
+    cleared_detail = client.get(f"/api/repair-workbench/{order_id}", headers={"X-User": "frontdesk"})
+    assert cleared_detail.status_code == 200
+    assert cleared_detail.json()["order"]["customer_phone"] == ""
+
+
+def test_api_order_machine_update_relinks_existing_imei(client: TestClient) -> None:
+    first = client.post(
+        "/api/repair-orders",
+        headers={"X-User": "frontdesk"},
+        json={
+            "customer": {"name": "第一台客户"},
+            "machine": {"imei": "860000000000240", "model": "iPhone 14"},
+            "fault_description": "原订单",
+        },
+    )
+    assert first.status_code == 200
+    second = client.post(
+        "/api/repair-orders",
+        headers={"X-User": "frontdesk"},
+        json={
+            "customer": {"name": "第二台客户"},
+            "machine": {"imei": "860000000000241", "model": "iPhone 16 Pro Max", "color": "银色"},
+            "fault_description": "已有设备",
+        },
+    )
+    assert second.status_code == 200
+
+    updated = client.put(
+        f"/api/repair-orders/{first.json()['repair_order_id']}/machine",
+        headers={"X-User": "frontdesk"},
+        json={
+            "imei": "860000000000241",
+            "model": "iPhone 16 Pro Max",
+            "color": "银色",
+            "current_status": "维修中",
+        },
+    )
+
+    assert updated.status_code == 200
+    order = updated.json()["order"]
+    assert order["machine_id"] == second.json()["machine_id"]
+    assert order["imei"] == "860000000000241"
+    assert order["model"] == "iPhone 16 Pro Max"
+
+
 def test_member_metadata_is_preserved_when_order_reuses_customer(client: TestClient) -> None:
     created = client.post(
         "/api/customers",

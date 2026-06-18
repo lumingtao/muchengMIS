@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS customers (
     source TEXT NOT NULL DEFAULT '',
     birthday TEXT NOT NULL DEFAULT '',
     last_contact_at TEXT NOT NULL DEFAULT '',
+    gender TEXT NOT NULL DEFAULT '',
     remark TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -158,6 +159,21 @@ CREATE TABLE IF NOT EXISTS device_models (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(brand, model_name)
+);
+
+CREATE TABLE IF NOT EXISTS employees (
+    employee_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL,
+    position TEXT NOT NULL DEFAULT '工程师',
+    department TEXT NOT NULL DEFAULT '',
+    open_order_count INTEGER NOT NULL DEFAULT 0,
+    skill_tags_json TEXT NOT NULL DEFAULT '[]',
+    accepting_orders INTEGER NOT NULL DEFAULT 1,
+    remark TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(name, position, department)
 );
 
 CREATE TABLE IF NOT EXISTS repair_orders (
@@ -732,6 +748,7 @@ def migrate(conn: sqlite3.Connection) -> None:
     backfill_customer_member_no(conn)
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_member_no ON customers(member_no)")
     seed_users(conn)
+    seed_employees(conn)
     seed_device_models(conn)
     seed_repair_skus(conn)
     backfill_material_units(conn)
@@ -786,6 +803,9 @@ def ensure_columns(conn: sqlite3.Connection) -> None:
         ],
         "repair_skus": [
             ("model", "TEXT NOT NULL DEFAULT ''"),
+        ],
+        "employees": [
+            ("username", "TEXT NOT NULL DEFAULT ''"),
         ],
         "device_models": [
             ("brand", "TEXT NOT NULL DEFAULT 'Apple'"),
@@ -877,6 +897,27 @@ def seed_users(conn: sqlite3.Connection) -> None:
             VALUES (?, ?, ?)
             """,
             (username, hash_password(password), role),
+        )
+
+
+def seed_employees(conn: sqlite3.Connection) -> None:
+    defaults = [
+        ("engineer", "维修工程师", "工程师", "维修部", ["屏幕维修", "电池维修", "常规检测"], 1),
+        ("staff", "综合维修员", "工程师", "维修部", ["综合维修", "仓库协作"], 1),
+    ]
+    for username, name, position, department, skill_tags, accepting_orders in defaults:
+        conn.execute(
+            """
+            INSERT INTO employees
+            (username, name, position, department, open_order_count, skill_tags_json, accepting_orders, remark)
+            VALUES (?, ?, ?, ?, 0, ?, ?, '系统默认员工档案')
+            ON CONFLICT(name, position, department) DO UPDATE SET
+                username=CASE WHEN employees.username='' THEN excluded.username ELSE employees.username END,
+                skill_tags_json=CASE WHEN employees.skill_tags_json='[]' THEN excluded.skill_tags_json ELSE employees.skill_tags_json END,
+                accepting_orders=excluded.accepting_orders,
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            (username, name, position, department, json.dumps(skill_tags, ensure_ascii=False), accepting_orders),
         )
 
 

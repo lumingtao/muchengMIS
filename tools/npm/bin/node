@@ -1,2 +1,2 @@
 #!/bin/sh
-exec /Users/mac/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node "$@"
+exec /Users/lubeibei/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node "$@"

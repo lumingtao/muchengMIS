@@ -71,6 +71,50 @@
   font-weight: 800;
 }
 
+.app-form-section-grid > label,
+.employee-skill-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.app-form-section-grid > label.wide,
+.employee-skill-field.wide {
+  grid-column: 1 / -1;
+}
+
+.app-form-section-grid > label > span,
+.employee-skill-field > span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.employee-skill-toggle-group {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(100px, 1fr));
+  gap: 10px;
+}
+
+.employee-skill-toggle-group button {
+  min-height: 38px;
+  border: 1px solid #c4c5d6;
+  border-radius: 8px;
+  background: #fff;
+  color: #434653;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: background .16s ease, border-color .16s ease, color .16s ease, box-shadow .16s ease;
+}
+
+.employee-skill-toggle-group button.active {
+  border-color: #002a81;
+  background: #002a81;
+  color: #fff;
+  box-shadow: 0 4px 10px rgba(0, 42, 129, .18);
+}
+
 .app-form-section-actions {
   display: flex;
   gap: 10px;
@@ -202,8 +246,8 @@ tr.clickable { cursor: pointer; }
 .customer-suggestions {
   position: absolute;
   z-index: 55;
-  width: calc((100% - 36px) / 2);
-  max-width: calc((100% - 36px) / 2);
+  width: min(760px, 100%);
+  max-width: 100%;
   margin-top: 0;
 }
 
@@ -235,10 +279,10 @@ tr.clickable { cursor: pointer; }
 
 .inline-suggestion-list button,
 .sku-picker button {
-  display: flex;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
   min-height: 44px;
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
   padding: 8px 10px;
   border: 1px solid #e1e8f2;
@@ -251,9 +295,21 @@ tr.clickable { cursor: pointer; }
 .inline-suggestion-list button b,
 .inline-suggestion-list button span {
   min-width: 0;
+}
+
+.inline-suggestion-list button span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.customer-suggestions button {
+  grid-template-columns: max-content minmax(240px, 1fr);
+}
+
+.customer-suggestions button span {
+  overflow: visible;
+  text-overflow: clip;
 }
 
 .inline-suggestion-list button.selected,
@@ -394,3 +450,8 @@ tr.clickable { cursor: pointer; }
 .detail-section h3 { margin: 0; font-size: 16px; }
 .ghost-button { background: var(--surface); border-color: var(--line); color: var(--accent); }
 
+@media (max-width: 720px) {
+  .employee-skill-toggle-group {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
