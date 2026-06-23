@@ -111,6 +111,7 @@ class MachineInput(BaseModel):
     imei: str = ""
     serial: str = ""
     model: str = Field(min_length=1)
+    model_number: str = ""
     memory: str = ""
     color: str = ""
     condition: str = ""
@@ -124,6 +125,7 @@ class MachineUpdateInput(BaseModel):
     imei: str = ""
     serial: str = ""
     model: str = Field(min_length=1)
+    model_number: str = ""
     memory: str = ""
     color: str = ""
     condition: str = ""
@@ -143,6 +145,7 @@ class Machine(BaseModel):
     imei: str = ""
     serial: str = ""
     model: str
+    model_number: str = ""
     memory: str = ""
     color: str = ""
     condition: str = ""
@@ -174,6 +177,9 @@ class EmployeeInput(BaseModel):
     skill_tags: list[str] = []
     accepting_orders: bool = True
     remark: str = ""
+    role: str = "staff"
+    password: str = ""
+    enabled: bool = True
 
 
 class RepairOrderInput(BaseModel):
@@ -587,6 +593,30 @@ class LoginInput(BaseModel):
     password: str
 
 
+class PasswordChangeInput(BaseModel):
+    current_password: str = ""
+    new_password: str = Field(min_length=8)
+
+
+class PasswordResetInput(BaseModel):
+    password: str = Field(min_length=8)
+
+
+class AccountStatusInput(BaseModel):
+    enabled: bool
+
+
+class RoleInput(BaseModel):
+    role_key: str = Field(min_length=2, max_length=50, pattern=r"^[a-z][a-z0-9_]*$")
+    name: str = Field(min_length=1, max_length=50)
+    permissions: list[str] = []
+
+
+class RoleUpdateInput(BaseModel):
+    name: str = Field(min_length=1, max_length=50)
+    permissions: list[str] = []
+
+
 class User(BaseModel):
     username: str
-    role: Role
+    role: str

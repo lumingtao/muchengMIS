@@ -46,6 +46,30 @@ class Repository:
     def get_user(self, username: str) -> dict[str, Any] | None:
         return row_to_dict(self.conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone())
 
+    def permissions_for_role(self, role: str) -> list[str]:
+        rows = self.conn.execute("SELECT permission FROM role_permissions WHERE role_key=? ORDER BY permission", (role,)).fetchall()
+        return [str(row["permission"]) for row in rows]
+
+    def get_session(self, token_hash: str) -> dict[str, Any] | None:
+        return row_to_dict(self.conn.execute("SELECT s.*, u.enabled, u.session_version, u.role FROM sessions s JOIN users u ON u.username=s.username WHERE s.token_hash=? AND s.expires_at>CURRENT_TIMESTAMP", (token_hash,)).fetchone())
+
+    def create_session(self, token_hash: str, username: str, version: int, expires_at: str) -> None:
+        self.conn.execute("INSERT INTO sessions(token_hash,username,session_version,expires_at) VALUES(?,?,?,?)", (token_hash, username, version, expires_at))
+
+    def delete_session(self, token_hash: str) -> None:
+        self.conn.execute("DELETE FROM sessions WHERE token_hash=?", (token_hash,))
+
+    def invalidate_user_sessions(self, username: str) -> None:
+        self.conn.execute("DELETE FROM sessions WHERE username=?", (username,))
+
+    def list_roles(self) -> list[dict[str, Any]]:
+        rows = self.conn.execute("SELECT r.*, COUNT(u.username) AS employee_count FROM roles r LEFT JOIN users u ON u.role=r.role_key GROUP BY r.role_key ORDER BY r.is_builtin DESC, r.role_key").fetchall()
+        return [{**dict(row), "is_builtin": bool(row["is_builtin"]), "permissions": self.permissions_for_role(str(row["role_key"]))} for row in rows]
+
+    def role_name(self, role_key: str) -> str:
+        row = self.conn.execute("SELECT name FROM roles WHERE role_key=?", (role_key,)).fetchone()
+        return str(row["name"]) if row else ""
+
     def upsert_customer(self, data: CustomerInput) -> int:
         existing = self.conn.execute(
             """
@@ -573,15 +597,16 @@ class Repository:
         cur = self.conn.execute(
             """
             INSERT INTO machines
-            (machine_no, imei, serial, model, memory, color, condition, source_type,
+            (machine_no, imei, serial, model, model_number, memory, color, condition, source_type,
              current_status, customer_id, created_by, assigned_to, remark)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 data["machine_no"],
                 data.get("imei") or None,
                 data.get("serial", ""),
                 data["model"],
+                data.get("model_number", ""),
                 data.get("memory", ""),
                 data.get("color", ""),
                 data.get("condition", ""),
@@ -611,7 +636,7 @@ class Repository:
         self.conn.execute(
             """
             UPDATE machines
-            SET imei=?, serial=?, model=?, memory=?, color=?, condition=?,
+            SET imei=?, serial=?, model=?, model_number=?, memory=?, color=?, condition=?,
                 source_type=?, current_status=?, customer_id=?, updated_at=CURRENT_TIMESTAMP
             WHERE machine_id=?
             """,
@@ -619,6 +644,7 @@ class Repository:
                 data.get("imei") or None,
                 data.get("serial", ""),
                 data["model"],
+                data.get("model_number", ""),
                 data.get("memory", ""),
                 data.get("color", ""),
                 data.get("condition", ""),
@@ -722,7 +748,7 @@ class Repository:
         return data
 
     def list_employees(self, keyword: str = "", department: str = "", accepting_orders: str = "") -> list[dict[str, Any]]:
-        clauses: list[str] = []
+        clauses: list[str] = ["(e.username='' OR e.employee_id=(SELECT MIN(e2.employee_id) FROM employees e2 WHERE e2.username=e.username))"]
         params: list[Any] = []
         if keyword:
             like = f"%{keyword}%"
@@ -738,7 +764,8 @@ class Repository:
         rows = self.conn.execute(
             f"""
             SELECT e.*,
-                   COALESCE(u.role, '') AS user_role,
+                   COALESCE(u.role, '') AS user_role, COALESCE(u.enabled, 0) AS account_enabled,
+                   COALESCE(u.must_change_password, 0) AS must_change_password,
                    (
                        SELECT COUNT(*)
                        FROM repair_orders ro
@@ -775,8 +802,14 @@ class Repository:
             1 if data.get("accepting_orders", True) else 0,
             str(data.get("remark") or ""),
         )
-        if data.get("employee_id"):
-            employee_id = int(data["employee_id"])
+        employee_id = int(data["employee_id"]) if data.get("employee_id") else 0
+        if not employee_id and username:
+            existing = self.conn.execute(
+                "SELECT employee_id FROM employees WHERE username=? ORDER BY employee_id LIMIT 1",
+                (username,),
+            ).fetchone()
+            employee_id = int(existing["employee_id"]) if existing else 0
+        if employee_id:
             self.conn.execute(
                 """
                 UPDATE employees
@@ -813,7 +846,10 @@ class Repository:
         return int(cur.lastrowid)
 
     def employee_by_username(self, username: str) -> dict[str, Any] | None:
-        row = self.conn.execute("SELECT * FROM employees WHERE username=?", (username,)).fetchone()
+        row = self.conn.execute(
+            "SELECT * FROM employees WHERE username=? ORDER BY employee_id LIMIT 1",
+            (username,),
+        ).fetchone()
         return self._employee_row(row) if row else None
 
     def refresh_employee_open_order_count(self, username: str) -> None:
@@ -881,7 +917,7 @@ class Repository:
     def search_machines(self, keyword: str = "", assigned_to: str | None = None) -> list[dict[str, Any]]:
         like = f"%{keyword}%"
         assigned_filter = " AND (m.assigned_to = ? OR EXISTS (SELECT 1 FROM repair_orders ro WHERE ro.machine_id = m.machine_id AND ro.assigned_to = ? AND ro.archived_at=''))" if assigned_to else ""
-        params: list[Any] = [keyword, like, like, like, like, like, like]
+        params: list[Any] = [keyword, like, like, like, like, like, like, like]
         if assigned_to:
             params.extend([assigned_to, assigned_to])
         rows = self.conn.execute(
@@ -890,7 +926,7 @@ class Repository:
             FROM machines m
             LEFT JOIN customers c ON c.customer_id = m.customer_id
             WHERE (? = '' OR m.machine_no LIKE ? OR m.imei LIKE ? OR m.serial LIKE ?
-               OR m.model LIKE ? OR c.name LIKE ? OR c.phone LIKE ?)
+               OR m.model LIKE ? OR m.model_number LIKE ? OR c.name LIKE ? OR c.phone LIKE ?)
             {assigned_filter}
             ORDER BY m.updated_at DESC, m.machine_id DESC
             LIMIT 100
@@ -1385,8 +1421,58 @@ class Repository:
         return float(row["total"] if row else 0)
 
     def list_payments(self) -> list[dict[str, Any]]:
-        rows = self.conn.execute("SELECT * FROM payments ORDER BY payment_id DESC LIMIT 200").fetchall()
+        rows = self.conn.execute("SELECT * FROM payments ORDER BY payment_id DESC").fetchall()
         return [dict(row) for row in rows]
+
+    def repair_monthly_financial_summary(self, month: str | None = None) -> dict[str, Any]:
+        month_key = month or datetime.now().strftime("%Y-%m")
+        confirmed_revenue = self.conn.execute(
+            """
+            SELECT COALESCE(SUM(amount), 0) AS amount
+            FROM payments
+            WHERE source_type='repair' AND direction='收入' AND status='财务已确认'
+              AND substr(paid_at, 1, 7)=?
+            """,
+            (month_key,),
+        ).fetchone()["amount"]
+        confirmed_expense = self.conn.execute(
+            """
+            SELECT COALESCE(SUM(amount), 0) AS amount
+            FROM payments
+            WHERE source_type='repair' AND direction='支出' AND status='财务已确认'
+              AND substr(paid_at, 1, 7)=?
+            """,
+            (month_key,),
+        ).fetchone()["amount"]
+        repair_item_cost = self.conn.execute(
+            """
+            SELECT COALESCE(SUM(ri.quantity * ri.cost_amount), 0) AS amount
+            FROM repair_items ri
+            JOIN repair_orders ro ON ro.repair_order_id=ri.repair_order_id
+            WHERE ro.archived_at='' AND substr(ri.created_at, 1, 7)=?
+            """,
+            (month_key,),
+        ).fetchone()["amount"]
+        material_cost = self.conn.execute(
+            """
+            SELECT COALESCE(SUM(rm.total_cost), 0) AS amount
+            FROM repair_materials rm
+            JOIN repair_orders ro ON ro.repair_order_id=rm.repair_order_id
+            WHERE ro.archived_at='' AND substr(rm.issued_at, 1, 7)=?
+            """,
+            (month_key,),
+        ).fetchone()["amount"]
+        revenue = float(confirmed_revenue or 0)
+        expense = float(confirmed_expense or 0)
+        direct_cost = float(repair_item_cost or 0) + float(material_cost or 0)
+        return {
+            "month": month_key,
+            "confirmed_revenue": revenue,
+            "direct_cost": direct_cost,
+            "confirmed_expense": expense,
+            "net_profit": revenue - direct_cost - expense,
+            "refreshed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
 
     def close_source_by_payment(self, source_type: str, source_id: int) -> int | None:
         if source_type == "repair":
@@ -1437,7 +1523,7 @@ class Repository:
                 OR related_type='payment'
                 OR (related_type='machine' AND title IN ('编辑订单', '缂栬緫璁㈠崟'))
             )
-            ORDER BY event_id
+            ORDER BY created_at DESC, event_id DESC
             """,
             params,
         ).fetchall()

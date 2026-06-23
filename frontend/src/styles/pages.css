@@ -1767,8 +1767,8 @@
 }
 
 .pool-stat-card {
-  min-height: 170px;
-  padding: 28px 30px;
+  min-height: 132px;
+  padding: 18px 22px;
   border: 1px solid #e2e8f0;
   border-radius: 12px;
   background: #fff;
@@ -1782,12 +1782,12 @@
 
 .pool-stat-top {
   justify-content: space-between;
-  margin-bottom: 24px;
+  margin-bottom: 12px;
 }
 
 .pool-stat-icon {
-  width: 52px;
-  height: 52px;
+  width: 42px;
+  height: 42px;
   display: grid;
   place-items: center;
   border-radius: 10px;
@@ -2244,6 +2244,11 @@
   width: 100%;
 }
 
+.create-order-modal > .fault-picker,
+.create-order-modal > .create-order-actions {
+  margin-inline: 34px;
+}
+
 .create-order-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2676,6 +2681,8 @@
   .order-heading-line h2 { font-size: 28px; }
   .order-hero-actions { flex-wrap: wrap; }
   .order-detail-layout { padding: 0 16px 28px; }
+  .create-order-modal > .fault-picker,
+  .create-order-modal > .create-order-actions { margin-inline: 16px; }
   .order-side-column { grid-template-columns: 1fr; }
   .order-card { padding: 20px 18px; }
   .order-form-grid { grid-template-columns: 1fr; }

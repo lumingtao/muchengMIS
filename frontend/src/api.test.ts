@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { api, setStoredUser } from "./api";
+import { api } from "./api";
 
 describe("api", () => {
   beforeEach(() => {
@@ -7,17 +7,17 @@ describe("api", () => {
     vi.restoreAllMocks();
   });
 
-  it("adds the current user header and parses JSON", async () => {
-    setStoredUser("admin");
+  it("uses same-origin credentials and parses JSON", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(api<{ ok: boolean }>("/api/me")).resolves.toEqual({ ok: true });
     expect(fetchMock).toHaveBeenCalledWith("/api/me", expect.objectContaining({
       headers: expect.any(Headers),
+      credentials: "same-origin",
     }));
     const headers = fetchMock.mock.calls[0][1].headers as Headers;
-    expect(headers.get("X-User")).toBe("admin");
+    expect(headers.get("X-User")).toBeNull();
   });
 
   it("throws backend detail messages", async () => {

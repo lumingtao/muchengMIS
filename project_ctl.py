@@ -15,7 +15,7 @@ APP_DIR = ROOT_DIR / "mis_mvp"
 RUNTIME_DIR = Path(tempfile.gettempdir()) / "MuchenMIS"
 LOG_DIR = RUNTIME_DIR / "logs"
 DEFAULT_DB = ROOT_DIR / "mis_mvp" / "data" / "mis_mvp.sqlite3"
-DEFAULT_HOST = "127.0.0.1"
+DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8088
 
 
@@ -69,7 +69,8 @@ def start_app(host: str, port: int, database_path: str, open_browser: bool) -> N
         db_path = ROOT_DIR / db_path
     database_path = str(db_path.resolve())
     existing = port_pids(port)
-    url = f"http://{host}:{port}/"
+    browser_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
+    url = f"http://{browser_host}:{port}/"
     if existing:
         print(f"Port {port} is already running. PID: {', '.join(map(str, existing))}")
     else:
@@ -96,6 +97,8 @@ def start_app(host: str, port: int, database_path: str, open_browser: bool) -> N
             print(f"  {err_log}")
             raise SystemExit(1)
         print(f"Service started: {url}")
+        if host in {"0.0.0.0", "::"}:
+            print(f"LAN access: http://<this-computer-LAN-IP>:{port}/")
         print(f"Database: {database_path}")
         print(f"Log: {out_log}")
     if open_browser:

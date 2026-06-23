@@ -10,6 +10,17 @@ from backend.db import connect, migrate
 from backend.service import MisService
 
 
+class SessionTestClient(TestClient):
+    """Legacy test calls name a user in X-User; translate that into a real session."""
+    def request(self, method, url, *, headers=None, **kwargs):  # type: ignore[no-untyped-def]
+        supplied = dict(headers or {})
+        username = supplied.pop("X-User", supplied.pop("x-user", ""))
+        if username:
+            login = super().request("POST", "/api/login", json={"username": username, "password": username})
+            assert login.status_code == 200, login.text
+        return super().request(method, url, headers=supplied or None, **kwargs)
+
+
 @pytest.fixture()
 def client(tmp_path: Path):
     conn = connect(tmp_path / "api.sqlite3")
@@ -21,7 +32,7 @@ def client(tmp_path: Path):
 
     app.dependency_overrides[get_service] = override_service
     try:
-        yield TestClient(app)
+        yield SessionTestClient(app)
     finally:
         app.dependency_overrides.clear()
 
@@ -41,6 +52,30 @@ def test_api_purchase_and_stock(client: TestClient) -> None:
     stock = client.get("/api/stock", headers={"X-User": "staff"})
     assert stock.status_code == 200
     assert stock.json()[0]["imei"] == "860000000009999"
+
+
+def test_profile_includes_chinese_role_display_name(client: TestClient) -> None:
+    profile = client.get("/api/me", headers={"X-User": "frontdesk"})
+
+    assert profile.status_code == 200
+    assert profile.json()["role"] == "frontdesk"
+    assert profile.json()["role_name"] == "前台"
+
+
+def test_api_repair_monthly_summary_requires_payment_and_repair_read_permissions(client: TestClient) -> None:
+    allowed = client.get("/api/dashboard/repair-monthly-summary", headers={"X-User": "frontdesk"})
+    assert allowed.status_code == 200
+    assert {"month", "confirmed_revenue", "direct_cost", "confirmed_expense", "net_profit", "refreshed_at"}.issubset(allowed.json())
+
+    forbidden = client.get("/api/dashboard/repair-monthly-summary", headers={"X-User": "engineer"})
+    assert forbidden.status_code == 403
+
+
+def test_dispatch_engineers_allows_order_dispatchers_without_employee_management_access(client: TestClient) -> None:
+    response = client.get("/api/dispatch-engineers", headers={"X-User": "staff"})
+
+    assert response.status_code == 200
+    assert all(row["username"] and row["accepting_orders"] and row["account_enabled"] for row in response.json())
 
 
 def test_api_warehouse_material_lifecycle(client: TestClient) -> None:
