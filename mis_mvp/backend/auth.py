@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from hashlib import sha256
+from hashlib import sha256, scrypt
+from hmac import compare_digest
+from os import urandom
 from typing import Iterable
 
 from .models import Role
@@ -190,9 +192,32 @@ PERMISSIONS: dict[Role, set[str]] = {
     },
 }
 
+# The catalog is deliberately code-owned: APIs cannot grant unknown permission names.
+PERMISSION_CATALOG = {
+    **{permission: "业务权限" for values in PERMISSIONS.values() for permission in values},
+    "employee:read": "员工与账号", "employee:write": "员工与账号",
+    "role:read": "角色与权限", "role:write": "角色与权限",
+}
+PERMISSIONS[Role.admin].update({"employee:read", "employee:write", "role:read", "role:write"})
+
 
 def hash_password(password: str) -> str:
-    return sha256(password.encode("utf-8")).hexdigest()
+    """Password hashes written by new versions use a self-contained scrypt format."""
+    salt = urandom(16)
+    digest = scrypt(password.encode("utf-8"), salt=salt, n=2**14, r=8, p=1, dklen=32)
+    return f"scrypt$16384$8$1${salt.hex()}${digest.hex()}"
+
+
+def verify_password(password: str, stored: str) -> tuple[bool, bool]:
+    """Return (valid, needs_upgrade), accepting legacy SHA-256 hashes once."""
+    if stored.startswith("scrypt$"):
+        try:
+            _, n, r, p, salt, digest = stored.split("$", 5)
+            candidate = scrypt(password.encode("utf-8"), salt=bytes.fromhex(salt), n=int(n), r=int(r), p=int(p), dklen=len(bytes.fromhex(digest)))
+            return compare_digest(candidate.hex(), digest), False
+        except (ValueError, TypeError):
+            return False, False
+    return compare_digest(sha256(password.encode("utf-8")).hexdigest(), stored), True
 
 
 def require_permission(role: Role, permission: str) -> None:

@@ -10,7 +10,7 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
-from .auth import hash_password, permissions_for, require_permission
+from .auth import PERMISSIONS, hash_password, verify_password
 from .config import ROOT_DIR
 from .order_numbers import repair_order_date_key, repair_order_no
 from .models import (
@@ -63,7 +63,7 @@ from .models import (
     RepairWorkflowActionInput,
     RepairFaultMaterialInput,
     RepairStatusInput,
-    Role,
+    Role, PasswordChangeInput, PasswordResetInput, AccountStatusInput, RoleInput, RoleUpdateInput,
     SalesOrderInput,
     SellDeviceInput,
     SettlementInput,
@@ -89,29 +89,37 @@ class MisService:
 
     def login(self, data: LoginInput) -> dict[str, Any]:
         user = self.repo.get_user(data.username)
-        if not user or user["password_hash"] != hash_password(data.password):
+        valid, upgrade = verify_password(data.password, str(user["password_hash"])) if user else (False, False)
+        if not user or not valid or not user.get("enabled", 1):
             raise BusinessError("用户名或密码错误")
-        role = Role(user["role"])
-        return {"username": data.username, "role": role.value}
+        if upgrade:
+            self.conn.execute("UPDATE users SET password_hash=? WHERE username=?", (hash_password(data.password), data.username))
+            self.conn.commit()
+        return {"username": data.username, "role": str(user["role"]), "must_change_password": bool(user.get("must_change_password"))}
 
     def get_user(self, username: str) -> User:
         user = self.repo.get_user(username)
         if not user:
             raise BusinessError("用户不存在")
-        return User(username=user["username"], role=Role(user["role"]))
+        if not user.get("enabled", 1):
+            raise BusinessError("账号已停用")
+        return User(username=user["username"], role=str(user["role"]))
 
     def user_profile(self, user: User) -> dict[str, Any]:
         return {
             "username": user.username,
-            "role": user.role.value,
-            "permissions": list(permissions_for(user.role)),
+            "role": str(user.role),
+            "role_name": self.repo.role_name(str(user.role)) or str(user.role),
+            "permissions": self.repo.permissions_for_role(str(user.role)),
+            "must_change_password": bool((self.repo.get_user(user.username) or {}).get("must_change_password")),
         }
 
     def _allowed(self, user: User, permission: str) -> None:
-        require_permission(user.role, permission)
+        if permission not in self.repo.permissions_for_role(str(user.role)):
+            raise PermissionError(f"角色 {user.role} 无权执行 {permission}")
 
     def _log_success(self, user: User, action: str, target_type: str, target_id: str, **kwargs: Any) -> None:
-        self.repo.add_log(user.username, user.role.value, action, target_type, target_id, "success", **kwargs)
+        self.repo.add_log(user.username, str(user.role), action, target_type, target_id, "success", **kwargs)
 
     def _customer_id(self, customer_id: int | None, customer: CustomerInput | None) -> int | None:
         if customer:
@@ -157,6 +165,7 @@ class MisService:
                 "imei": imei,
                 "serial": data.serial,
                 "model": data.model,
+                "model_number": data.model_number,
                 "memory": data.memory,
                 "color": data.color,
                 "condition": data.condition,
@@ -214,6 +223,7 @@ class MisService:
             "imei": imei,
             "serial": data.serial,
             "model": data.model,
+            "model_number": data.model_number,
             "memory": data.memory,
             "color": data.color,
             "condition": data.condition,
@@ -226,6 +236,7 @@ class MisService:
             "imei": "IMEI",
             "serial": "序列号",
             "model": "机型",
+            "model_number": "设备编码",
             "memory": "内存",
             "color": "颜色",
             "condition": "机况",
@@ -323,8 +334,18 @@ class MisService:
         return mapping.get(status, MachineStatus.diagnosing)
 
     def _repair_order_status(self, order: dict[str, Any]) -> OrderStatus:
+        raw_status = str(order.get("status") or "")
+        status_aliases = {
+            "已完结": OrderStatus.closed,
+            "已取消": OrderStatus.cancelled,
+            "已删除": OrderStatus.cancelled,
+            "维修完成": OrderStatus.processing,
+            "待完单/收款": OrderStatus.processing,
+        }
+        if raw_status in status_aliases:
+            return status_aliases[raw_status]
         try:
-            return OrderStatus(order["status"])
+            return OrderStatus(raw_status)
         except ValueError as exc:
             raise BusinessError(f"维修单状态异常：{order['status']}") from exc
 
@@ -339,6 +360,16 @@ class MisService:
     def _ensure_engineer_owns_repair(self, user: User, order: dict[str, Any]) -> None:
         if user.role == Role.engineer and order.get("assigned_to") != user.username:
             raise PermissionError("工程师只能处理指派给自己的订单")
+
+    def _ensure_repair_visible_to_user(self, user: User, order: dict[str, Any]) -> None:
+        if user.role == Role.engineer and order.get("assigned_to") != user.username:
+            raise PermissionError("工程师只能查看指派给自己的订单")
+
+    def _repair_visibility_filter(self, user: User, table_alias: str = "") -> tuple[str, tuple[str, ...]]:
+        if user.role != Role.engineer:
+            return "", ()
+        column = f"{table_alias}.assigned_to" if table_alias else "assigned_to"
+        return f" AND {column}=?", (user.username,)
 
     def _ensure_frontdesk_or_admin(self, user: User) -> None:
         if user.role not in {Role.admin, Role.boss, Role.frontdesk, Role.staff}:
@@ -355,10 +386,18 @@ class MisService:
             light = "已删除"
             readonly = True
             reason = "订单已删除归档，仅可通过订单号搜索查看"
+        elif status in {"已完结", "已结单"} or bool(order.get("closed_at")):
+            light = "已完结"
+            readonly = True
+            reason = "订单已完结，全部信息只读"
         elif status in {"已作废", "已取消"}:
             light = "已取消"
             readonly = True
             reason = "订单已取消，全部信息只读"
+        elif status == "维修完成":
+            light = "待完单/收款"
+            readonly = False
+            reason = ""
         elif not assigned_to and status == OrderStatus.opened.value:
             light = "待指派"
             readonly = False
@@ -380,11 +419,11 @@ class MisService:
             return ["view"]
         actions = ["view"]
         status = str(order.get("status") or "")
-        if "repair_order:assign" in set(permissions_for(user.role)) and status not in {"已完结", "已结单"}:
+        if "repair_order:assign" in set(self.repo.permissions_for_role(str(user.role))) and status not in {"已完结", "已结单"}:
             actions.append("assign" if not order.get("assigned_to") else "reassign")
-        if "repair_order:update" in set(permissions_for(user.role)) and status not in {"已完结", "已结单"}:
+        if "repair_order:update" in set(self.repo.permissions_for_role(str(user.role))) and status not in {"已完结", "已结单"}:
             actions.append("cancel")
-        if self._can_delete_repair_order(user):
+        if self._can_delete_repair_order(user) and status != "维修完成":
             actions.append("delete")
         return actions
 
@@ -600,15 +639,142 @@ class MisService:
         return self.repo.get_device_model(device_model_id) or {}
 
     def list_employees(self, user: User, keyword: str = "", department: str = "", accepting_orders: str = "") -> list[dict[str, Any]]:
-        self._allowed(user, "device_model:read")
+        self._allowed(user, "employee:read")
         return self.repo.list_employees(keyword=keyword, department=department, accepting_orders=accepting_orders)
 
+    def list_dispatch_engineers(self, user: User) -> list[dict[str, Any]]:
+        """Return the limited candidate list needed by users allowed to assign repair orders."""
+        self._allowed(user, "repair_order:assign")
+        self._ensure_frontdesk_or_admin(user)
+        eligible_roles = {Role.engineer.value, Role.staff.value, Role.admin.value}
+        return [
+            employee
+            for employee in self.repo.list_employees(accepting_orders="true")
+            if employee.get("username")
+            and employee.get("account_enabled")
+            and employee.get("user_role") in eligible_roles
+        ]
+
     def upsert_employee(self, user: User, data: EmployeeInput) -> dict[str, Any]:
-        self._allowed(user, "device_model:write")
+        self._allowed(user, "employee:write")
+        if not data.employee_id:
+            if not data.username.strip() or not data.password:
+                raise BusinessError("新增员工必须填写登录账号和至少 8 位临时密码")
+            if len(data.password) < 8:
+                raise BusinessError("密码至少 8 位")
+            if self.repo.get_user(data.username.strip()):
+                raise BusinessError("登录账号已存在")
+            if not self.conn.execute("SELECT 1 FROM roles WHERE role_key=?", (data.role,)).fetchone():
+                raise BusinessError("角色不存在")
         employee_id = self.repo.upsert_employee(data.model_dump())
+        if not data.employee_id:
+            self.conn.execute(
+                "INSERT INTO users(username,password_hash,role,employee_id,enabled,must_change_password,session_version) VALUES(?,?,?,?,?,?,1)",
+                (data.username.strip(), hash_password(data.password), data.role, employee_id, 1 if data.enabled else 0, 1),
+            )
+        else:
+            account = self.repo.get_user(str(data.username).strip())
+            if not account:
+                raise BusinessError("员工账号不存在")
+            if account["role"] == "admin" and data.role != "admin" and self._active_admin_count() <= 1:
+                raise BusinessError("不能降级最后一个可用管理员")
+            self.conn.execute("UPDATE users SET role=?, enabled=?, employee_id=? WHERE username=?", (data.role, 1 if data.enabled else 0, employee_id, data.username.strip()))
         self._log_success(user, "employee:upsert", "employee", str(employee_id), request_summary=f"{data.name} / {data.position}")
         self.conn.commit()
         return self.repo.get_employee(employee_id) or {}
+
+    def _active_admin_count(self) -> int:
+        return int(self.conn.execute("SELECT COUNT(*) AS n FROM users WHERE role='admin' AND enabled=1").fetchone()["n"])
+
+    def reset_employee_password(self, user: User, employee_id: int, data: PasswordResetInput) -> dict[str, Any]:
+        self._allowed(user, "employee:write")
+        employee = self.repo.get_employee(employee_id)
+        if not employee or not employee.get("username"):
+            raise BusinessError("员工账号不存在")
+        username = str(employee["username"])
+        self.conn.execute("UPDATE users SET password_hash=?, must_change_password=1, session_version=session_version+1 WHERE username=?", (hash_password(data.password), username))
+        self.repo.invalidate_user_sessions(username)
+        self._log_success(user, "employee:reset_password", "employee", str(employee_id), request_summary=username)
+        self.conn.commit()
+        return {"employee_id": employee_id, "must_change_password": True}
+
+    def set_employee_account_status(self, user: User, employee_id: int, data: AccountStatusInput) -> dict[str, Any]:
+        self._allowed(user, "employee:write")
+        employee = self.repo.get_employee(employee_id)
+        if not employee or not employee.get("username"):
+            raise BusinessError("员工账号不存在")
+        account = self.repo.get_user(str(employee["username"])) or {}
+        if account.get("role") == "admin" and not data.enabled and self._active_admin_count() <= 1:
+            raise BusinessError("不能停用最后一个可用管理员")
+        self.conn.execute("UPDATE users SET enabled=?, session_version=session_version+1 WHERE username=?", (1 if data.enabled else 0, employee["username"]))
+        self.repo.invalidate_user_sessions(str(employee["username"]))
+        self._log_success(user, "employee:account_status", "employee", str(employee_id), request_summary="启用" if data.enabled else "停用")
+        self.conn.commit()
+        return self.repo.get_employee(employee_id) or {}
+
+    def change_password(self, user: User, data: PasswordChangeInput) -> dict[str, Any]:
+        account = self.repo.get_user(user.username) or {}
+        valid, _ = verify_password(data.current_password, str(account.get("password_hash", "")))
+        if not valid:
+            raise BusinessError("当前密码不正确")
+        self.conn.execute("UPDATE users SET password_hash=?, must_change_password=0, session_version=session_version+1 WHERE username=?", (hash_password(data.new_password), user.username))
+        self.repo.invalidate_user_sessions(user.username)
+        self._log_success(user, "account:change_password", "user", user.username)
+        self.conn.commit()
+        return {"changed": True}
+
+    def roles(self, user: User) -> list[dict[str, Any]]:
+        self._allowed(user, "role:read")
+        return self.repo.list_roles()
+
+    def permission_catalog(self, user: User) -> dict[str, str]:
+        self._allowed(user, "role:read")
+        from .auth import PERMISSION_CATALOG
+        return PERMISSION_CATALOG
+
+    def _save_role(self, key: str, name: str, permissions: list[str], builtin: bool = False) -> dict[str, Any]:
+        from .auth import PERMISSION_CATALOG
+        unknown = set(permissions) - set(PERMISSION_CATALOG)
+        if unknown:
+            raise BusinessError("包含未知权限")
+        if key == "admin":
+            permissions = sorted(PERMISSION_CATALOG)
+        self.conn.execute("INSERT OR REPLACE INTO roles(role_key,name,is_builtin) VALUES(?,?,?)", (key, name, 1 if builtin else 0))
+        self.conn.execute("DELETE FROM role_permissions WHERE role_key=?", (key,))
+        self.conn.executemany("INSERT INTO role_permissions(role_key,permission) VALUES(?,?)", [(key, p) for p in sorted(set(permissions))])
+        return next(row for row in self.repo.list_roles() if row["role_key"] == key)
+
+    def create_role(self, user: User, data: RoleInput) -> dict[str, Any]:
+        self._allowed(user, "role:write")
+        if self.conn.execute("SELECT 1 FROM roles WHERE role_key=?", (data.role_key,)).fetchone():
+            raise BusinessError("角色标识已存在")
+        result = self._save_role(data.role_key, data.name, data.permissions)
+        self._log_success(user, "role:create", "role", data.role_key, request_summary=data.name)
+        self.conn.commit()
+        return result
+
+    def update_role(self, user: User, role_key: str, data: RoleUpdateInput) -> dict[str, Any]:
+        self._allowed(user, "role:write")
+        row = self.conn.execute("SELECT * FROM roles WHERE role_key=?", (role_key,)).fetchone()
+        if not row:
+            raise BusinessError("角色不存在")
+        result = self._save_role(role_key, data.name, data.permissions, bool(row["is_builtin"]))
+        self._log_success(user, "role:update", "role", role_key, request_summary=data.name)
+        self.conn.commit()
+        return result
+
+    def delete_role(self, user: User, role_key: str, replacement_role: str) -> None:
+        self._allowed(user, "role:write")
+        row = self.conn.execute("SELECT * FROM roles WHERE role_key=?", (role_key,)).fetchone()
+        if not row or row["is_builtin"]:
+            raise BusinessError("内置角色不可删除")
+        if not self.conn.execute("SELECT 1 FROM roles WHERE role_key=?", (replacement_role,)).fetchone():
+            raise BusinessError("迁移目标角色不存在")
+        self.conn.execute("UPDATE users SET role=? WHERE role=?", (replacement_role, role_key))
+        self.conn.execute("DELETE FROM role_permissions WHERE role_key=?", (role_key,))
+        self.conn.execute("DELETE FROM roles WHERE role_key=?", (role_key,))
+        self._log_success(user, "role:delete", "role", role_key, request_summary=f"迁移至 {replacement_role}")
+        self.conn.commit()
 
     def sync_apple_device_models(self, user: User) -> dict[str, Any]:
         self._allowed(user, "device_model:write")
@@ -879,11 +1045,12 @@ class MisService:
 
     def repair_workbench(self, user: User) -> dict[str, Any]:
         self._allowed(user, "repair_order:read")
+        visibility_filter, visibility_params = self._repair_visibility_filter(user, "ro")
         orders = self._rows(
-            """
-            SELECT ro.*, m.machine_no, m.imei, m.serial, m.model, m.memory, m.color,
+            f"""
+            SELECT ro.*, m.machine_no, m.imei, m.serial, m.model, m.model_number, m.memory, m.color,
                    m.current_status, c.name AS linked_customer_name, c.phone AS customer_phone,
-                   c.category AS linked_customer_type,
+                   c.category AS linked_customer_type, COALESCE(NULLIF(e.name, ''), ro.assigned_to) AS engineer_name,
                    COALESCE((
                        SELECT GROUP_CONCAT(name, '||')
                        FROM (
@@ -944,23 +1111,38 @@ class MisService:
                        SELECT GROUP_CONCAT(summary, '；')
                        FROM (
                            SELECT CASE
-                                    WHEN note<>'' THEN item || '：' || note
-                                    ELSE item
+                                    WHEN note<>'' THEN GROUP_CONCAT(item_name, '、') || '：' || note
+                                    ELSE GROUP_CONCAT(item_name, '、')
                                   END AS summary,
-                                  inspection_id AS sort_key
-                           FROM repair_order_inspections
-                           WHERE repair_order_id=ro.repair_order_id
-                             AND stage='pre'
-                             AND abnormal=1
+                                  MIN(inspection_id) AS sort_key
+                           FROM (
+                               SELECT inspection_id,
+                                      note,
+                                      CASE WHEN item LIKE '%异常' THEN item ELSE item || '异常' END AS item_name
+                               FROM repair_order_inspections
+                               WHERE repair_order_id=ro.repair_order_id
+                                 AND stage='pre'
+                                 AND abnormal=1
+                               ORDER BY inspection_id
+                           )
+                           GROUP BY note
                            ORDER BY sort_key
                        )
                    ), '') AS pool_pre_inspection_abnormal
             FROM repair_orders ro
             JOIN machines m ON m.machine_id = ro.machine_id
             LEFT JOIN customers c ON c.customer_id = ro.customer_id
-            WHERE ro.archived_at=''
+            LEFT JOIN employees e ON e.employee_id = (
+                SELECT e2.employee_id
+                FROM employees e2
+                WHERE e2.username = ro.assigned_to
+                ORDER BY e2.employee_id
+                LIMIT 1
+            )
+            WHERE ro.archived_at=''{visibility_filter}
             ORDER BY ro.updated_at DESC, ro.repair_order_id DESC
-            """
+            """,
+            visibility_params,
         )
         for order in orders:
             order["order_no"] = order.get("order_no") or repair_order_no(repair_order_date_key(order.get("created_at")), 1)
@@ -982,23 +1164,25 @@ class MisService:
         return {
             "orders": orders,
             "status_cards": self._rows(
-                """
+                f"""
                 SELECT status, payment_status, settlement_status, COUNT(*) AS count,
                        COALESCE(SUM(quoted_amount), 0) AS quoted_amount
                 FROM repair_orders
-                WHERE archived_at=''
+                WHERE archived_at=''{self._repair_visibility_filter(user)[0]}
                 GROUP BY status, payment_status, settlement_status
                 ORDER BY status, payment_status
-                """
+                """,
+                self._repair_visibility_filter(user)[1],
             ),
             "finance_pending": self._rows(
-                """
+                f"""
                 SELECT p.*, ro.order_no, ro.customer_name
                 FROM payments p
                 LEFT JOIN repair_orders ro ON ro.repair_order_id = p.source_id AND p.source_type='repair'
-                WHERE p.source_type='repair' AND p.status='已付款待财务确认' AND COALESCE(ro.archived_at, '')=''
+                WHERE p.source_type='repair' AND p.status='已付款待财务确认' AND COALESCE(ro.archived_at, '')=''{visibility_filter}
                 ORDER BY p.paid_at DESC, p.payment_id DESC
-                """
+                """,
+                visibility_params,
             ),
             "receivable_summary": self._rows(
                 """
@@ -1023,18 +1207,27 @@ class MisService:
         self._allowed(user, "repair_order:read")
         order = self._one(
             """
-            SELECT ro.*, m.machine_no, m.imei, m.serial, m.model, m.memory, m.color,
+            SELECT ro.*, m.machine_no, m.imei, m.serial, m.model, m.model_number, m.memory, m.color,
                    m.condition, m.current_status, c.name AS linked_customer_name,
-                   c.phone AS customer_phone, c.gender AS customer_gender, c.category AS linked_customer_type
+                   c.phone AS customer_phone, c.gender AS customer_gender, c.category AS linked_customer_type,
+                   COALESCE(NULLIF(e.name, ''), ro.assigned_to) AS engineer_name
             FROM repair_orders ro
             JOIN machines m ON m.machine_id = ro.machine_id
             LEFT JOIN customers c ON c.customer_id = ro.customer_id
+            LEFT JOIN employees e ON e.employee_id = (
+                SELECT e2.employee_id
+                FROM employees e2
+                WHERE e2.username = ro.assigned_to
+                ORDER BY e2.employee_id
+                LIMIT 1
+            )
             WHERE ro.repair_order_id=? AND ro.archived_at=''
             """,
             (repair_order_id,),
         )
         if not order:
             raise BusinessError("维修单不存在")
+        self._ensure_repair_visible_to_user(user, order)
         order["order_no"] = order.get("order_no") or repair_order_no(repair_order_date_key(order.get("created_at")), 1)
         order["customer_name"] = order.get("customer_name") or order.get("linked_customer_name") or "待补"
         order["gender"] = order.get("gender") or order.get("customer_gender") or ""
@@ -1084,6 +1277,8 @@ class MisService:
         order = self.repo.get_repair_order(repair_order_id)
         if not order:
             raise BusinessError("维修单不存在")
+        if str(order.get("status") or "") == "维修完成":
+            raise BusinessError("待完单/收款的订单不能删除")
         snapshot = self.repo.repair_order_detail(repair_order_id) or order
         self.repo.archive_repair_order(repair_order_id, user.username, reason, snapshot)
         summary = f"{order.get('order_no') or repair_order_id} / {reason}"
@@ -1326,6 +1521,7 @@ class MisService:
         order = self.repo.get_repair_order(repair_order_id)
         if not order:
             raise BusinessError("维修单不存在")
+        self._ensure_repair_visible_to_user(user, order)
         return self.repo.list_repair_order_photos(repair_order_id)
 
     def add_repair_order_photo(self, user: User, repair_order_id: int, stage: str, filename: str, content_type: str, content: bytes) -> dict[str, Any]:
@@ -3012,8 +3208,10 @@ class MisService:
         title = "维修流程"
         detail = data.remark or action
         if action == "repair_completed":
+            if self._repair_status_light(order)["key"] != "维修中":
+                raise BusinessError("只能将维修中的订单标记为维修完成")
             self.conn.execute(
-                "UPDATE repair_orders SET status='维修完成', workflow_status='待交付检测', completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE repair_order_id=?",
+                "UPDATE repair_orders SET status='维修完成', workflow_status='待完单/收款', completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE repair_order_id=?",
                 (repair_order_id,),
             )
             self.repo.update_machine_status(machine_id, "维修完成")
@@ -3437,6 +3635,7 @@ class MisService:
         if not order:
             raise BusinessError("维修单不存在")
         self._ensure_engineer_owns_repair(user, order)
+        is_pending_settlement = str(order.get("status") or "") == "维修完成"
         allowed = {
             OrderStatus.diagnosing: {OrderStatus.opened},
             OrderStatus.ready: {OrderStatus.processing},
@@ -3458,7 +3657,8 @@ class MisService:
         }
         if data.status not in allowed:
             raise BusinessError("该状态必须通过报价、维修项目、交付或收款等专用动作进入")
-        self._ensure_repair_transition(order, data.status, allowed[data.status])
+        if not (data.status == OrderStatus.closed and is_pending_settlement):
+            self._ensure_repair_transition(order, data.status, allowed[data.status])
         if data.status == OrderStatus.cancelled:
             issued = self._rows(
                 """
@@ -3669,6 +3869,11 @@ class MisService:
     def list_payments(self, user: User) -> list[dict[str, Any]]:
         self._allowed(user, "payment:read")
         return self.repo.list_payments()
+
+    def repair_monthly_financial_summary(self, user: User) -> dict[str, Any]:
+        self._allowed(user, "payment:read")
+        self._allowed(user, "repair_order:read")
+        return self.repo.repair_monthly_financial_summary()
 
     def machine_reports(self, user: User) -> dict[str, Any]:
         self._allowed(user, "report:read")

@@ -19,9 +19,6 @@ export function AppModal({ children, open, onClose, width = 1240 }: AppModalProp
       onCancel={onClose}
     >
       {children}
-      <div className="modal-footer">
-        <button type="button" className="ghost-button" onClick={onClose}>关闭</button>
-      </div>
     </Modal>
   );
 }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import socket
 import subprocess
 import sys
 import tkinter as tk
@@ -115,6 +116,22 @@ class Launcher(tk.Tk):
             raise ValueError("端口必须在 1 到 65535 之间。")
         return port
 
+    @staticmethod
+    def lan_ip_address() -> str:
+        """Return the active IPv4 address without requiring administrator privileges."""
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                sock.connect(("8.8.8.8", 80))
+                return str(sock.getsockname()[0])
+        except OSError:
+            return ""
+
+    def access_addresses(self, port: int) -> str:
+        local_url = f"http://127.0.0.1:{port}/"
+        lan_ip = self.lan_ip_address()
+        lan_url = f"http://{lan_ip}:{port}/" if lan_ip else "未检测到可用局域网 IPv4 地址"
+        return f"本机访问：{local_url}\n局域网访问：{lan_url}"
+
     def run_action(self, action: str) -> None:
         try:
             port = self.validated_port()
@@ -124,7 +141,7 @@ class Launcher(tk.Tk):
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
             self.save_settings()
 
-            cmd = [sys.executable, str(CONTROL_SCRIPT), action, str(port), "--database-path", db_path]
+            cmd = [sys.executable, str(CONTROL_SCRIPT), action, str(port), "--host", "0.0.0.0", "--database-path", db_path]
             if not self.open_browser_var.get() or action == "stop":
                 cmd.append("--no-browser")
             result = subprocess.run(cmd, cwd=ROOT_DIR, capture_output=True, text=True, errors="ignore", check=False)
@@ -133,7 +150,10 @@ class Launcher(tk.Tk):
                 self.status_var.set(output or "操作失败。")
                 messagebox.showerror("操作失败", output or "操作失败，请查看日志。")
                 return
-            self.status_var.set(output or "操作完成。")
+            if action == "stop":
+                self.status_var.set(output or "操作完成。")
+            else:
+                self.status_var.set(f"{output or '操作完成。'}\n{self.access_addresses(port)}")
         except Exception as exc:
             self.status_var.set(str(exc))
             messagebox.showerror("操作失败", str(exc))

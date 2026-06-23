@@ -55,13 +55,28 @@ import { AppShellLayout } from "./components/layout/AppShellLayout";
 import { AppPanel } from "./components/layout/AppPanel";
 import { WarehousePage as WarehouseManagementPage } from "./pages/warehouse/WarehousePage";
 
-type ViewKey = "dashboard" | "repairPool" | "orderDetail" | "recyclePool" | "repair" | "recycle" | "warehouse" | "warehouseMaterials" | "warehouseBatches" | "warehouseUnits" | "warehouseRequests" | "warehouseReturns" | "warehouseCounts" | "warehouseMovements" | "warehouseBasics" | "inventory" | "sales" | "customers" | "payments" | "reports" | "audit" | "settingsEmployees" | "settingsDeviceModels" | "settingsRepairSkus";
+type ViewKey = "dashboard" | "repairPool" | "orderDetail" | "recyclePool" | "repair" | "recycle" | "warehouse" | "warehouseMaterials" | "warehouseBatches" | "warehouseUnits" | "warehouseRequests" | "warehouseReturns" | "warehouseCounts" | "warehouseMovements" | "warehouseBasics" | "inventory" | "sales" | "customers" | "payments" | "reports" | "audit" | "settingsEmployees" | "settingsRoles" | "settingsDeviceModels" | "settingsRepairSkus";
 type OrderMode = "new" | "view" | "edit" | "cancel";
 type SortState = { key: string; direction: "asc" | "desc" };
 
+const roleDisplayNames: Record<string, string> = {
+  admin: "管理员",
+  boss: "老板",
+  frontdesk: "前台",
+  engineer: "工程师",
+  staff: "员工",
+  finance: "财务",
+};
+
+function displayRoleName(roleName: unknown, role: unknown, fallback: string) {
+  const name = String(roleName || "").trim();
+  if (name) return name;
+  return roleDisplayNames[String(role || "")] || fallback;
+}
+
 const viewMeta: Record<ViewKey, { label: string; subtitle: string }> = {
   dashboard: { label: "工作台首页", subtitle: "欢迎回来，沐辰科技 MIS 正在平稳运行中。" },
-  repairPool: { label: "维修工单池", subtitle: "集中查看维修工单、待补资料、挂账和财务确认。" },
+  repairPool: { label: "订单中心", subtitle: "集中查看维修工单、待补资料、挂账和财务确认。" },
   orderDetail: { label: "工单详情", subtitle: "查看维修工单的设备、客户、检测、报价和进度。" },
   recyclePool: { label: "回收工单池", subtitle: "跟进回收机器、入库和销售流转。" },
   repair: { label: "维修开单", subtitle: "创建维修单并推进检测、报价、交付和收款。" },
@@ -82,13 +97,14 @@ const viewMeta: Record<ViewKey, { label: string; subtitle: string }> = {
   reports: { label: "财务报表", subtitle: "查看库存成本、收入支出和经营概览。" },
   audit: { label: "操作日志", subtitle: "查看关键写操作的审计记录。" },
   settingsEmployees: { label: "员工管理", subtitle: "维护工程师档案、挂单数量、部门、能力标签和接单状态。" },
+  settingsRoles: { label: "权限管理", subtitle: "维护角色模板及其业务操作权限。" },
   settingsDeviceModels: { label: "设备型号", subtitle: "维护开单页可选的设备品牌、型号、颜色和容量。" },
   settingsRepairSkus: { label: "故障代码", subtitle: "维护维修故障代码、维修方案、默认成本和收费。" },
 };
 
 const primaryNav: Array<{ key: ViewKey; label: string; icon: ReactNode; children?: Array<{ key: ViewKey; label: string }> }> = [
-  { key: "dashboard", label: "个人工作台", icon: <Grid2X2 size={22} /> },
   { key: "repairPool", label: "订单中心", icon: <ClipboardList size={22} /> },
+  { key: "dashboard", label: "个人工作台", icon: <Grid2X2 size={22} /> },
   { key: "customers", label: "会员管理", icon: <Users size={22} /> },
   {
     key: "warehouse",
@@ -114,6 +130,7 @@ const primaryNav: Array<{ key: ViewKey; label: string; icon: ReactNode; children
     children: [
       { key: "audit", label: "操作日志" },
       { key: "settingsEmployees", label: "员工管理" },
+      { key: "settingsRoles", label: "权限管理" },
       { key: "settingsDeviceModels", label: "设备型号" },
       { key: "settingsRepairSkus", label: "故障代码" },
     ],
@@ -137,6 +154,19 @@ function uniqueStrings(values: unknown[]) {
 
 function optionArray(value: unknown) {
   return Array.isArray(value) ? value.map(item => String(item || "")).filter(Boolean) : [];
+}
+
+function deviceModelNumberOptions(deviceModels: AnyRecord[], modelName = "") {
+  const source = modelName
+    ? deviceModels.filter(row => String(row.model_name || "") === modelName)
+    : deviceModels;
+  return uniqueStrings(source.map(row => optionArray(row.model_numbers)));
+}
+
+function findDeviceModelByModelNumber(deviceModels: AnyRecord[], modelNumber: unknown) {
+  const normalized = String(modelNumber || "").trim().toLowerCase();
+  if (!normalized) return null;
+  return deviceModels.find(row => optionArray(row.model_numbers).some(value => value.toLowerCase() === normalized)) || null;
 }
 
 function hasTextValue(value: unknown) {
@@ -214,6 +244,13 @@ function isTodayRecord(value: unknown) {
 
 function isCurrentMonthRecord(value: unknown) {
   return dateKey(value).slice(0, 7) === localDateKey().slice(0, 7);
+}
+
+export function repairMonthlySummaryValues(summary: AnyRecord | undefined) {
+  return {
+    revenue: Number(summary?.confirmed_revenue || 0),
+    netProfit: Number(summary?.net_profit || 0),
+  };
 }
 
 function hasValue(row: AnyRecord, key: string) {
@@ -444,7 +481,7 @@ function QueryState({ loading, error }: { loading: boolean; error: unknown }) {
 
 function App() {
   const [user, setUser] = useState(getStoredUser());
-  const [view, setView] = useState<ViewKey>("dashboard");
+  const [view, setView] = useState<ViewKey>("repairPool");
   const [selectedRepairOrderId, setSelectedRepairOrderId] = useState<number | string | null>(null);
   const [detailReturnView, setDetailReturnView] = useState<ViewKey>("repairPool");
   const [orderMode, setOrderMode] = useState<OrderMode>("view");
@@ -459,6 +496,7 @@ function App() {
   }
 
   function logout() {
+    void api("/api/logout", { method: "POST" }).catch(() => undefined);
     clearStoredUser();
     setUser("");
     setView("dashboard");
@@ -478,7 +516,14 @@ function App() {
   }
 
   function leaveOrderDetail() {
-    setView(detailReturnView || "repairPool");
+    navigateTo(detailReturnView || "repairPool");
+  }
+
+  function navigateTo(nextView: ViewKey) {
+    if (nextView === "repairPool") {
+      queryClient.invalidateQueries({ queryKey: ["repair-workbench"] });
+    }
+    setView(nextView);
   }
 
   function openNewOrder(from: ViewKey = view) {
@@ -488,7 +533,8 @@ function App() {
     setView("orderDetail");
   }
 
-  if (!user) return <LoginScreen onLogin={(name) => { setStoredUser(name); setUser(name); }} notify={notify} />;
+  if (!user) return <LoginScreen onLogin={(name) => { setStoredUser(name || "session"); setUser(name || "session"); }} notify={notify} />;
+  if (profile.data?.must_change_password) return <ChangePasswordScreen notify={notify} />;
 
   return (
     <AppShellLayout
@@ -496,14 +542,14 @@ function App() {
       current={current}
       primaryNav={primaryNav}
       userLabel={String(profile.data?.username || user) === "admin" ? "管理员" : String(profile.data?.username || user)}
-      roleLabel={String(profile.data?.role || "高级维修顾问")}
+      roleLabel={displayRoleName(profile.data?.role_name, profile.data?.role, "高级维修顾问")}
       modal={modal}
-      setView={setView}
+      setView={navigateTo}
       notify={notify}
       logout={logout}
       onCloseModal={() => setModal(null)}
     >
-      <ViewRouter view={view} notify={notify} openModal={setModal} setView={setView} openNewOrder={openNewOrder} openOrderDetail={openOrderDetail} selectedRepairOrderId={selectedRepairOrderId} orderMode={orderMode} setSelectedRepairOrderId={setSelectedRepairOrderId} setOrderMode={setOrderMode} onLeaveOrderDetail={leaveOrderDetail} />
+      <ViewRouter view={view} notify={notify} openModal={setModal} setView={navigateTo} openNewOrder={openNewOrder} openOrderDetail={openOrderDetail} selectedRepairOrderId={selectedRepairOrderId} orderMode={orderMode} setSelectedRepairOrderId={setSelectedRepairOrderId} setOrderMode={setOrderMode} onLeaveOrderDetail={leaveOrderDetail} />
     </AppShellLayout>
   );
 }
@@ -562,7 +608,7 @@ function ViewRouter({
   if (view === "customers") return <CustomersPage />;
   if (view === "payments") return <PaymentsPage notify={notify} />;
   if (view === "reports") return <ReportsPage />;
-  if (view === "audit" || view === "settingsEmployees" || view === "settingsDeviceModels" || view === "settingsRepairSkus") return <AuditPage notify={notify} section={view} />;
+  if (view === "audit" || view === "settingsEmployees" || view === "settingsRoles" || view === "settingsDeviceModels" || view === "settingsRepairSkus") return <AuditPage notify={notify} section={view} />;
   if (view === "repair") return <OrderDetailPage orderId={null} mode="new" notify={notify} onBack={() => setView("repairPool")} onCreated={(id) => { setSelectedRepairOrderId(id); setOrderMode("view"); setView("orderDetail"); }} onModeChange={setOrderMode} />;
   if (view === "recycle") return <RecycleOpenPage notify={notify} />;
   return <SalesPage notify={notify} />;
@@ -570,26 +616,30 @@ function ViewRouter({
 
 function DashboardHome({ notify, setView, openOrderDetail }: { notify: (message: string, error?: boolean) => void; setView: (view: ViewKey) => void; openOrderDetail: (row: AnyRecord) => void }) {
   const [tab, setTab] = useState<"orders" | "approvals" | "finance">("orders");
-  const repair = useQuery({ queryKey: ["repair-workbench"], queryFn: () => api<AnyRecord>("/api/repair-workbench") });
-  const warehouse = useQuery({ queryKey: ["warehouse"], queryFn: () => api<AnyRecord>("/api/warehouse") });
-  const payments = useQuery({ queryKey: ["payments"], queryFn: () => api<AnyRecord[]>("/api/payments") });
-  const reports = useQuery({ queryKey: ["machine-reports"], queryFn: () => api<AnyRecord>("/api/machine-reports") });
-  const loading = repair.isLoading || warehouse.isLoading || payments.isLoading || reports.isLoading;
-  const error = repair.error || warehouse.error || payments.error || reports.error;
+  const profile = useQuery({ queryKey: ["me", "dashboard"], queryFn: () => api<AnyRecord>("/api/me") });
+  const permissions = new Set(((profile.data?.permissions as string[] | undefined) || []));
+  const canReadRepairs = permissions.has("repair_order:read");
+  const canReadWarehouse = permissions.has("warehouse:read");
+  const canReadPayments = permissions.has("payment:read");
+  const canReadMonthlySummary = canReadRepairs && canReadPayments;
+  const repair = useQuery({ queryKey: ["repair-workbench"], queryFn: () => api<AnyRecord>("/api/repair-workbench"), enabled: canReadRepairs });
+  const warehouse = useQuery({ queryKey: ["warehouse"], queryFn: () => api<AnyRecord>("/api/warehouse"), enabled: canReadWarehouse });
+  const payments = useQuery({ queryKey: ["payments"], queryFn: () => api<AnyRecord[]>("/api/payments"), enabled: canReadPayments });
+  const monthlySummary = useQuery({ queryKey: ["dashboard-repair-monthly-summary"], queryFn: () => api<AnyRecord>("/api/dashboard/repair-monthly-summary"), enabled: canReadMonthlySummary });
+  const loading = profile.isLoading || repair.isLoading || warehouse.isLoading || payments.isLoading || monthlySummary.isLoading;
+  const error = profile.error || repair.error || warehouse.error || payments.error || monthlySummary.error;
   const orders = ((repair.data?.orders as AnyRecord[] | undefined) || []);
   const openOrders = orders.filter(row => !["已完结", "已结单"].includes(String(row.status))).slice(0, 4);
   const financePending = ((repair.data?.finance_pending as AnyRecord[] | undefined) || []);
   const requests = ((warehouse.data?.requests as AnyRecord[] | undefined) || []).filter(row => !["已发放", "已取消", "已拒绝"].includes(String(row.status))).slice(0, 4);
   const paymentRows = payments.data || [];
   const todayPayments = paymentRows.filter(row => isTodayRecord(row.paid_at || row.created_at));
-  const monthPayments = paymentRows.filter(row => isCurrentMonthRecord(row.paid_at || row.created_at));
   const todayIncome = todayPayments.filter(row => row.direction === "收入").reduce((sum, row) => sum + Number(row.amount || 0), 0);
   const todayExpense = todayPayments.filter(row => row.direction === "支出").reduce((sum, row) => sum + Number(row.amount || 0), 0);
   const active = orders.filter(row => String(row.status).includes("维修")).length;
   const done = orders.filter(row => ["已完结", "已结单", "维修完成"].includes(String(row.status))).length;
   const pending = Math.max(openOrders.length, orders.filter(row => ["新建", "待检测", "待报价确认", "待交付检测"].includes(String(row.status))).length);
-  const monthlyIncome = monthPayments.filter(row => row.direction === "收入").reduce((sum, row) => sum + Number(row.amount || 0), 0);
-  const monthlyExpense = monthPayments.filter(row => row.direction === "支出").reduce((sum, row) => sum + Number(row.amount || 0), 0);
+  const { revenue: monthlyRevenue, netProfit: monthlyNetProfit } = repairMonthlySummaryValues(monthlySummary.data);
   const lowStock = ((warehouse.data?.low_stock as AnyRecord[] | undefined) || []);
 
   function openRepairDetail(row: AnyRecord) {
@@ -600,7 +650,7 @@ function DashboardHome({ notify, setView, openOrderDetail }: { notify: (message:
     repair.refetch();
     warehouse.refetch();
     payments.refetch();
-    reports.refetch();
+    monthlySummary.refetch();
   }
 
   if (loading || error) return <QueryState loading={loading} error={error} />;
@@ -634,8 +684,8 @@ function DashboardHome({ notify, setView, openOrderDetail }: { notify: (message:
         <div className="insight-card month-card">
           <div className="card-title-row"><p>本月累计概览</p><span className="live-pill">实时更新</span></div>
           <span>总营收</span>
-          <strong>{formatMoney(monthlyIncome)}</strong>
-          <div className="month-profit"><span>净利润</span><b>{formatMoney(monthlyIncome - monthlyExpense)}</b></div>
+          <strong>{formatMoney(monthlyRevenue)}</strong>
+          <div className="month-profit"><span>净利润</span><b>{formatMoney(monthlyNetProfit)}</b></div>
         </div>
       </section>
 
@@ -737,7 +787,7 @@ function RepairPool({ notify, openOrderDetail, openNewOrder }: { notify: (messag
   const [engineer, setEngineer] = useState("");
   const [timeRange, setTimeRange] = useState<[string, string]>(["", ""]);
   const [page, setPage] = useState(1);
-  const [sort, setSort] = useState<SortState>({ key: "updated_at", direction: "desc" });
+  const [sort, setSort] = useState<SortState>({ key: "created_at", direction: "desc" });
   const [dispatchOrder, setDispatchOrder] = useState<AnyRecord | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const pageSize = 15;
@@ -750,12 +800,12 @@ function RepairPool({ notify, openOrderDetail, openNewOrder }: { notify: (messag
     const engineerNeedle = engineer.trim().toLowerCase();
     const [startAt, endAt] = timeRange.map(normalizeDateTimeInput);
     return orders.filter(row => {
-      const haystack = [row.order_no, row.machine_no, row.imei, row.serial, row.model, row.customer_name, row.phone, row.customer_phone, row.assigned_to].join(" ").toLowerCase();
+      const haystack = [row.order_no, row.machine_no, row.imei, row.serial, row.model, row.customer_name, row.phone, row.customer_phone, row.engineer_name, row.assigned_to].join(" ").toLowerCase();
       const orderTime = String(row.updated_at || row.created_at || "");
       return (!q || haystack.includes(q))
         && (status === "全部状态" || orderStatusLight(row) === status)
         && (customerType === "全部客户" || String(row.customer_type || "").includes(customerType))
-        && (!engineerNeedle || String(row.assigned_to || row.engineer_user || "").toLowerCase().includes(engineerNeedle))
+        && (!engineerNeedle || [row.engineer_name, row.assigned_to, row.engineer_user].join(" ").toLowerCase().includes(engineerNeedle))
         && (!startAt || orderTime >= startAt)
         && (!endAt || orderTime <= endAt);
     });
@@ -876,12 +926,12 @@ function RepairPool({ notify, openOrderDetail, openNewOrder }: { notify: (messag
         <div className="pool-top-actions">
           <button type="button" className="pool-icon-button" aria-label="查看待支付工单" onClick={() => setStatus("待支付")}><Bell size={23} /><span /></button>
           <button type="button" className="pool-icon-button" aria-label="查看订单中心帮助" onClick={() => notify("订单中心支持搜索、状态筛选、高级筛选、导出、新建、查看、编辑和取消工单。")}><HelpCircle size={23} /></button>
-          <div className="pool-user"><div><b>{String(profile.data?.username || getStoredUser() || "当前用户")}</b><span>{String(profile.data?.role || "员工")}</span></div><div className="pool-avatar"><UserRound size={22} /></div></div>
+          <div className="pool-user"><div><b>{String(profile.data?.username || getStoredUser() || "当前用户")}</b><span>{displayRoleName(profile.data?.role_name, profile.data?.role, "员工")}</span></div><div className="pool-avatar"><UserRound size={22} /></div></div>
         </div>
       </header>
 
       <div className="pool-content">
-        <nav className="pool-breadcrumb"><span>维修管理</span><ChevronRight size={16} /><b>维修订单池</b></nav>
+        <nav className="pool-breadcrumb"><span>维修管理</span><ChevronRight size={16} /><b>订单中心</b></nav>
 
         <section className="pool-stat-grid">
           <PoolStat icon={<ReceiptText size={25} />} tone="primary" label="全部工单" value={orders.length} note="订单池" />
@@ -942,7 +992,7 @@ function RepairPool({ notify, openOrderDetail, openNewOrder }: { notify: (messag
         </section>
       </div>
       <DispatchOrderModal
-        employeesUrl="/api/employees?accepting_orders=true"
+        employeesUrl="/api/dispatch-engineers"
         loading={dispatchMutation.isPending}
         onClose={() => setDispatchOrder(null)}
         onSubmit={(engineer) => dispatchOrder && dispatchMutation.mutate({ order: dispatchOrder, engineer })}
@@ -962,6 +1012,15 @@ function RepairPool({ notify, openOrderDetail, openNewOrder }: { notify: (messag
   );
 }
 
+function ChangePasswordScreen({ notify }: { notify: (message: string, error?: boolean) => void }) {
+  const mutation = useMutation({
+    mutationFn: (payload: AnyRecord) => api("/api/me/password", { method: "POST", body: JSON.stringify(payload) }),
+    onSuccess: () => { notify("密码已修改，请重新登录"); clearStoredUser(); window.location.reload(); },
+    onError: error => notify(error instanceof Error ? error.message : "修改失败", true),
+  });
+  return <section className="auth-screen"><form className="auth-card" onSubmit={event => { event.preventDefault(); const data = formPayload(event.currentTarget); if (data.new_password !== data.confirm_password) { notify("两次密码不一致", true); return; } mutation.mutate(data); }}><div><h1>请修改临时密码</h1><p>首次登录必须设置自己的密码。</p></div><label><span>临时密码</span><Input.Password name="current_password" required /></label><label><span>新密码</span><Input.Password name="new_password" minLength={8} required /></label><label><span>确认新密码</span><Input.Password name="confirm_password" minLength={8} required /></label><AppButton type="primary" htmlType="submit" loading={mutation.isPending} block>保存新密码</AppButton></form></section>;
+}
+
 function PoolStat({ icon, tone, label, value, note }: { icon: ReactNode; tone: "primary" | "warning" | "danger" | "success"; label: string; value: number; note: string }) {
   return <div className="pool-stat-card"><div className="pool-stat-top"><div className={`pool-stat-icon ${tone}`}>{icon}</div><span className={tone}>{note}</span></div><p>{label}</p><strong>{value.toLocaleString("zh-CN")}</strong></div>;
 }
@@ -971,7 +1030,7 @@ function comparePoolOrder(left: AnyRecord, right: AnyRecord, key: string) {
     return Number(left.quoted_amount || left.charge_amount || left.amount || 0) - Number(right.quoted_amount || right.charge_amount || right.amount || 0);
   }
   if (key === "status") return compareText(orderStatusLight(left), orderStatusLight(right));
-  if (key === "assigned_to") return compareText(left.assigned_to || left.engineer_user, right.assigned_to || right.engineer_user);
+  if (key === "assigned_to") return compareText(left.engineer_name || left.assigned_to || left.engineer_user, right.engineer_name || right.assigned_to || right.engineer_user);
   if (key === "updated_at") return compareText(left.updated_at || left.created_at, right.updated_at || right.created_at);
   if (key === "created_at") return compareText(left.created_at, right.created_at);
   if (key === "pool_fault_names") return compareText(left.pool_fault_names || left.fault_names || left.fault_detail || left.fault_description, right.pool_fault_names || right.fault_names || right.fault_detail || right.fault_description);
@@ -996,7 +1055,7 @@ function PoolOrderRow({ row, onOpen, onDispatch, onCancel, onDelete }: { row: An
       <td><span className="pool-text-cell">{faultName || "--"}</span></td>
       <td><span className="pool-text-cell">{preInspectionAbnormal || "--"}</span></td>
       <td><StatusTag value={status} /></td>
-      <td>{String(row.assigned_to || row.engineer_user || "--")}</td>
+      <td>{String(row.engineer_name || row.assigned_to || row.engineer_user || "--")}</td>
       <td className="muted">{String(row.updated_at || row.created_at || "--")}</td>
       <td className="align-right"><b>{poolMoney(row.quoted_amount || row.charge_amount || row.amount || 0)}</b></td>
       <td className="align-center pool-action-cell"><div className="pool-row-actions">
@@ -1064,7 +1123,7 @@ function DispatchOrderModal({
         <QueryState loading={employeesQuery.isLoading} error={employeesQuery.error} />
         <AppTable
           rows={employees}
-          columns={[["name", "姓名"], ["username", "登录账号"], ["active_order_count", "挂单数量"], ["department", "所属部门"], ["skill_tags", "能力标签"], ["accepting_orders", "接单状态"]]}
+          columns={[["name", "姓名"], ["active_order_count", "挂单数量"], ["department", "所属部门"], ["skill_tags", "能力标签"], ["accepting_orders", "接单状态"]]}
           formatValue={(row, key) => {
             if (key === "skill_tags") return optionArray(row.skill_tags).join("、") || "-";
             if (key === "accepting_orders") return row.accepting_orders ? "开启" : "关闭";
@@ -1132,6 +1191,7 @@ function CreateRepairOrderModal({ notify, onClose, onCreated, open }: { notify: 
   const repairSkus = ((repairSkuQuery.data as AnyRecord[] | undefined) || []);
   const modelOptionsForCreate = deviceModels.map(row => String(row.model_name || "")).filter(Boolean);
   const selectedDeviceModel = deviceModels.find(row => String(row.model_name || "") === model);
+  const modelNumberChoices = deviceModelNumberOptions(deviceModels, selectedDeviceModel ? model : "");
   const colorChoices = selectedDeviceModel ? optionArray(selectedDeviceModel.colors) : [];
   const memoryChoices = selectedDeviceModel ? optionArray(selectedDeviceModel.capacities) : [];
   const customerOptions = ((customerSearchQuery.data as AnyRecord[] | undefined) || [])
@@ -1145,8 +1205,14 @@ function CreateRepairOrderModal({ notify, onClose, onCreated, open }: { notify: 
   const payableAmount = firstNumber(form.quoted_amount, quoted);
 
   function setCreateField(key: string, value: unknown) {
-    setForm(prev => ({ ...prev, [key]: value }));
-    if (key === "model") {
+    const matchedDeviceModel = key === "model_number" ? findDeviceModelByModelNumber(deviceModels, value) : null;
+    setForm(prev => {
+      const next = { ...prev, [key]: value };
+      if (key === "model" && prev.model !== value) next.model_number = "";
+      if (matchedDeviceModel) next.model = matchedDeviceModel.model_name || next.model;
+      return next;
+    });
+    if (key === "model" || (matchedDeviceModel && String(form.model || "") !== String(matchedDeviceModel.model_name || ""))) {
       setSelectedFaults([]);
       setFaultKeyword("");
     }
@@ -1192,6 +1258,7 @@ function CreateRepairOrderModal({ notify, onClose, onCreated, open }: { notify: 
       imei: row.imei || "",
       serial: row.serial || "",
       model: row.model || "",
+      model_number: row.model_number || "",
       memory: row.memory || row.storage || "",
       color: row.color || "",
       condition: row.condition || "",
@@ -1291,7 +1358,7 @@ function CreateRepairOrderModal({ notify, onClose, onCreated, open }: { notify: 
     const repairItems = selectedFaults;
     createMutation.mutate({
       machine_id: selectedMachine?.machine_id || null,
-      machine: selectedMachine?.machine_id ? null : machinePayload({ imei: form.imei, serial: form.serial, model: form.model, memory: form.memory, color: form.color, condition: form.condition, remark: "" }),
+      machine: selectedMachine?.machine_id ? null : machinePayload({ imei: form.imei, serial: form.serial, model: form.model, model_number: form.model_number, memory: form.memory, color: form.color, condition: form.condition, remark: "" }),
       customer_id: selectedCustomer?.customer_id || null,
       customer: selectedCustomer?.customer_id ? null : customerPayload({ customer_name: createCustomerName(), phone: form.phone, wechat: form.wechat, customer_type: form.customer_type || "", customer_remark: form.customer_remark }),
       fault_description: repairItems.map(row => String(row.fault_name || row.item_name || "维修故障")).join("、"),
@@ -1314,6 +1381,7 @@ function CreateRepairOrderModal({ notify, onClose, onCreated, open }: { notify: 
                 <OrderChoiceLine label="手机型号 *" value={form.model} editable options={modelOptionsForCreate} onChange={value => setCreateField("model", value)} />
                 <OrderEditableLine label="IMEI/序列号" value={form.imei} editable onFocus={() => { setMachineLookupAnchor("imei"); setMachineLookupOpen(hasTextValue(form.imei || form.serial)); }} onBlur={() => window.setTimeout(() => setMachineLookupOpen(false), 120)} onKeyDown={event => { if (["Enter", "Escape"].includes(event.key)) setMachineLookupOpen(false); }} onChange={value => setCreateField("imei", value)} />
                 {machineLookupOpen && <SuggestionList className={`machine-suggestions ${machineLookupAnchor === "imei" ? "lookup-anchor-right lookup-row-1" : "lookup-anchor-left lookup-row-2"}`} loading={machineSearchQuery.isLoading} rows={machineOptions} selectedId={selectedMachine?.machine_id} idKey="machine_id" primaryKey="model" secondaryKeys={["machine_no", "imei", "serial", "customer_name"]} onSelect={selectMachine} empty="没有找到已有机器" />}
+                <OrderChoiceLine label="设备编码" value={form.model_number} editable options={modelNumberChoices} onChange={value => setCreateField("model_number", value)} />
                 <OrderChoiceLine label="颜色" value={form.color} editable options={colorChoices} onChange={value => setCreateField("color", value)} />
               </div>
             </section>
@@ -1627,7 +1695,7 @@ function OrderDetailPage({
   const isOrderReadonly = isReadOnlyArchive || Boolean(order.readonly);
   const display = mode === "new" ? form : { ...order, ...form };
   const createdAt = String(order.created_at || order.opened_at || "保存后生成");
-  const owner = String(display.assigned_to || order.assigned_to || "未指派");
+  const owner = String(display.engineer_name || order.engineer_name || display.assigned_to || order.assigned_to || "未指派");
   const statusText = isReadOnlyArchive ? "已删除" : mode === "new" ? "待创建" : mode === "cancel" ? "取消确认" : orderStatusLight(order);
   const model = firstText(display.model, order.model);
   const colorCapacity = [firstText(display.color, order.color), firstText(display.memory, order.memory, order.capacity)].filter(Boolean).join(" / ");
@@ -1637,6 +1705,7 @@ function OrderDetailPage({
   const deviceDisplay = deviceEditing ? { ...display, ...deviceForm } : display;
   const customerDisplay = customerEditing ? { ...display, ...customerForm } : display;
   const deviceModel = deviceEditing ? controlledText(deviceForm, "model") : firstText(deviceDisplay.model);
+  const deviceModelNumber = deviceEditing ? controlledText(deviceForm, "model_number") : firstText(deviceDisplay.model_number);
   const deviceImei = deviceEditing ? controlledText(deviceForm, "imei") : firstText(deviceDisplay.imei, deviceDisplay.serial);
   const deviceColor = deviceEditing ? controlledText(deviceForm, "color") : firstText(deviceDisplay.color);
   const deviceMemory = deviceEditing ? controlledText(deviceForm, "memory") : firstText(deviceDisplay.memory, deviceDisplay.capacity);
@@ -1656,7 +1725,7 @@ function OrderDetailPage({
     ? firstNumber(form.quoted_amount, detailQuoted)
     : firstNumber(form.quoted_amount, order.quoted_amount, detailRows.length ? detailQuoted : incomeItems.reduce((sum, row) => sum + Number(row.amount || 0), 0));
   const inspections = ["屏幕显示", "触摸功能", "摄像头", "电池健康", "生物识别", "无线网络", "蜂窝网络", "音频模块", "指南针", "扬声器", "听筒", "充电"];
-  const inspectionItems = ["屏幕显示", "触摸功能", "前置摄像头", "后置摄像头", "电池健康", "生物识别", "无线网络", "蜂窝网络", "音频模块", "指南针", "扬声器", "听筒", "充电", "不开机", "软件系统", "重装调试", "其他异常"];
+  const inspectionItems = ["屏幕显示", "触摸功能", "前置摄像头", "后置摄像头", "电池健康", "生物识别", "无线网络", "蜂窝网络", "音频模块", "指南针", "扬声器", "听筒", "充电", "开机", "软件系统", "其他异常"];
   const canAddRepairItem = mode !== "new" && !isOrderReadonly && canModifyRepairItems(statusText);
   const historyOrders = (((timelineQuery.data?.repair_orders as AnyRecord[] | undefined) || []))
     .filter(row => String(row.repair_order_id) !== String(order.repair_order_id || orderId))
@@ -1664,7 +1733,10 @@ function OrderDetailPage({
   const photos = ((photosQuery.data as AnyRecord[] | undefined) || []);
   const prePhotos = photos.filter(row => row.stage === "pre");
   const postPhotos = photos.filter(row => row.stage === "post");
-  const combinedLogs = mode === "new" ? newOrderNoteLogs : events;
+  const combinedLogs = useMemo(() => [...(mode === "new" ? newOrderNoteLogs : events)].sort((left, right) => {
+    const timeOrder = String(right.created_at || "").localeCompare(String(left.created_at || ""));
+    return timeOrder || Number(right.event_id || 0) - Number(left.event_id || 0);
+  }), [events, mode, newOrderNoteLogs]);
   const visibleLogs = logsExpanded ? combinedLogs : combinedLogs.slice(0, 3);
   const customerOptions = ((customerSearchQuery.data as AnyRecord[] | undefined) || [])
     .filter(row => customerLookupAnchor === "phone" ? phoneMatches(row, customerLookupKeyword) : nameMatches(row, customerLookupKeyword))
@@ -1673,6 +1745,7 @@ function OrderDetailPage({
   const deviceModels = ((deviceModelsQuery.data as AnyRecord[] | undefined) || []);
   const deviceModelNames = deviceModels.length ? deviceModels.map(row => String(row.model_name || "")).filter(Boolean) : modelOptions;
   const selectedDeviceModel = deviceModels.find(row => String(row.model_name || "") === deviceModel);
+  const modelNumberChoices = deviceModelNumberOptions(deviceModels, selectedDeviceModel ? deviceModel : "");
   const colorChoices = selectedDeviceModel ? optionArray(selectedDeviceModel.colors) : uniqueStrings([colorOptions, ...deviceModels.map(row => optionArray(row.colors))]);
   const memoryChoices = selectedDeviceModel ? optionArray(selectedDeviceModel.capacities) : uniqueStrings([memoryOptions, ...deviceModels.map(row => optionArray(row.capacities))]);
   const persistedNotes = ((data.notes as AnyRecord[] | undefined) || []);
@@ -1680,7 +1753,7 @@ function OrderDetailPage({
   const visibleOrderNotes: AnyRecord[] = orderNotes.length ? orderNotes : [{ type: "内部备注", content: "客户要求尽量保留原厂原色原彩，维修后请务必同步写入数据。", readonly: true }, { type: "交付说明", content: "告知客户外壳磕碰处无法复原，仅保证屏幕功能完好。", readonly: true }];
   const currentOperator = String(currentUserQuery.data?.username || "当前用户");
   const currentPermissions = ((currentUserQuery.data?.permissions as string[] | undefined) || []);
-  const canDeleteOrder = currentPermissions.includes("repair_order:delete");
+  const canDeleteOrder = currentPermissions.includes("repair_order:delete") && statusText !== "待完单/收款";
   const materialHintRows = ((materialHintsQuery.data?.materials as AnyRecord[] | undefined) || []);
   const materialHintCost = materialHintRows.reduce((sum, row) => sum + Number(row.estimated_cost || 0), 0);
   const materialHintShortage = materialHintRows.reduce((sum, row) => sum + Number(row.shortage_qty || 0), 0);
@@ -1699,7 +1772,7 @@ function OrderDetailPage({
     let nextPreNote = "";
     let nextPostNote = "";
     savedInspections.forEach(row => {
-      const item = String(row.item || "");
+      const item = String(row.item || "") === "不开机" ? "开机" : String(row.item || "");
       const stage = String(row.stage || "");
       if (!item) return;
       if (stage === "pre") {
@@ -1776,6 +1849,7 @@ function OrderDetailPage({
           imei: payload.imei || "",
           serial: payload.serial || "",
           model: payload.model || order.model || "待补机型",
+          model_number: payload.model_number || "",
           memory: payload.memory || order.memory || "",
           color: payload.color || "",
           condition: payload.condition || order.condition || "",
@@ -1806,6 +1880,7 @@ function OrderDetailPage({
         method: "PUT",
         body: JSON.stringify({
           model: order.model || "待补机型",
+          model_number: order.model_number || "",
           current_status: order.current_status || "维修中",
           customer_id: payload.customer_id || order.customer_id || null,
           customer: {
@@ -1968,6 +2043,16 @@ function OrderDetailPage({
     },
     onError: error => notify(error instanceof Error ? error.message : "完结失败", true),
   });
+  const repairCompletedMutation = useMutation({
+    mutationFn: () => api<AnyRecord>(`/api/repair-orders/${order.repair_order_id || orderId}/workflow-action`, { method: "POST", body: JSON.stringify({ action: "repair_completed", remark: "维修完成，待完单/收款" }) }),
+    onSuccess: () => {
+      notify("维修已完成，订单进入待完单/收款阶段");
+      query.refetch();
+      queryClient.invalidateQueries({ queryKey: ["repair-workbench"] });
+      queryClient.invalidateQueries({ queryKey: ["repair-workbench-detail", orderId] });
+    },
+    onError: error => notify(error instanceof Error ? error.message : "标记维修完成失败", true),
+  });
   const deleteOrderMutation = useMutation({
     mutationFn: (payload: AnyRecord) => api<AnyRecord>(`/api/repair-orders/${order.repair_order_id || orderId}`, {
       method: "DELETE",
@@ -2033,8 +2118,11 @@ function OrderDetailPage({
   });
 
   function setField(key: string, value: unknown) {
+    const matchedDeviceModel = key === "model_number" ? findDeviceModelByModelNumber(deviceModels, value) : null;
     setForm(prev => {
       const next = { ...prev, [key]: value };
+      if (key === "model" && prev.model !== value) next.model_number = "";
+      if (matchedDeviceModel) next.model = matchedDeviceModel.model_name || next.model;
       if (["customer_name", "phone"].includes(key)) {
         setSelectedCustomer(null);
         updateCustomerLookup(key === "phone" ? "phone" : "name", value);
@@ -2053,13 +2141,20 @@ function OrderDetailPage({
     }
     setDeviceForm({
       model: firstText(order.model),
+      model_number: firstText(order.model_number),
       imei: firstText(order.imei, order.serial),
       color: firstText(order.color),
     });
     setDeviceEditing(true);
   }
   function setDeviceField(key: string, value: unknown) {
-    setDeviceForm(prev => ({ ...prev, [key]: value }));
+    const matchedDeviceModel = key === "model_number" ? findDeviceModelByModelNumber(deviceModels, value) : null;
+    setDeviceForm(prev => {
+      const next = { ...prev, [key]: value };
+      if (key === "model" && prev.model !== value) next.model_number = "";
+      if (matchedDeviceModel) next.model = matchedDeviceModel.model_name || next.model;
+      return next;
+    });
     if (["imei", "serial"].includes(key)) {
       setSelectedMachine(null);
       setMachineLookupAnchor(key === "serial" ? "serial" : "imei");
@@ -2202,6 +2297,7 @@ function OrderDetailPage({
       imei: row.imei || "",
       serial: row.serial || "",
       model: row.model || "",
+      model_number: row.model_number || "",
       memory: row.memory || row.storage || "",
       color: row.color || "",
       condition: row.condition || "",
@@ -2420,7 +2516,7 @@ function OrderDetailPage({
     }
     const payload: AnyRecord = {
       machine_id: selectedMachine?.machine_id || null,
-      machine: selectedMachine?.machine_id ? null : machinePayload({ imei: display.imei, serial: display.serial, model: display.model, memory: display.memory, color: display.color, condition: display.condition, remark: "" }),
+      machine: selectedMachine?.machine_id ? null : machinePayload({ imei: display.imei, serial: display.serial, model: display.model, model_number: display.model_number, memory: display.memory, color: display.color, condition: display.condition, remark: "" }),
       customer_id: selectedCustomer?.customer_id || null,
       customer: selectedCustomer?.customer_id ? null : customerPayload({ customer_name: display.customer_name, phone: display.phone, wechat: display.wechat, customer_type: display.customer_type, customer_remark: display.customer_remark }),
       fault_description: display.fault_description || "",
@@ -2469,7 +2565,8 @@ function OrderDetailPage({
       <section className="order-hero">
         <div><div className="order-heading-line"><h2>{mode === "new" ? "新建维修工单" : `工单: ${String(order.order_no || order.repair_order_id || orderId)}`}</h2><span className="order-status-pill">{statusText}</span></div><p>创建于 {createdAt} | 负责人: {owner}</p></div>
         <div className="order-hero-actions">
-          {mode !== "new" && !isOrderReadonly && <button type="button" onClick={() => completeOrderMutation.mutate()} disabled={completeOrderMutation.isPending}>完结订单</button>}
+          {mode !== "new" && !isOrderReadonly && statusText === "维修中" && <button type="button" onClick={() => repairCompletedMutation.mutate()} disabled={repairCompletedMutation.isPending}>维修完成</button>}
+          {mode !== "new" && !isOrderReadonly && statusText === "待完单/收款" && <button type="button" onClick={() => completeOrderMutation.mutate()} disabled={completeOrderMutation.isPending}>完结订单</button>}
           {mode === "view" && !isOrderReadonly && canModifyOrderStatus(statusText) && <button type="button" onClick={() => onModeChange("cancel")}><CirclePlus size={20} />取消订单</button>}
           {mode === "edit" && <button type="button" onClick={() => editMutation.mutate(form)} disabled={editMutation.isPending}><Edit3 size={20} />保存修改</button>}
           {mode === "edit" && canDeleteOrder && !isOrderReadonly && <button type="button" className="danger-action" onClick={() => setDeleteConfirmOpen(true)} disabled={deleteOrderMutation.isPending}><Trash2 size={20} />删除订单</button>}
@@ -2498,6 +2595,7 @@ function OrderDetailPage({
               <OrderChoiceLine label="手机型号" value={deviceModel} editable={mode === "new" || deviceEditing} options={deviceModelNames} onChange={v => deviceEditing ? setDeviceField("model", v) : setField("model", v)} />
               <OrderEditableLine label="IMEI/序列号" value={deviceImei} editable={mode === "new" || deviceEditing} onFocus={() => { if (machineLookupEnabled) { setMachineLookupAnchor("imei"); setMachineLookupOpen(hasTextValue(machineLookupSource.imei || machineLookupSource.serial)); } }} onBlur={() => { if (machineLookupEnabled) window.setTimeout(() => setMachineLookupOpen(false), 120); }} onKeyDown={event => { if (machineLookupEnabled && ["Enter", "Escape"].includes(event.key)) setMachineLookupOpen(false); }} onChange={v => { deviceEditing ? setDeviceField("imei", v) : setField("imei", v); }} />
             {machineLookupEnabled && machineLookupOpen && <SuggestionList className={`machine-suggestions ${machineLookupAnchor === "imei" ? "lookup-anchor-right lookup-row-1" : "lookup-anchor-left lookup-row-2"}` } loading={machineSearchQuery.isLoading} rows={machineOptions} selectedId={selectedMachine?.machine_id} idKey="machine_id" primaryKey="model" secondaryKeys={["machine_no", "imei", "serial", "customer_name"]} onSelect={selectMachine} empty="没有找到已有机器" />}
+              <OrderChoiceLine label="设备编码" value={deviceModelNumber} editable={mode === "new" || deviceEditing} options={modelNumberChoices} onChange={v => deviceEditing ? setDeviceField("model_number", v) : setField("model_number", v)} />
               <OrderChoiceLine label="颜色" value={deviceColor} editable={mode === "new" || deviceEditing} options={colorChoices} onChange={v => deviceEditing ? setDeviceField("color", v) : setField("color", v)} />
             </div>
           </section>
@@ -2730,8 +2828,8 @@ function FlowOrderDetailPage({
       if (payload.quoted_amount !== "" && Number(payload.quoted_amount || 0) !== Number(order.quoted_amount || 0)) {
         tasks.push(api(`/api/repair-orders/${orderId}/price`, { method: "POST", body: JSON.stringify({ quoted_amount: Number(payload.quoted_amount || 0), remark: payload.remark || "" }) }));
       }
-      if (order.machine_id && (payload.model || payload.imei || payload.serial || payload.memory || payload.color || payload.condition)) {
-        tasks.push(api(`/api/machines/${order.machine_id}`, { method: "PUT", body: JSON.stringify({ imei: payload.imei ?? order.imei ?? "", serial: payload.serial ?? order.serial ?? "", model: payload.model ?? order.model ?? "", memory: payload.memory ?? order.memory ?? "", color: payload.color ?? order.color ?? "", condition: payload.condition ?? order.condition ?? "", current_status: order.current_status || "维修中", customer_id: order.customer_id || null }) }));
+      if (order.machine_id && (payload.model || payload.model_number || payload.imei || payload.serial || payload.memory || payload.color || payload.condition)) {
+        tasks.push(api(`/api/machines/${order.machine_id}`, { method: "PUT", body: JSON.stringify({ imei: payload.imei ?? order.imei ?? "", serial: payload.serial ?? order.serial ?? "", model: payload.model ?? order.model ?? "", model_number: payload.model_number ?? order.model_number ?? "", memory: payload.memory ?? order.memory ?? "", color: payload.color ?? order.color ?? "", condition: payload.condition ?? order.condition ?? "", current_status: order.current_status || "维修中", customer_id: order.customer_id || null }) }));
       }
       if (payload.repair_item_name) {
         tasks.push(api(`/api/repair-orders/${orderId}/items`, { method: "POST", body: JSON.stringify({ item_name: payload.repair_item_name, quantity: Number(payload.repair_item_qty || 1), cost_amount: Number(payload.repair_item_cost || 0), charge_amount: Number(payload.repair_item_charge || 0), remark: payload.remark || "" }) }));
@@ -2772,7 +2870,7 @@ function FlowOrderDetailPage({
     }
     createMutation.mutate({
       machine_id: null,
-      machine: machinePayload({ imei: display.imei || display.serial, serial: "", model: display.model, memory: "", color: display.color, condition: "" }),
+      machine: machinePayload({ imei: display.imei || display.serial, serial: "", model: display.model, model_number: display.model_number, memory: "", color: display.color, condition: "" }),
       customer: customerPayload({ customer_name: display.customer_name, phone: display.phone }),
       fault_description: display.fault_description || "",
       remark: display.remark || "",
@@ -3144,7 +3242,7 @@ function LegacyOrderDetailPage({ orderId, notify, onBack }: { orderId: number | 
   const cost = Number(order.cost_amount || costItems.reduce((sum, row) => sum + Number(row.total_cost || row.unit_cost || 0), 0));
   const paid = Number(order.paid_amount || payments.reduce((sum, row) => sum + Number(row.amount || 0), 0));
   const detailRows = repairItems.length ? repairItems : costItems;
-  const inspections = ["屏幕显示", "触摸功能", "前置摄像头", "后置摄像头", "电池健康", "生物识别", "无线网络", "蜂窝网络", "音频模块", "指南针", "扬声器", "听筒", "充电", "不开机", "软件系统", "重装调试", "其他异常"];
+  const inspections = ["屏幕显示", "触摸功能", "前置摄像头", "后置摄像头", "电池健康", "生物识别", "无线网络", "蜂窝网络", "音频模块", "指南针", "扬声器", "听筒", "充电", "开机", "软件系统", "其他异常"];
   const timeline = [
     { title: "工单创建", note: `${createdAt} | 客户前台`, done: true },
     { title: "检测试机", note: "2023-10-27 15:10 | 工程师 李四", done: true },
@@ -3353,6 +3451,7 @@ const customerMachineFields = [
   { name: "imei", label: "IMEI", placeholder: "IMEI" },
   { name: "serial", label: "序列号", placeholder: "序列号" },
   { name: "model", label: "机型", required: true, options: modelOptions.map(value => ({ value, label: value })) },
+  { name: "model_number", label: "设备编码", placeholder: "A2377" },
   { name: "memory", label: "内存", placeholder: "内存" },
   { name: "color", label: "颜色", placeholder: "颜色" },
   { name: "condition", label: "机况", placeholder: "机况" },
@@ -3370,7 +3469,7 @@ function RecycleOpenPage({ notify }: { notify: (message: string, error?: boolean
 }
 
 function machinePayload(data: AnyRecord) {
-  return { imei: data.imei || "", serial: data.serial || "", model: data.model, memory: data.memory || "", color: data.color || "", condition: data.condition || "", remark: data.remark || "" };
+  return { imei: data.imei || "", serial: data.serial || "", model: data.model, model_number: data.model_number || "", memory: data.memory || "", color: data.color || "", condition: data.condition || "", remark: data.remark || "" };
 }
 
 function customerPayload(data: AnyRecord) {
@@ -3649,7 +3748,7 @@ function ReportsPage() {
 
 function EmployeeSettings({ notify }: { notify: (message: string, error?: boolean) => void }) {
   const queryClient = useQueryClient();
-  const emptyEmployeeForm = { position: "工程师", department: "维修部", open_order_count: 0, accepting_orders: "true" };
+  const emptyEmployeeForm = { position: "工程师", department: "维修部", open_order_count: 0, accepting_orders: "true", role: "staff", enabled: "true", password: "" };
   const employeeSkillTags = ["屏幕维修", "主板维修", "外配维修", "软件故障"];
   const [employeeForm, setEmployeeForm] = useState<AnyRecord>(emptyEmployeeForm);
   const [formOpen, setFormOpen] = useState(false);
@@ -3657,6 +3756,7 @@ function EmployeeSettings({ notify }: { notify: (message: string, error?: boolea
   const [departmentFilter, setDepartmentFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const query = useQuery({ queryKey: ["employees-settings", keyword, departmentFilter, statusFilter], queryFn: () => api<AnyRecord[]>(`/api/employees?q=${encodeURIComponent(keyword)}&department=${encodeURIComponent(departmentFilter)}&accepting_orders=${encodeURIComponent(statusFilter)}`) });
+  const roles = useQuery({ queryKey: ["roles-for-employees"], queryFn: () => api<AnyRecord[]>("/api/roles") });
   const mutation = useMutation({
     mutationFn: (payload: AnyRecord) => api<AnyRecord>("/api/employees", {
       method: "POST",
@@ -3665,6 +3765,7 @@ function EmployeeSettings({ notify }: { notify: (message: string, error?: boolea
         open_order_count: Number(payload.open_order_count || 0),
         skill_tags: optionArray(payload.skill_tags).filter(tag => employeeSkillTags.includes(tag)),
         accepting_orders: payload.accepting_orders !== false && payload.accepting_orders !== "false",
+        enabled: payload.enabled !== false && payload.enabled !== "false",
       }),
     }),
     onSuccess: () => {
@@ -3674,6 +3775,11 @@ function EmployeeSettings({ notify }: { notify: (message: string, error?: boolea
       queryClient.invalidateQueries({ queryKey: ["employees-settings"] });
     },
     onError: error => notify(error instanceof Error ? error.message : "保存失败", true),
+  });
+  const accountMutation = useMutation({
+    mutationFn: ({ path, payload }: { path: string; payload: AnyRecord }) => api(path, { method: "POST", body: JSON.stringify(payload) }),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["employees-settings"] }); notify("账号设置已更新"); },
+    onError: error => notify(error instanceof Error ? error.message : "账号操作失败", true),
   });
   const allRows = query.data || [];
   const departmentOptions = useMemo(() => uniqueStrings(allRows.map(row => row.department)).map(value => ({ value, label: value })), [allRows]);
@@ -3689,6 +3795,8 @@ function EmployeeSettings({ notify }: { notify: (message: string, error?: boolea
   function openEditEmployeeForm(row: AnyRecord) {
     setEmployeeForm({
       ...row,
+      role: row.user_role || "staff",
+      enabled: row.account_enabled ? "true" : "false",
       accepting_orders: row.accepting_orders ? "true" : "false",
       skill_tags: optionArray(row.skill_tags).filter(tag => employeeSkillTags.includes(tag)),
     });
@@ -3714,6 +3822,10 @@ function EmployeeSettings({ notify }: { notify: (message: string, error?: boolea
     }
     if (!hasTextValue(employeeForm.department)) {
       notify("请填写所属部门", true);
+      return;
+    }
+    if (!employeeForm.employee_id && (!hasTextValue(employeeForm.username) || String(employeeForm.password || "").length < 8)) {
+      notify("新增员工必须填写账号和至少 8 位临时密码", true);
       return;
     }
     mutation.mutate(employeeForm);
@@ -3761,7 +3873,7 @@ function EmployeeSettings({ notify }: { notify: (message: string, error?: boolea
             name: row => <b className="device-model-brand">{String(row.name || "-")}</b>,
             skill_tags: row => <OptionPreview values={optionArray(row.skill_tags)} />,
           }}
-          actions={{ render: row => <AppButton onClick={() => openEditEmployeeForm(row)}><Edit3 size={15} />编辑</AppButton> }}
+          actions={{ render: row => <><AppButton onClick={() => openEditEmployeeForm(row)}><Edit3 size={15} />编辑</AppButton><AppButton onClick={() => { const password = window.prompt("输入至少 8 位的临时密码"); if (password && password.length >= 8 && window.confirm("确认重置该员工密码？")) accountMutation.mutate({ path: `/api/employees/${row.employee_id}/reset-password`, payload: { password } }); }}>重置密码</AppButton><AppButton onClick={() => { const enabled = !Boolean(row.account_enabled); if (window.confirm(`确认${enabled ? "启用" : "停用"}该账号？`)) accountMutation.mutate({ path: `/api/employees/${row.employee_id}/account-status`, payload: { enabled } }); }}>{row.account_enabled ? "停用账号" : "启用账号"}</AppButton></> }}
         />
       </section>
 
@@ -3775,8 +3887,11 @@ function EmployeeSettings({ notify }: { notify: (message: string, error?: boolea
             </label>
             <label>
               <span>绑定登录账号</span>
-              <Input value={controlledText(employeeForm, "username")} onChange={event => setEmployeeField("username", event.target.value)} placeholder="例如 engineer" />
+              <Input disabled={Boolean(employeeForm.employee_id)} value={controlledText(employeeForm, "username")} onChange={event => setEmployeeField("username", event.target.value)} placeholder="例如 engineer" />
             </label>
+            {!employeeForm.employee_id && <label><span>临时密码</span><Input.Password value={controlledText(employeeForm, "password")} onChange={event => setEmployeeField("password", event.target.value)} placeholder="至少 8 位" /></label>}
+            <label><span>角色</span><Select value={controlledText(employeeForm, "role", "staff")} onChange={value => setEmployeeField("role", value)} options={(roles.data || []).map(row => ({ value: String(row.role_key), label: String(row.name) }))} /></label>
+            <label><span>账号状态</span><Select value={String(employeeForm.enabled ?? "true")} onChange={value => setEmployeeField("enabled", value)} options={[{ value: "true", label: "启用" }, { value: "false", label: "停用" }]} /></label>
             <label>
               <span>职位</span>
               <Input value={controlledText(employeeForm, "position", "工程师")} onChange={event => setEmployeeField("position", event.target.value)} placeholder="工程师" />
@@ -4093,8 +4208,23 @@ function RepairSkuSettings({ notify }: { notify: (message: string, error?: boole
   );
 }
 
+function RoleSettings({ notify }: { notify: (message: string, error?: boolean) => void }) {
+  const queryClient = useQueryClient();
+  const roles = useQuery({ queryKey: ["roles"], queryFn: () => api<AnyRecord[]>("/api/roles") });
+  const catalog = useQuery({ queryKey: ["permission-catalog"], queryFn: () => api<AnyRecord>("/api/permission-catalog") });
+  const [editing, setEditing] = useState<AnyRecord | null>(null);
+  const save = useMutation({
+    mutationFn: (payload: AnyRecord) => api(`/api/roles${payload.isNew ? "" : `/${payload.role_key}`}`, { method: payload.isNew ? "POST" : "PUT", body: JSON.stringify({ role_key: payload.role_key, name: payload.name, permissions: payload.permissions }) }),
+    onSuccess: () => { setEditing(null); queryClient.invalidateQueries({ queryKey: ["roles"] }); notify("角色权限已保存"); },
+    onError: error => notify(error instanceof Error ? error.message : "保存失败", true),
+  });
+  const groups = Object.entries(catalog.data || {}).reduce<Record<string, string[]>>((out, [key, group]) => { (out[String(group)] ||= []).push(key); return out; }, {});
+  return <div className="stack"><Panel title="权限管理" note="内置角色不可删除；管理员拥有全部权限。" action={<AppButton type="primary" onClick={() => setEditing({ isNew: true, role_key: "", name: "", permissions: [] })}>新增角色</AppButton>}><QueryState loading={roles.isLoading || catalog.isLoading} error={roles.error || catalog.error} /><AppTable rows={roles.data || []} columns={[["name", "角色"], ["role_key", "标识"], ["employee_count", "员工数"], ["permissions", "权限数"]]} formatValue={(row, key) => key === "permissions" ? String(optionArray(row.permissions).length) : displayValue(row, key)} isStatusKey={() => false} actions={{ render: row => <AppButton onClick={() => setEditing({ ...row, permissions: optionArray(row.permissions) })}>编辑权限</AppButton> }} /></Panel><AppModal open={Boolean(editing)} onClose={() => setEditing(null)} width={760}>{editing && <form className="app-form-section" onSubmit={event => { event.preventDefault(); save.mutate(editing); }}><div className="app-form-section-header"><h2>角色权限</h2></div><div className="app-form-section-grid"><label><span>角色名称</span><Input value={String(editing.name || "")} onChange={event => setEditing({ ...editing, name: event.target.value })} /></label>{Boolean(editing.isNew) && <label><span>角色标识</span><Input value={String(editing.role_key || "")} onChange={event => setEditing({ ...editing, role_key: event.target.value })} placeholder="例如 warehouse_manager" /></label>}<div className="employee-skill-field wide"><span>权限</span>{(Object.entries(groups) as Array<[string, string[]]>).map(([group, permissions]) => <div key={group}><b>{group}</b><div className="employee-skill-toggle-group">{permissions.map(permission => <button type="button" key={permission} className={optionArray(editing.permissions).includes(permission) ? "active" : ""} onClick={() => { const current = optionArray(editing.permissions); setEditing({ ...editing, permissions: current.includes(permission) ? current.filter(value => value !== permission) : [...current, permission] }); }}>{permission}</button>)}</div></div>)}</div></div><div className="app-form-section-actions"><AppButton htmlType="submit" type="primary" loading={save.isPending}>保存</AppButton></div></form>}</AppModal></div>;
+}
+
 function AuditPage({ notify, section }: { notify: (message: string, error?: boolean) => void; section: ViewKey }) {
   if (section === "settingsEmployees") return <EmployeeSettings notify={notify} />;
+  if (section === "settingsRoles") return <RoleSettings notify={notify} />;
   if (section === "settingsDeviceModels") return <DeviceModelSettings notify={notify} />;
   if (section === "settingsRepairSkus") return <RepairSkuSettings notify={notify} />;
   const query = useQuery({ queryKey: ["audit"], queryFn: () => api<AnyRecord[]>("/api/audit-logs") });

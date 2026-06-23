@@ -5,6 +5,7 @@ import sqlite3
 from pathlib import Path
 
 from .auth import hash_password
+from .models import Role
 
 
 SCHEMA = """
@@ -132,6 +133,7 @@ CREATE TABLE IF NOT EXISTS machines (
     imei TEXT UNIQUE,
     serial TEXT NOT NULL DEFAULT '',
     model TEXT NOT NULL,
+    model_number TEXT NOT NULL DEFAULT '',
     memory TEXT NOT NULL DEFAULT '',
     color TEXT NOT NULL DEFAULT '',
     condition TEXT NOT NULL DEFAULT '',
@@ -750,6 +752,8 @@ def migrate(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_member_no ON customers(member_no)")
     seed_users(conn)
     seed_employees(conn)
+    seed_access_control(conn)
+    normalize_employee_assignments(conn)
     seed_device_models(conn)
     seed_repair_skus(conn)
     backfill_material_units(conn)
@@ -758,6 +762,10 @@ def migrate(conn: sqlite3.Connection) -> None:
 
 def ensure_columns(conn: sqlite3.Connection) -> None:
     columns: dict[str, list[tuple[str, str]]] = {
+        "users": [
+            ("employee_id", "INTEGER"), ("enabled", "INTEGER NOT NULL DEFAULT 1"),
+            ("must_change_password", "INTEGER NOT NULL DEFAULT 0"), ("session_version", "INTEGER NOT NULL DEFAULT 1"),
+        ],
         "customers": [
             ("member_no", "TEXT NOT NULL DEFAULT ''"),
             ("gender", "TEXT NOT NULL DEFAULT ''"),
@@ -765,6 +773,9 @@ def ensure_columns(conn: sqlite3.Connection) -> None:
             ("source", "TEXT NOT NULL DEFAULT ''"),
             ("birthday", "TEXT NOT NULL DEFAULT ''"),
             ("last_contact_at", "TEXT NOT NULL DEFAULT ''"),
+        ],
+        "machines": [
+            ("model_number", "TEXT NOT NULL DEFAULT ''"),
         ],
         "repair_orders": [
             ("order_no", "TEXT"),
@@ -872,6 +883,31 @@ def ensure_columns(conn: sqlite3.Connection) -> None:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
 
 
+def seed_access_control(conn: sqlite3.Connection) -> None:
+    conn.executescript("""
+    CREATE TABLE IF NOT EXISTS roles (role_key TEXT PRIMARY KEY, name TEXT NOT NULL, is_builtin INTEGER NOT NULL DEFAULT 0);
+    CREATE TABLE IF NOT EXISTS role_permissions (role_key TEXT NOT NULL, permission TEXT NOT NULL, PRIMARY KEY(role_key, permission));
+    CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, username TEXT NOT NULL, session_version INTEGER NOT NULL, expires_at TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+    CREATE INDEX IF NOT EXISTS idx_sessions_username ON sessions(username);
+    """)
+    from .auth import PERMISSIONS
+    labels = {"admin": "管理员", "boss": "老板", "frontdesk": "前台", "engineer": "工程师", "staff": "员工", "finance": "财务"}
+    for key, label in labels.items():
+        conn.execute("INSERT OR IGNORE INTO roles(role_key,name,is_builtin) VALUES(?,?,1)", (key, label))
+        existing = conn.execute("SELECT COUNT(*) AS n FROM role_permissions WHERE role_key=?", (key,)).fetchone()["n"]
+        if not existing:
+            conn.executemany("INSERT INTO role_permissions(role_key,permission) VALUES(?,?)", [(key, p) for p in PERMISSIONS[Role(key)]])
+    # Keep every historical user linked to a stable employee record.
+    for user in conn.execute("SELECT username, role FROM users").fetchall():
+        row = conn.execute("SELECT employee_id FROM employees WHERE username=?", (user["username"],)).fetchone()
+        if not row:
+            cur = conn.execute("INSERT INTO employees(username,name,position,department,skill_tags_json,accepting_orders,remark) VALUES(?,?,?,?,?,0,?)", (user["username"], user["username"], "系统用户", "系统", "[]", "系统迁移员工档案"))
+            employee_id = cur.lastrowid
+        else:
+            employee_id = row["employee_id"]
+        conn.execute("UPDATE users SET employee_id=? WHERE username=?", (employee_id, user["username"]))
+
+
 def backfill_customer_member_no(conn: sqlite3.Connection) -> None:
     rows = conn.execute(
         "SELECT customer_id FROM customers WHERE member_no = '' OR member_no IS NULL ORDER BY customer_id"
@@ -913,14 +949,34 @@ def seed_employees(conn: sqlite3.Connection) -> None:
             """
             INSERT INTO employees
             (username, name, position, department, open_order_count, skill_tags_json, accepting_orders, remark)
-            VALUES (?, ?, ?, ?, 0, ?, ?, '系统默认员工档案')
-            ON CONFLICT(name, position, department) DO UPDATE SET
-                username=CASE WHEN employees.username='' THEN excluded.username ELSE employees.username END,
-                skill_tags_json=CASE WHEN employees.skill_tags_json='[]' THEN excluded.skill_tags_json ELSE employees.skill_tags_json END,
-                accepting_orders=excluded.accepting_orders,
-                updated_at=CURRENT_TIMESTAMP
+            SELECT ?, ?, ?, ?, 0, ?, ?, '系统默认员工档案'
+            WHERE NOT EXISTS (SELECT 1 FROM employees WHERE username=?)
             """,
-            (username, name, position, department, json.dumps(skill_tags, ensure_ascii=False), accepting_orders),
+            (username, name, position, department, json.dumps(skill_tags, ensure_ascii=False), accepting_orders, username),
+        )
+
+
+def normalize_employee_assignments(conn: sqlite3.Connection) -> None:
+    """Convert legacy employee-name assignments to their login usernames."""
+    for table in ("repair_orders", "machines"):
+        conn.execute(
+            f"""
+            UPDATE {table}
+            SET assigned_to=(
+                SELECT MIN(e.username)
+                FROM employees e
+                WHERE e.name={table}.assigned_to AND e.username<>''
+            )
+            WHERE assigned_to<>''
+              AND assigned_to NOT IN (SELECT username FROM users)
+              AND EXISTS (
+                  SELECT 1
+                  FROM employees e
+                  WHERE e.name={table}.assigned_to AND e.username<>''
+                  GROUP BY e.name
+                  HAVING COUNT(DISTINCT e.username)=1
+              )
+            """
         )
 
 

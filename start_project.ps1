@@ -4,7 +4,7 @@ param(
 
     [int]$Port = 8088,
 
-    [string]$HostName = "127.0.0.1",
+    [string]$HostName = "0.0.0.0",
 
     [string]$DatabasePath = "",
 
@@ -110,13 +110,18 @@ function Start-App {
             Write-Host "  $errFile"
             exit 1
         }
-        Write-Host "Service started: http://$TargetHost`:$TargetPort/"
+        $browserHost = if ($TargetHost -eq "0.0.0.0" -or $TargetHost -eq "::") { "127.0.0.1" } else { $TargetHost }
+        Write-Host "Service started: http://$browserHost`:$TargetPort/"
+        if ($TargetHost -eq "0.0.0.0" -or $TargetHost -eq "::") {
+            Write-Host "LAN access: http://<this-computer-LAN-IP>:$TargetPort/"
+        }
         Write-Host "Database: $DatabasePath"
         Write-Host "Log: $logFile"
     }
 
     if (-not $NoBrowser) {
-        Start-Process "http://$TargetHost`:$TargetPort/"
+        $browserHost = if ($TargetHost -eq "0.0.0.0" -or $TargetHost -eq "::") { "127.0.0.1" } else { $TargetHost }
+        Start-Process "http://$browserHost`:$TargetPort/"
     }
 }
 

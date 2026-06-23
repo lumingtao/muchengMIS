@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compactPageItems, firstText, maskCode, maskPhone, repairBillHeaders, splitHonorificName, toRepairBillExportRow } from "./App";
+import { compactPageItems, firstText, maskCode, maskPhone, repairBillHeaders, repairMonthlySummaryValues, splitHonorificName, toRepairBillExportRow } from "./App";
 
 describe("repair pool helpers", () => {
   it("builds compact pagination items around the current page", () => {
@@ -27,6 +27,11 @@ describe("repair pool helpers", () => {
     expect(firstText("", null, undefined)).toBe("");
     expect(firstText("", "869123456789012")).toBe("869123456789012");
     expect(firstText("")).toBe("");
+  });
+
+  it("uses the dedicated repair monthly summary rather than payment-list totals", () => {
+    expect(repairMonthlySummaryValues({ confirmed_revenue: 680, net_profit: 255 })).toEqual({ revenue: 680, netProfit: 255 });
+    expect(repairMonthlySummaryValues(undefined)).toEqual({ revenue: 0, netProfit: 0 });
   });
 
   it("maps filtered repair pool rows to the repair bill template columns", () => {

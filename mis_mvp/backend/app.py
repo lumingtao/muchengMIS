@@ -4,7 +4,10 @@ from contextlib import asynccontextmanager
 import re
 from typing import Callable
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, Cookie
+from datetime import datetime, timedelta, timezone
+from hashlib import sha256
+from secrets import token_urlsafe
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -16,7 +19,7 @@ from .models import (
     CustomerInteractionUpdateInput,
     DeviceModelInput,
     EmployeeInput,
-    LoginInput,
+    LoginInput, PasswordChangeInput, PasswordResetInput, AccountStatusInput, RoleInput, RoleUpdateInput,
     MachineInput,
     MachineNoteInput,
     MachineUpdateInput,
@@ -96,9 +99,22 @@ def get_service():
         conn.close()
 
 
-def current_user(x_user: str = Header(default="admin"), service: MisService = Depends(get_service)) -> User:
+SESSION_COOKIE = "mis_session"
+
+
+def current_user(request: Request, mis_session: str | None = Cookie(default=None), service: MisService = Depends(get_service)) -> User:
     try:
-        return service.get_user(x_user)
+        if not mis_session:
+            raise BusinessError("请先登录")
+        session = service.repo.get_session(sha256(mis_session.encode("utf-8")).hexdigest())
+        if not session or not session.get("enabled"):
+            raise BusinessError("登录已失效")
+        account = service.repo.get_user(str(session["username"])) or {}
+        if int(session["session_version"]) != int(account.get("session_version", -1)):
+            raise BusinessError("登录已失效")
+        if account.get("must_change_password") and request.url.path not in {"/api/me/password", "/api/logout", "/api/me"}:
+            raise HTTPException(status_code=403, detail="请先修改临时密码")
+        return service.get_user(str(session["username"]))
     except BusinessError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 
@@ -158,13 +174,59 @@ def index():
 
 
 @app.post("/api/login")
-def login(data: LoginInput, service: MisService = Depends(get_service)):
-    return endpoint(lambda: service.login(data))
+def login(data: LoginInput, response: Response, service: MisService = Depends(get_service)):
+    result = endpoint(lambda: service.login(data))
+    raw_token = token_urlsafe(32)
+    account = service.repo.get_user(result["username"]) or {}
+    expires = datetime.now(timezone.utc) + timedelta(hours=8)
+    service.repo.create_session(sha256(raw_token.encode("utf-8")).hexdigest(), result["username"], int(account.get("session_version", 1)), expires.strftime("%Y-%m-%d %H:%M:%S"))
+    service.conn.commit()
+    response.set_cookie(SESSION_COOKIE, raw_token, httponly=True, samesite="lax", max_age=8 * 60 * 60, secure=False)
+    return result
+
+
+@app.post("/api/logout")
+def logout(response: Response, mis_session: str | None = Cookie(default=None), service: MisService = Depends(get_service)):
+    if mis_session:
+        service.repo.delete_session(sha256(mis_session.encode("utf-8")).hexdigest())
+        service.conn.commit()
+    response.delete_cookie(SESSION_COOKIE)
+    return {"logged_out": True}
 
 
 @app.get("/api/me")
 def me(user: User = Depends(current_user), service: MisService = Depends(get_service)):
     return endpoint(lambda: service.user_profile(user))
+
+
+@app.post("/api/me/password")
+def change_my_password(data: PasswordChangeInput, user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.change_password(user, data))
+
+
+@app.get("/api/roles")
+def roles(user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.roles(user))
+
+
+@app.get("/api/permission-catalog")
+def permission_catalog(user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.permission_catalog(user))
+
+
+@app.post("/api/roles")
+def create_role(data: RoleInput, user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.create_role(user, data))
+
+
+@app.put("/api/roles/{role_key}")
+def update_role(role_key: str, data: RoleUpdateInput, user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.update_role(user, role_key, data))
+
+
+@app.delete("/api/roles/{role_key}")
+def delete_role(role_key: str, replacement_role: str = Query(...), user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.delete_role(user, role_key, replacement_role))
 
 
 @app.post("/api/purchases")
@@ -246,6 +308,11 @@ def employees(
     service: MisService = Depends(get_service),
 ):
     return endpoint(lambda: service.list_employees(user, keyword=q, department=department, accepting_orders=accepting_orders))
+
+
+@app.get("/api/dispatch-engineers")
+def dispatch_engineers(user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.list_dispatch_engineers(user))
 
 
 @app.get("/api/repair-workbench")
@@ -561,6 +628,16 @@ def upsert_employee(data: EmployeeInput, user: User = Depends(current_user), ser
     return endpoint(lambda: service.upsert_employee(user, data))
 
 
+@app.post("/api/employees/{employee_id}/reset-password")
+def reset_employee_password(employee_id: int, data: PasswordResetInput, user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.reset_employee_password(user, employee_id, data))
+
+
+@app.post("/api/employees/{employee_id}/account-status")
+def employee_account_status(employee_id: int, data: AccountStatusInput, user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.set_employee_account_status(user, employee_id, data))
+
+
 @app.post("/api/device-models/sync/apple")
 def sync_apple_device_models(user: User = Depends(current_user), service: MisService = Depends(get_service)):
     return endpoint(lambda: service.sync_apple_device_models(user))
@@ -694,6 +771,11 @@ def create_payment(data: PaymentInput, user: User = Depends(current_user), servi
 @app.get("/api/payments")
 def payments(user: User = Depends(current_user), service: MisService = Depends(get_service)):
     return endpoint(lambda: service.list_payments(user))
+
+
+@app.get("/api/dashboard/repair-monthly-summary")
+def repair_monthly_summary(user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.repair_monthly_financial_summary(user))
 
 
 @app.get("/api/machine-reports")
