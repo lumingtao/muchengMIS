@@ -28,6 +28,7 @@ import {
   ArrowLeft,
   BadgeCheck,
   Camera,
+  Calendar,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
@@ -42,8 +43,9 @@ import {
   Trash2,
   UserPlus,
   Users,
+  X,
 } from "lucide-react";
-import { AnyRecord, api, clearStoredUser, formPayload, getStoredUser, setStoredUser } from "./api";
+import { AnyRecord, ApiError, api, clearStoredUser, formPayload, getStoredUser, setStoredUser } from "./api";
 import { AppButton } from "./components/actions/AppButton";
 import { AppTable } from "./components/data/AppTable";
 import { QueryState as AntdQueryState } from "./components/data/QueryState";
@@ -58,7 +60,7 @@ import { WarehousePage as WarehouseManagementPage } from "./pages/warehouse/Ware
 type ViewKey = "dashboard" | "repairPool" | "orderDetail" | "recyclePool" | "repair" | "recycle" | "warehouse" | "warehouseMaterials" | "warehouseBatches" | "warehouseUnits" | "warehouseRequests" | "warehouseReturns" | "warehouseCounts" | "warehouseMovements" | "warehouseBasics" | "inventory" | "sales" | "customers" | "payments" | "reports" | "audit" | "settingsEmployees" | "settingsRoles" | "settingsDeviceModels" | "settingsRepairSkus";
 type OrderMode = "new" | "view" | "edit" | "cancel";
 type SortState = { key: string; direction: "asc" | "desc" };
-type TodayFilterMode = "none" | "created" | "completed";
+type RepairPoolDateMode = "created" | "completed";
 
 const REPAIR_POOL_ALL_STATUS = "全部状态";
 const REPAIR_POOL_STATUS_FILTERS = [REPAIR_POOL_ALL_STATUS, "待指派", "维修中", "待完单/收款", "已完结", "已取消", "已删除"];
@@ -311,19 +313,29 @@ export function repairPoolDateDisplay(value: unknown) {
   return normalizeDateOnly(value) || "--";
 }
 
-export function isRepairPoolRowInDateRange(row: AnyRecord, range: [string, string]) {
-  const [startDate, endDate] = range.map(normalizeDateOnly);
-  if (!startDate && !endDate) return true;
-  const orderDate = normalizeDateOnly(row.created_at);
-  if (!orderDate) return false;
-  return (!startDate || orderDate >= startDate) && (!endDate || orderDate <= endDate);
+function isRepairPoolCompletionStatus(row: AnyRecord) {
+  const status = orderStatusLight(row);
+  return ["待完单/收款", "维修完成", "财务待确认", "已完结", "已结单"].includes(status)
+    || status.includes("完成")
+    || status.includes("完结")
+    || status.includes("结单");
 }
 
-export function isRepairPoolRowInTodayMode(row: AnyRecord, mode: TodayFilterMode, today: string) {
-  if (mode === "none") return true;
-  if (mode === "created") return normalizeDateOnly(row.created_at) === today;
-  const operatedToday = [row.updated_at, row.completed_at, row.closed_at, row.finished_at].some(value => normalizeDateOnly(value) === today);
-  return operatedToday && ["待完单/收款", "已完结"].includes(orderStatusLight(row));
+export function repairPoolDateValue(row: AnyRecord, mode: RepairPoolDateMode = "created") {
+  if (mode === "created") return normalizeDateOnly(row.created_at);
+  const completedDate = [row.completed_at, row.closed_at, row.finished_at, row.engineer_closed_at]
+    .map(normalizeDateOnly)
+    .find(Boolean);
+  if (completedDate) return completedDate;
+  return isRepairPoolCompletionStatus(row) ? normalizeDateOnly(row.updated_at) : "";
+}
+
+export function isRepairPoolRowInDateRange(row: AnyRecord, range: [string, string], mode: RepairPoolDateMode = "created") {
+  const [startDate, endDate] = range.map(normalizeDateOnly);
+  if (!startDate && !endDate) return true;
+  const orderDate = repairPoolDateValue(row, mode);
+  if (!orderDate) return false;
+  return (!startDate || orderDate >= startDate) && (!endDate || orderDate <= endDate);
 }
 
 function compareText(left: unknown, right: unknown) {
@@ -524,7 +536,7 @@ function App() {
   const [modal, setModal] = useState<ReactNode | null>(null);
   const queryClient = useQueryClient();
   const current = viewMeta[view];
-  const profile = useQuery({ queryKey: ["me", user], queryFn: () => api<AnyRecord>("/api/me"), enabled: Boolean(user) });
+  const profile = useQuery({ queryKey: ["me", user], queryFn: () => api<AnyRecord>("/api/me"), enabled: Boolean(user), retry: false });
 
   function notify(message: string, error = false) {
     if (error) feedbackNotify.error(message);
@@ -538,6 +550,25 @@ function App() {
     setView("dashboard");
     queryClient.clear();
   }
+
+  function handleLogin(username: string) {
+    const nextUser = username || "session";
+    setStoredUser(nextUser);
+    setUser(nextUser);
+    queryClient.invalidateQueries({ queryKey: ["me"] });
+  }
+
+  useEffect(() => {
+    function handleAuthExpired() {
+      clearStoredUser();
+      setUser("");
+      setView("dashboard");
+      queryClient.clear();
+    }
+
+    window.addEventListener("mis:auth-expired", handleAuthExpired);
+    return () => window.removeEventListener("mis:auth-expired", handleAuthExpired);
+  }, [queryClient]);
 
   function openOrderDetail(row: AnyRecord, from: ViewKey = view, mode: OrderMode = "view") {
     const id = row.repair_order_id;
@@ -569,7 +600,11 @@ function App() {
     setView("orderDetail");
   }
 
-  if (!user) return <LoginScreen onLogin={(name) => { setStoredUser(name || "session"); setUser(name || "session"); }} notify={notify} />;
+  const loginExpired = profile.error instanceof ApiError && profile.error.status === 401;
+
+  if (!user || loginExpired) return <LoginScreen onLogin={handleLogin} notify={notify} />;
+  if (profile.isPending) return <AuthLoadingScreen />;
+  if (profile.error) return <section className="auth-screen"><div className="auth-card"><QueryState loading={false} error={profile.error} /></div></section>;
   if (profile.data?.must_change_password) return <ChangePasswordScreen notify={notify} />;
 
   return (
@@ -606,6 +641,16 @@ function LoginScreen({ onLogin, notify }: { onLogin: (username: string) => void;
         <AppButton type="primary" htmlType="submit" loading={mutation.isPending} block>{mutation.isPending ? "登录中..." : "登录"}</AppButton>
         <p className="auth-hint">演示账号：admin/admin、frontdesk/frontdesk、engineer/engineer、finance/finance、boss/boss</p>
       </form>
+    </section>
+  );
+}
+
+function AuthLoadingScreen() {
+  return (
+    <section className="auth-screen">
+      <div className="auth-card">
+        <QueryState loading={true} error={null} />
+      </div>
     </section>
   );
 }
@@ -820,7 +865,9 @@ function RepairPool({ notify, openOrderDetail, openNewOrder }: { notify: (messag
   const [statusFilters, setStatusFilters] = useState<string[]>([]);
   const [statusFilterOpen, setStatusFilterOpen] = useState(false);
   const [dateRange, setDateRange] = useState<[string, string]>(["", ""]);
-  const [todayFilterMode, setTodayFilterMode] = useState<TodayFilterMode>("none");
+  const [dateFilterMode, setDateFilterMode] = useState<RepairPoolDateMode>("created");
+  const [datePickerOpen, setDatePickerOpen] = useState(false);
+  const [dateModeOpen, setDateModeOpen] = useState(false);
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState<SortState>({ key: "created_at", direction: "desc" });
   const [dispatchOrder, setDispatchOrder] = useState<AnyRecord | null>(null);
@@ -830,18 +877,18 @@ function RepairPool({ notify, openOrderDetail, openNewOrder }: { notify: (messag
   const query = useQuery({ queryKey: ["repair-workbench"], queryFn: () => api<AnyRecord>("/api/repair-workbench") });
   const profile = useQuery({ queryKey: ["me", "repair-pool"], queryFn: () => api<AnyRecord>("/api/me") });
   const orders = ((query.data?.orders as AnyRecord[] | undefined) || []);
-  const todayDate = dayjs().format("YYYY-MM-DD");
   const pickerDateRange: [Dayjs, Dayjs] | null = dateRange[0] && dateRange[1] ? [dayjs(dateRange[0]), dayjs(dateRange[1])] : null;
+  const dateRangePlaceholder: [string, string] = dateFilterMode === "created" ? ["创建开始日期", "创建结束日期"] : ["完成开始日期", "完成结束日期"];
+  const hasDateRange = Boolean(dateRange[0] || dateRange[1]);
   const filteredRows = useMemo(() => {
     const q = keyword.trim().toLowerCase();
     return orders.filter(row => {
       const haystack = [row.order_no, row.machine_no, row.imei, row.serial, row.model, row.customer_name, row.phone, row.customer_phone, row.engineer_name, row.assigned_to].join(" ").toLowerCase();
       return (!q || haystack.includes(q))
         && (!statusFilters.length || statusFilters.includes(orderStatusLight(row)))
-        && isRepairPoolRowInDateRange(row, dateRange)
-        && isRepairPoolRowInTodayMode(row, todayFilterMode, todayDate);
+        && isRepairPoolRowInDateRange(row, dateRange, dateFilterMode);
     });
-  }, [dateRange, keyword, orders, statusFilters, todayDate, todayFilterMode]);
+  }, [dateFilterMode, dateRange, keyword, orders, statusFilters]);
   const rows = useMemo(() => {
     const direction = sort.direction === "asc" ? 1 : -1;
     return [...filteredRows].sort((left, right) => direction * comparePoolOrder(left, right, sort.key));
@@ -888,7 +935,7 @@ function RepairPool({ notify, openOrderDetail, openNewOrder }: { notify: (messag
 
   useEffect(() => {
     setPage(1);
-  }, [dateRange, keyword, statusFilters, todayFilterMode]);
+  }, [dateFilterMode, dateRange, keyword, statusFilters]);
 
   function exportRows() {
     if (!rows.length) {
@@ -944,29 +991,17 @@ function RepairPool({ notify, openOrderDetail, openNewOrder }: { notify: (messag
     );
   }
 
-  function cycleTodayFilter() {
-    if (todayFilterMode === "none") {
-      setTodayFilterMode("created");
-      setDateRange([todayDate, todayDate]);
-      return;
-    }
-    if (todayFilterMode === "created") {
-      setTodayFilterMode("completed");
-      setDateRange(["", ""]);
-      return;
-    }
-    setTodayFilterMode("none");
-    setDateRange(["", ""]);
+  function applyDateFilterMode(mode: RepairPoolDateMode) {
+    setDateFilterMode(mode);
+    setDateModeOpen(false);
+  }
+
+  function dateFilterModeLabel() {
+    return dateFilterMode === "created" ? "创建时间" : "完成时间";
   }
 
   function toggleStatusFilter(value: string) {
     setStatusFilters(prev => prev.includes(value) ? prev.filter(item => item !== value) : [...prev, value]);
-  }
-
-  function todayFilterLabel() {
-    if (todayFilterMode === "created") return "今天下单";
-    if (todayFilterMode === "completed") return "今天完成";
-    return "今天";
   }
 
   function statusFilterLabel() {
@@ -1023,22 +1058,49 @@ function RepairPool({ notify, openOrderDetail, openNewOrder }: { notify: (messag
                 </div>
               )}
             </div>
-            <DatePicker.RangePicker
-              allowClear
-              className="pool-date-range-picker"
-              format="YYYY-MM-DD"
-              onChange={(dates, dateStrings) => {
-                setTodayFilterMode("none");
-                if (!dates) {
-                  setDateRange(["", ""]);
-                  return;
-                }
-                setDateRange([String(dateStrings[0] || ""), String(dateStrings[1] || "")]);
-              }}
-              placeholder={["开始日期", "结束日期"]}
-              value={pickerDateRange}
-            />
-            <AppButton className={`pool-today-button ${todayFilterMode !== "none" ? "active" : ""}`} onClick={cycleTodayFilter} aria-pressed={todayFilterMode !== "none"}>{todayFilterLabel()}</AppButton>
+            <div className="pool-date-filter">
+              <DatePicker.RangePicker
+                allowClear={false}
+                className="pool-date-range-picker"
+                format="YYYY-MM-DD"
+                open={datePickerOpen}
+                onChange={(dates, dateStrings) => {
+                  if (!dates) {
+                    setDateRange(["", ""]);
+                    return;
+                  }
+                  setDateRange([String(dateStrings[0] || ""), String(dateStrings[1] || "")]);
+                }}
+                onOpenChange={setDatePickerOpen}
+                placeholder={dateRangePlaceholder}
+                suffixIcon={null}
+                value={pickerDateRange}
+              />
+              <div className="pool-date-mode-field">
+                <div className="pool-date-mode-picker">
+                  <button type="button" onClick={() => setDateModeOpen(value => !value)} aria-haspopup="listbox" aria-expanded={dateModeOpen}>
+                    <span>{dateFilterModeLabel()}</span>
+                    <ChevronRight size={16} />
+                  </button>
+                  {dateModeOpen && (
+                    <div className="pool-date-mode-menu" role="listbox">
+                      <button type="button" className={dateFilterMode === "created" ? "checked" : ""} onClick={() => applyDateFilterMode("created")}>创建时间</button>
+                      <button type="button" className={dateFilterMode === "completed" ? "checked" : ""} onClick={() => applyDateFilterMode("completed")}>完成时间</button>
+                    </div>
+                  )}
+                </div>
+                <div className="pool-date-tail-actions">
+                  {hasDateRange && (
+                    <button type="button" aria-label="清除日期筛选" onClick={() => setDateRange(["", ""])}>
+                      <X size={16} />
+                    </button>
+                  )}
+                  <button type="button" aria-label="打开日期选择器" onClick={() => setDatePickerOpen(true)}>
+                    <Calendar size={17} />
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
           <div className="pool-filter-right">
             <AppButton className="pool-ghost-button" onClick={exportRows}><Download size={20} />导出数据</AppButton>

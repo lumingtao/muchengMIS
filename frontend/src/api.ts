@@ -2,6 +2,16 @@ export type AnyRecord = Record<string, unknown>;
 
 const USER_KEY = "mis_user";
 
+export class ApiError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
 export function getStoredUser() {
   return localStorage.getItem(USER_KEY) || "";
 }
@@ -30,7 +40,10 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
   }
   if (!response.ok) {
     const detail = data && typeof data === "object" && "detail" in data ? String(data.detail) : "请求失败";
-    throw new Error(detail === "请求失败" && typeof data === "string" && data.trim() ? data.trim() : detail);
+    if (response.status === 401 && typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("mis:auth-expired"));
+    }
+    throw new ApiError(detail === "请求失败" && typeof data === "string" && data.trim() ? data.trim() : detail, response.status);
   }
   return data as T;
 }

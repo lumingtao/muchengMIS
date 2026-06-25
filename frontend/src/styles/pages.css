@@ -1996,49 +1996,144 @@
   accent-color: #0052cc;
 }
 
-.pool-date-range-picker {
+.pool-date-filter {
+  flex: 0 1 580px;
+  min-width: 450px;
   height: 46px;
-  min-width: 260px;
-  border-color: #e2e8f0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pool-date-range-picker {
+  flex: 1 1 250px;
+  min-width: 230px;
+  height: 46px;
+  border-color: #d7e2f3;
   border-radius: 8px;
+  background: #f8fbff;
   font-weight: 700;
+  box-shadow: none;
+}
+
+.pool-date-range-picker.ant-picker-focused {
+  box-shadow: none;
 }
 
 .pool-date-range-picker .ant-picker-input > input {
   font-weight: 700;
 }
 
-.pool-today-button.ant-btn,
-.pool-today-button {
-  flex: 0 0 auto;
+.pool-date-mode-field {
+  flex: 0 0 176px;
   height: 46px;
-  padding: 0 18px;
-  border-color: #c7d7f4;
-  color: #0052cc;
-  background: #eff6ff;
+  display: inline-flex;
+  align-items: center;
+  position: relative;
+  overflow: visible;
+  border: 1px solid #0052cc;
+  border-radius: 8px;
+  background: #f3f3fd;
+  box-shadow: 0 0 0 2px rgba(0, 82, 204, .18);
+}
+
+.pool-date-mode-picker {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 44px;
+  position: relative;
+}
+
+.pool-date-mode-picker > button {
+  width: 100%;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 9px 0 14px;
+  border: 0;
+  color: #0f172a;
+  background: transparent;
+  font-size: 14px;
   font-weight: 800;
+  line-height: 1;
+  cursor: pointer;
 }
 
-.pool-today-button.ant-btn:hover,
-.pool-today-button:hover {
-  border-color: #0052cc !important;
-  color: #003d9b !important;
-  background: #dbeafe !important;
+.pool-date-mode-picker > button > span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.pool-today-button.active.ant-btn,
-.pool-today-button.active {
-  border-color: #0052cc;
+.pool-date-mode-picker > button > svg {
+  flex: 0 0 auto;
+  color: #94a3b8;
+  rotate: 90deg;
+}
+
+.pool-date-mode-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 30;
+  min-width: 128px;
+  padding: 6px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 14px 30px rgba(15, 23, 42, .16);
+}
+
+.pool-date-mode-menu button {
+  width: 100%;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  color: #0f172a;
+  background: transparent;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.pool-date-mode-menu button:hover,
+.pool-date-mode-menu button.checked {
+  color: #003d9b;
+  background: #eff6ff;
+}
+
+.pool-date-tail-actions {
+  flex: 0 0 auto;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 9px 0 2px;
+  background: transparent;
+}
+
+.pool-date-tail-actions button {
+  width: 22px;
+  height: 22px;
+  display: inline-grid;
+  place-items: center;
+  border: 0;
+  border-radius: 999px;
+  color: #94a3b8;
+  background: transparent;
+  cursor: pointer;
+}
+
+.pool-date-tail-actions button:hover {
   color: #fff;
-  background: #0052cc;
-  box-shadow: 0 0 0 2px rgba(0, 82, 204, .16);
-}
-
-.pool-today-button.active.ant-btn:hover,
-.pool-today-button.active:hover {
-  border-color: #003d9b !important;
-  color: #fff !important;
-  background: #003d9b !important;
+  background: #94a3b8;
 }
 
 .pool-select {
@@ -2825,7 +2920,10 @@
   .pool-select,
   .pool-search-input,
   .pool-status-multiselect,
+  .pool-date-filter,
   .pool-date-range-picker { min-width: 0; width: 100%; }
+  .pool-date-filter { flex: none; }
+  .pool-date-mode-field { flex: 0 0 176px; }
   .pool-pagination { display: grid; }
   .pool-pagination > div { justify-content: flex-start; flex-wrap: wrap; }
   .order-detail-shell main { padding: 0; }
@@ -2857,6 +2955,29 @@
   .member-filters,
   .member-summary-grid { grid-template-columns: 1fr; }
 .member-timeline-item { align-items: stretch; flex-direction: column; }
+}
+
+@media (max-width: 560px) {
+  .pool-date-filter {
+    height: auto;
+    display: grid;
+  }
+
+  .pool-date-mode-field {
+    width: 100%;
+  }
+
+  .pool-date-tail-actions {
+    justify-content: flex-end;
+  }
+
+  .pool-date-mode-menu {
+    min-width: 100%;
+  }
+
+  .pool-date-range-picker {
+    height: 44px;
+  }
 }
 
 .device-model-page {

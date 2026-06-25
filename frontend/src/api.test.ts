@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { api } from "./api";
+import { ApiError, api } from "./api";
 
 describe("api", () => {
   beforeEach(() => {
@@ -23,6 +23,16 @@ describe("api", () => {
   it("throws backend detail messages", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: "没有权限" }), { status: 403 })));
     await expect(api("/api/secure")).rejects.toThrow("没有权限");
+  });
+
+  it("dispatches an auth-expired event for unauthorized responses", async () => {
+    const listener = vi.fn();
+    window.addEventListener("mis:auth-expired", listener);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: "登录已失效" }), { status: 401 })));
+
+    await expect(api("/api/me")).rejects.toBeInstanceOf(ApiError);
+    expect(listener).toHaveBeenCalledOnce();
+    window.removeEventListener("mis:auth-expired", listener);
   });
 
   it("throws plain text error responses without JSON parse failures", async () => {

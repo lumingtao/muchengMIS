@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compactPageItems, firstText, isRepairPoolRowInDateRange, isRepairPoolRowInTodayMode, maskCode, maskPhone, repairBillHeaders, repairMonthlySummaryValues, repairPoolColumnOrder, repairPoolDateDisplay, splitHonorificName, toRepairBillExportRow } from "./App";
+import { compactPageItems, firstText, isRepairPoolRowInDateRange, maskCode, maskPhone, repairBillHeaders, repairMonthlySummaryValues, repairPoolColumnOrder, repairPoolDateDisplay, repairPoolDateValue, splitHonorificName, toRepairBillExportRow } from "./App";
 
 describe("repair pool helpers", () => {
   it("builds compact pagination items around the current page", () => {
@@ -46,20 +46,25 @@ describe("repair pool helpers", () => {
     expect(isRepairPoolRowInDateRange({ created_at: "2026-01-01 00:00:00" }, ["", ""])).toBe(true);
   });
 
+  it("filters repair pool rows by repair completion dates when requested", () => {
+    expect(repairPoolDateValue({ created_at: "2026-06-01 09:00:00", completed_at: "2026-06-24 12:00:00" }, "created")).toBe("2026-06-01");
+    expect(repairPoolDateValue({ created_at: "2026-06-01 09:00:00", completed_at: "2026-06-24 12:00:00" }, "completed")).toBe("2026-06-24");
+    expect(isRepairPoolRowInDateRange({ created_at: "2026-06-01 09:00:00", completed_at: "2026-06-24 12:00:00" }, ["2026-06-24", "2026-06-24"], "completed")).toBe(true);
+    expect(isRepairPoolRowInDateRange({ created_at: "2026-06-24 09:00:00", completed_at: "" }, ["2026-06-24", "2026-06-24"], "completed")).toBe(false);
+    expect(isRepairPoolRowInDateRange({ updated_at: "2026-06-24 12:00:00", status: "维修中" }, ["2026-06-24", "2026-06-24"], "completed")).toBe(false);
+  });
+
+  it("keeps the date range independent from the selected repair pool date basis", () => {
+    const row = { created_at: "2026-06-01 09:00:00", completed_at: "2026-06-24 12:00:00", status: "已完结" };
+    expect(isRepairPoolRowInDateRange(row, ["2026-06-01", "2026-06-01"], "created")).toBe(true);
+    expect(isRepairPoolRowInDateRange(row, ["2026-06-01", "2026-06-01"], "completed")).toBe(false);
+    expect(isRepairPoolRowInDateRange(row, ["2026-06-24", "2026-06-24"], "created")).toBe(false);
+    expect(isRepairPoolRowInDateRange(row, ["2026-06-24", "2026-06-24"], "completed")).toBe(true);
+  });
+
   it("shows repair pool table timestamps as date-only values", () => {
     expect(repairPoolDateDisplay("2026-06-24 08:56:37")).toBe("2026-06-24");
     expect(repairPoolDateDisplay("")).toBe("--");
-  });
-
-  it("cycles today quick filters between none, created today, and completed today semantics", () => {
-    const today = "2026-06-24";
-    expect(isRepairPoolRowInTodayMode({ created_at: "2026-01-01 09:00:00" }, "none", today)).toBe(true);
-    expect(isRepairPoolRowInTodayMode({ created_at: "2026-06-24 09:00:00" }, "created", today)).toBe(true);
-    expect(isRepairPoolRowInTodayMode({ created_at: "2026-06-23 23:59:59" }, "created", today)).toBe(false);
-    expect(isRepairPoolRowInTodayMode({ updated_at: "2026-06-24 12:00:00", status: "待完单/收款" }, "completed", today)).toBe(true);
-    expect(isRepairPoolRowInTodayMode({ completed_at: "2026-06-24 12:00:00", status: "已完结" }, "completed", today)).toBe(true);
-    expect(isRepairPoolRowInTodayMode({ updated_at: "2026-06-24 12:00:00", status: "维修中" }, "completed", today)).toBe(false);
-    expect(isRepairPoolRowInTodayMode({ updated_at: "2026-06-23 12:00:00", status: "已完结" }, "completed", today)).toBe(false);
   });
 
   it("maps filtered repair pool rows to the repair bill template columns", () => {
