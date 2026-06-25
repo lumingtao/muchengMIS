@@ -1,4 +1,14 @@
-.app-shell { min-height: 100vh; display: grid; grid-template-columns: 240px minmax(0, 1fr); }
+.app-shell {
+  --sidebar-width: 240px;
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+}
+
+.app-shell.sidebar-collapsed {
+  --sidebar-width: 76px;
+}
+
 .sidebar {
   position: sticky;
   top: 0;
@@ -9,13 +19,39 @@
   background: var(--nav);
   border-right: 1px solid var(--line);
 }
-.brand { display: flex; align-items: center; gap: 11px; padding: 12px 18px 26px; border-bottom: 0; }
-.brand > div:not(.brand-mark) { display: grid; gap: 5px; }
-.brand > div:not(.brand-mark) strong { color: #003d9b; font-size: 22px; line-height: 1.2; }
-.brand > div:not(.brand-mark) span { color: var(--muted); font-size: 14px; }
+.brand {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-height: 66px;
+  padding: 12px 48px 18px 18px;
+  border-bottom: 0;
+}
+.brand-copy { display: grid; gap: 5px; min-width: 0; }
+.brand-copy strong { color: #003d9b; font-size: 22px; line-height: 1.2; white-space: nowrap; }
+.brand-copy span { color: var(--muted); font-size: 14px; white-space: nowrap; }
 .brand-mark { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 10px; color: #003d9b; background: #dae6ff; font-weight: 900; }
 .brand strong { display: block; font-size: 16px; }
 .brand span { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; }
+.sidebar-collapse-button {
+  position: absolute;
+  top: 14px;
+  right: 12px;
+  width: 32px;
+  min-height: 32px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border-color: var(--line);
+  border-radius: 999px;
+  color: #64748b;
+  background: #fff;
+}
+.sidebar-collapse-button:hover {
+  color: var(--accent);
+  background: #f1f5fb;
+}
 .primary-nav { display: grid; gap: 13px; padding: 0 0 0; }
 .primary-nav-item { display: grid; gap: 6px; }
 .secondary-nav {
@@ -51,6 +87,12 @@ nav button {
   font-size: 17px;
   font-weight: 600;
 }
+nav button span,
+.sidebar-footer button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 nav button:hover { color: var(--accent); background: #f1f5fb; border-color: transparent; }
 nav button.active { color: var(--accent); background: rgba(0, 61, 155, .08); border-color: transparent; font-weight: 800; }
 nav button.active svg { color: var(--accent); }
@@ -73,10 +115,52 @@ nav button.active svg { color: var(--accent); }
 .plain-nav-button { color: #38485d; background: transparent; border-color: transparent; font-weight: 500; }
 .plain-nav-button:hover { color: var(--accent); background: #f1f5fb; }
 
+.sidebar-collapsed .sidebar {
+  padding: 16px 10px;
+  overflow-x: hidden;
+}
+
+.sidebar-collapsed .brand {
+  justify-content: center;
+  padding: 12px 0 18px;
+}
+
+.sidebar-collapsed .brand-copy {
+  display: none;
+}
+
+.sidebar-collapsed .brand-mark {
+  width: 42px;
+  height: 42px;
+}
+
+.sidebar-collapsed .sidebar-collapse-button {
+  right: -4px;
+  top: 16px;
+  z-index: 2;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, .12);
+}
+
+.sidebar-collapsed nav button,
+.sidebar-collapsed .sidebar-footer button {
+  justify-content: center;
+  gap: 0;
+  padding: 0;
+}
+
+.sidebar-collapsed nav button span,
+.sidebar-collapsed .sidebar-footer button span {
+  display: none;
+}
+
+.sidebar-collapsed .sidebar-footer {
+  padding-top: 16px;
+}
+
 main { min-width: 0; padding: 88px 24px 24px; }
 .topbar {
   position: fixed;
-  left: 240px;
+  left: var(--sidebar-width);
   right: 0;
   top: 0;
   z-index: 30;

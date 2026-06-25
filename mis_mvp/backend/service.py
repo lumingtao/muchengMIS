@@ -394,7 +394,7 @@ class MisService:
             light = "已取消"
             readonly = True
             reason = "订单已取消，全部信息只读"
-        elif status == "维修完成":
+        elif status in {"维修完成", "待交付", "已交付", "待取机", "待送机", "待返寄", "财务待确认", "同行挂账"} or str(order.get("payment_status") or "") in {"已付款待财务确认", "同行挂账"}:
             light = "待完单/收款"
             readonly = False
             reason = ""

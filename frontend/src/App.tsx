@@ -1,6 +1,7 @@
 import { KeyboardEvent, ReactNode, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Input, Modal, Radio, Select } from "antd";
+import { DatePicker, Input, Modal, Radio, Select } from "antd";
+import dayjs, { type Dayjs } from "dayjs";
 import { strToU8, zipSync } from "fflate";
 import {
   BarChart3,
@@ -35,7 +36,6 @@ import {
   Download,
   Edit3,
   FileText,
-  Filter,
   Flag,
   Home,
   ReceiptText,
@@ -58,6 +58,25 @@ import { WarehousePage as WarehouseManagementPage } from "./pages/warehouse/Ware
 type ViewKey = "dashboard" | "repairPool" | "orderDetail" | "recyclePool" | "repair" | "recycle" | "warehouse" | "warehouseMaterials" | "warehouseBatches" | "warehouseUnits" | "warehouseRequests" | "warehouseReturns" | "warehouseCounts" | "warehouseMovements" | "warehouseBasics" | "inventory" | "sales" | "customers" | "payments" | "reports" | "audit" | "settingsEmployees" | "settingsRoles" | "settingsDeviceModels" | "settingsRepairSkus";
 type OrderMode = "new" | "view" | "edit" | "cancel";
 type SortState = { key: string; direction: "asc" | "desc" };
+type TodayFilterMode = "none" | "created" | "completed";
+
+const REPAIR_POOL_ALL_STATUS = "全部状态";
+const REPAIR_POOL_STATUS_FILTERS = [REPAIR_POOL_ALL_STATUS, "待指派", "维修中", "待完单/收款", "已完结", "已取消", "已删除"];
+const REPAIR_POOL_STATUS_MULTI_OPTIONS = REPAIR_POOL_STATUS_FILTERS.filter(value => value !== REPAIR_POOL_ALL_STATUS);
+export const repairPoolColumnOrder = ["订单编号", "下单时间", "设备信息", "客户信息", "维修前检测", "故障名称", "价格", "订单状态", "最后更新", "工程师", "操作"];
+
+const repairPoolColumns = [
+  { key: "order_no", label: "订单编号", width: "132px" },
+  { key: "created_at", label: "下单时间", width: "126px" },
+  { key: "model", label: "设备信息", width: "210px" },
+  { key: "customer_name", label: "客户信息", width: "112px" },
+  { key: "pool_pre_inspection_abnormal", label: "维修前检测", width: "160px" },
+  { key: "pool_fault_names", label: "故障名称", width: "128px" },
+  { key: "amount", label: "价格", width: "92px", className: "align-right" },
+  { key: "status", label: "订单状态", width: "112px" },
+  { key: "updated_at", label: "最后更新", width: "126px" },
+  { key: "assigned_to", label: "工程师", width: "96px" },
+] as const;
 
 const roleDisplayNames: Record<string, string> = {
   admin: "管理员",
@@ -284,10 +303,27 @@ function nowText() {
   return new Date().toLocaleString("zh-CN", { hour12: false });
 }
 
-function normalizeDateTimeInput(value: string) {
-  if (!value) return "";
-  const text = value.replace("T", " ");
-  return text.length === 16 ? `${text}:00` : text;
+function normalizeDateOnly(value: unknown) {
+  return String(value || "").trim().slice(0, 10);
+}
+
+export function repairPoolDateDisplay(value: unknown) {
+  return normalizeDateOnly(value) || "--";
+}
+
+export function isRepairPoolRowInDateRange(row: AnyRecord, range: [string, string]) {
+  const [startDate, endDate] = range.map(normalizeDateOnly);
+  if (!startDate && !endDate) return true;
+  const orderDate = normalizeDateOnly(row.created_at);
+  if (!orderDate) return false;
+  return (!startDate || orderDate >= startDate) && (!endDate || orderDate <= endDate);
+}
+
+export function isRepairPoolRowInTodayMode(row: AnyRecord, mode: TodayFilterMode, today: string) {
+  if (mode === "none") return true;
+  if (mode === "created") return normalizeDateOnly(row.created_at) === today;
+  const operatedToday = [row.updated_at, row.completed_at, row.closed_at, row.finished_at].some(value => normalizeDateOnly(value) === today);
+  return operatedToday && ["待完单/收款", "已完结"].includes(orderStatusLight(row));
 }
 
 function compareText(left: unknown, right: unknown) {
@@ -781,11 +817,10 @@ function WorkMessages({ financeCount, requestCount }: { financeCount: number; re
 
 function RepairPool({ notify, openOrderDetail, openNewOrder }: { notify: (message: string, error?: boolean) => void; openOrderDetail: (row: AnyRecord, mode?: OrderMode) => void; openNewOrder?: () => void }) {
   const [keyword, setKeyword] = useState("");
-  const [status, setStatus] = useState("全部状态");
-  const [showAdvanced, setShowAdvanced] = useState(false);
-  const [customerType, setCustomerType] = useState("全部客户");
-  const [engineer, setEngineer] = useState("");
-  const [timeRange, setTimeRange] = useState<[string, string]>(["", ""]);
+  const [statusFilters, setStatusFilters] = useState<string[]>([]);
+  const [statusFilterOpen, setStatusFilterOpen] = useState(false);
+  const [dateRange, setDateRange] = useState<[string, string]>(["", ""]);
+  const [todayFilterMode, setTodayFilterMode] = useState<TodayFilterMode>("none");
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState<SortState>({ key: "created_at", direction: "desc" });
   const [dispatchOrder, setDispatchOrder] = useState<AnyRecord | null>(null);
@@ -795,27 +830,25 @@ function RepairPool({ notify, openOrderDetail, openNewOrder }: { notify: (messag
   const query = useQuery({ queryKey: ["repair-workbench"], queryFn: () => api<AnyRecord>("/api/repair-workbench") });
   const profile = useQuery({ queryKey: ["me", "repair-pool"], queryFn: () => api<AnyRecord>("/api/me") });
   const orders = ((query.data?.orders as AnyRecord[] | undefined) || []);
+  const todayDate = dayjs().format("YYYY-MM-DD");
+  const pickerDateRange: [Dayjs, Dayjs] | null = dateRange[0] && dateRange[1] ? [dayjs(dateRange[0]), dayjs(dateRange[1])] : null;
   const filteredRows = useMemo(() => {
     const q = keyword.trim().toLowerCase();
-    const engineerNeedle = engineer.trim().toLowerCase();
-    const [startAt, endAt] = timeRange.map(normalizeDateTimeInput);
     return orders.filter(row => {
       const haystack = [row.order_no, row.machine_no, row.imei, row.serial, row.model, row.customer_name, row.phone, row.customer_phone, row.engineer_name, row.assigned_to].join(" ").toLowerCase();
-      const orderTime = String(row.updated_at || row.created_at || "");
       return (!q || haystack.includes(q))
-        && (status === "全部状态" || orderStatusLight(row) === status)
-        && (customerType === "全部客户" || String(row.customer_type || "").includes(customerType))
-        && (!engineerNeedle || [row.engineer_name, row.assigned_to, row.engineer_user].join(" ").toLowerCase().includes(engineerNeedle))
-        && (!startAt || orderTime >= startAt)
-        && (!endAt || orderTime <= endAt);
+        && (!statusFilters.length || statusFilters.includes(orderStatusLight(row)))
+        && isRepairPoolRowInDateRange(row, dateRange)
+        && isRepairPoolRowInTodayMode(row, todayFilterMode, todayDate);
     });
-  }, [customerType, engineer, keyword, orders, status, timeRange]);
+  }, [dateRange, keyword, orders, statusFilters, todayDate, todayFilterMode]);
   const rows = useMemo(() => {
     const direction = sort.direction === "asc" ? 1 : -1;
     return [...filteredRows].sort((left, right) => direction * comparePoolOrder(left, right, sort.key));
   }, [filteredRows, sort]);
   const pendingAssign = orders.filter(row => orderStatusLight(row) === "待指派").length;
   const repairing = orders.filter(row => orderStatusLight(row) === "维修中").length;
+  const pendingClose = orders.filter(row => orderStatusLight(row) === "待完单/收款").length;
   const cancelled = orders.filter(row => orderStatusLight(row) === "已取消").length;
   const pageCount = Math.max(1, Math.ceil(rows.length / pageSize));
   const visibleRows = rows.slice((page - 1) * pageSize, page * pageSize);
@@ -855,13 +888,7 @@ function RepairPool({ notify, openOrderDetail, openNewOrder }: { notify: (messag
 
   useEffect(() => {
     setPage(1);
-  }, [customerType, engineer, keyword, status, timeRange]);
-
-  function clearAdvancedFilters() {
-    setCustomerType("全部客户");
-    setEngineer("");
-    setTimeRange(["", ""]);
-  }
+  }, [dateRange, keyword, statusFilters, todayFilterMode]);
 
   function exportRows() {
     if (!rows.length) {
@@ -917,6 +944,37 @@ function RepairPool({ notify, openOrderDetail, openNewOrder }: { notify: (messag
     );
   }
 
+  function cycleTodayFilter() {
+    if (todayFilterMode === "none") {
+      setTodayFilterMode("created");
+      setDateRange([todayDate, todayDate]);
+      return;
+    }
+    if (todayFilterMode === "created") {
+      setTodayFilterMode("completed");
+      setDateRange(["", ""]);
+      return;
+    }
+    setTodayFilterMode("none");
+    setDateRange(["", ""]);
+  }
+
+  function toggleStatusFilter(value: string) {
+    setStatusFilters(prev => prev.includes(value) ? prev.filter(item => item !== value) : [...prev, value]);
+  }
+
+  function todayFilterLabel() {
+    if (todayFilterMode === "created") return "今天下单";
+    if (todayFilterMode === "completed") return "今天完成";
+    return "今天";
+  }
+
+  function statusFilterLabel() {
+    if (!statusFilters.length) return REPAIR_POOL_ALL_STATUS;
+    if (statusFilters.length === 1) return statusFilters[0];
+    return `已选 ${statusFilters.length} 项`;
+  }
+
   if (query.isLoading || query.error) return <QueryState loading={query.isLoading} error={query.error} />;
 
   return (
@@ -924,7 +982,7 @@ function RepairPool({ notify, openOrderDetail, openNewOrder }: { notify: (messag
       <header className="pool-topbar">
         <div className="pool-global-search"><Search size={23} /><Input variant="borderless" value={keyword} onChange={event => setKeyword(event.target.value)} placeholder="全局搜索 (订单号, 配件, IMEI)..." allowClear /></div>
         <div className="pool-top-actions">
-          <button type="button" className="pool-icon-button" aria-label="查看待支付工单" onClick={() => setStatus("待支付")}><Bell size={23} /><span /></button>
+          <button type="button" className="pool-icon-button" aria-label="查看待完单/收款工单" onClick={() => setStatusFilters(["待完单/收款"])}><Bell size={23} /><span /></button>
           <button type="button" className="pool-icon-button" aria-label="查看订单中心帮助" onClick={() => notify("订单中心支持搜索、状态筛选、高级筛选、导出、新建、查看、编辑和取消工单。")}><HelpCircle size={23} /></button>
           <div className="pool-user"><div><b>{String(profile.data?.username || getStoredUser() || "当前用户")}</b><span>{displayRoleName(profile.data?.role_name, profile.data?.role, "员工")}</span></div><div className="pool-avatar"><UserRound size={22} /></div></div>
         </div>
@@ -937,37 +995,64 @@ function RepairPool({ notify, openOrderDetail, openNewOrder }: { notify: (messag
           <PoolStat icon={<ReceiptText size={25} />} tone="primary" label="全部工单" value={orders.length} note="订单池" />
           <PoolStat icon={<Flag size={25} />} tone="warning" label="待指派" value={pendingAssign} note="待派单" />
           <PoolStat icon={<Wrench size={25} />} tone="success" label="维修中" value={repairing} note="进行中" />
+          <PoolStat icon={<CreditCard size={25} />} tone="warning" label="待完单/收款" value={pendingClose} note="待处理" />
           <PoolStat icon={<CircleDollarSign size={25} />} tone="danger" label="已取消" value={cancelled} note="只读" />
         </section>
 
         <section className="pool-actionbar">
           <div className="pool-filter-left">
             <Input className="pool-search-input" prefix={<Search size={20} />} value={keyword} onChange={e => setKeyword(e.target.value)} placeholder="搜索订单号、IMEI 或客户手机..." allowClear />
-            <Select className="pool-status-select" value={status} onChange={setStatus} options={["全部状态", "待指派", "维修中", "已取消"].map(value => ({ value, label: value }))} />
-            <AppButton className="pool-ghost-button" onClick={() => setShowAdvanced(value => !value)}><Filter size={20} />高级筛选</AppButton>
+            <div className="pool-status-multiselect">
+              <button type="button" className={statusFilters.length ? "has-value" : ""} onClick={() => setStatusFilterOpen(value => !value)} aria-haspopup="listbox" aria-expanded={statusFilterOpen}>
+                <span>{statusFilterLabel()}</span>
+                {statusFilters.length > 0 && <i role="button" tabIndex={0} aria-label="清除状态筛选" onClick={event => { event.stopPropagation(); setStatusFilters([]); setStatusFilterOpen(false); }} onKeyDown={event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); setStatusFilters([]); setStatusFilterOpen(false); } }}>×</i>}
+                <ChevronRight size={18} />
+              </button>
+              {statusFilterOpen && (
+                <div className="pool-status-menu" role="listbox" aria-multiselectable="true">
+                  <label className={!statusFilters.length ? "checked" : ""}>
+                    <input type="checkbox" checked={!statusFilters.length} onChange={() => setStatusFilters([])} />
+                    <span>{REPAIR_POOL_ALL_STATUS}</span>
+                  </label>
+                  {REPAIR_POOL_STATUS_MULTI_OPTIONS.map(value => (
+                    <label className={statusFilters.includes(value) ? "checked" : ""} key={value}>
+                      <input type="checkbox" checked={statusFilters.includes(value)} onChange={() => toggleStatusFilter(value)} />
+                      <span>{value}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+            <DatePicker.RangePicker
+              allowClear
+              className="pool-date-range-picker"
+              format="YYYY-MM-DD"
+              onChange={(dates, dateStrings) => {
+                setTodayFilterMode("none");
+                if (!dates) {
+                  setDateRange(["", ""]);
+                  return;
+                }
+                setDateRange([String(dateStrings[0] || ""), String(dateStrings[1] || "")]);
+              }}
+              placeholder={["开始日期", "结束日期"]}
+              value={pickerDateRange}
+            />
+            <AppButton className={`pool-today-button ${todayFilterMode !== "none" ? "active" : ""}`} onClick={cycleTodayFilter} aria-pressed={todayFilterMode !== "none"}>{todayFilterLabel()}</AppButton>
           </div>
           <div className="pool-filter-right">
             <AppButton className="pool-ghost-button" onClick={exportRows}><Download size={20} />导出数据</AppButton>
             <AppButton className="pool-primary-button" type="primary" onClick={() => setCreateOpen(true)}><Plus size={22} />新建工单</AppButton>
           </div>
         </section>
-        {showAdvanced && (
-          <section className="pool-advanced-panel">
-            <Select value={customerType} onChange={setCustomerType} options={["全部客户", "个人客户", "同行客户", "企业客户", "VIP客户", "零售客户"].map(value => ({ value, label: value }))} />
-            <Input value={engineer} onChange={event => setEngineer(event.target.value)} placeholder="技术员/负责人" allowClear />
-            <div className="pool-time-range">
-              <Input type="datetime-local" value={timeRange[0]} onChange={event => setTimeRange([event.target.value, timeRange[1]])} aria-label="开始时间" />
-              <span>至</span>
-              <Input type="datetime-local" value={timeRange[1]} onChange={event => setTimeRange([timeRange[0], event.target.value])} aria-label="结束时间" />
-            </div>
-            <AppButton onClick={clearAdvancedFilters}>清空高级筛选</AppButton>
-          </section>
-        )}
-
         <section className="pool-table-card">
           <div className="pool-table-scroll">
             <table className="pool-table">
-              <thead><tr>{sortHeader("order_no", "订单编号")}{sortHeader("model", "设备信息")}{sortHeader("customer_name", "客户")}{sortHeader("created_at", "建单时间")}{sortHeader("pool_fault_names", "故障名称")}{sortHeader("pool_pre_inspection_abnormal", "维修前检测异常结果")}{sortHeader("status", "状态")}{sortHeader("assigned_to", "技术员")}{sortHeader("updated_at", "最后更新")}{sortHeader("amount", "预估金额", "align-right")}<th className="align-center">操作</th></tr></thead>
+              <colgroup>
+                {repairPoolColumns.map(column => <col key={column.key} style={{ width: column.width }} />)}
+                <col style={{ width: "165px" }} />
+              </colgroup>
+              <thead><tr>{repairPoolColumns.map(column => sortHeader(column.key, column.label, "className" in column ? column.className : ""))}<th className="align-center">操作</th></tr></thead>
               <tbody>
                 {visibleRows.map((row, index) => <PoolOrderRow row={row} key={String(row.repair_order_id || row.order_no || index)} onOpen={openOrderDetail} onDispatch={setDispatchOrder} onCancel={cancelOrder} onDelete={deleteOrder} />)}
                 {!visibleRows.length && hasArchivedOrder && <ArchiveOrderRow row={archivedOrder} onOpen={openOrderDetail} />}
@@ -1049,15 +1134,15 @@ function PoolOrderRow({ row, onOpen, onDispatch, onCancel, onDelete }: { row: An
   return (
     <tr>
       <td><button type="button" className="pool-order-link" onClick={() => onOpen(row, "view")}>{String(row.order_no || row.repair_order_id || "-")}</button></td>
-      <td><div className="pool-device-cell"><b>{String(row.model || "待补机型")}</b><span>IMEI: {maskCode(imei)}</span></div></td>
-      <td><div className="pool-customer-cell"><b>{String(row.customer_name || "未关联客户")}</b><span>{maskPhone(phone)}</span></div></td>
-      <td className="muted">{String(row.created_at || "--")}</td>
-      <td><span className="pool-text-cell">{faultName || "--"}</span></td>
+      <td className="muted pool-date-cell">{repairPoolDateDisplay(row.created_at)}</td>
+      <td className="pool-device-td"><div className="pool-device-cell"><b>{String(row.model || "待补机型")}</b><span>IMEI: {maskCode(imei)}</span></div></td>
+      <td className="pool-customer-td"><div className="pool-customer-cell"><b>{String(row.customer_name || "未关联客户")}</b><span>{maskPhone(phone)}</span></div></td>
       <td><span className="pool-text-cell">{preInspectionAbnormal || "--"}</span></td>
-      <td><StatusTag value={status} /></td>
-      <td>{String(row.engineer_name || row.assigned_to || row.engineer_user || "--")}</td>
-      <td className="muted">{String(row.updated_at || row.created_at || "--")}</td>
+      <td className="pool-fault-td"><span className="pool-text-cell">{faultName || "--"}</span></td>
       <td className="align-right"><b>{poolMoney(row.quoted_amount || row.charge_amount || row.amount || 0)}</b></td>
+      <td><StatusTag value={status} /></td>
+      <td className="muted pool-date-cell">{repairPoolDateDisplay(row.updated_at || row.created_at)}</td>
+      <td>{String(row.engineer_name || row.assigned_to || row.engineer_user || "--")}</td>
       <td className="align-center pool-action-cell"><div className="pool-row-actions">
         {(actions.includes("assign") || actions.includes("reassign")) && <button type="button" onClick={() => onDispatch(row)}>{row.assigned_to ? "改派工程师" : "派单"}</button>}
         <button type="button" onClick={() => onOpen(row, "view")}>查看</button>
@@ -1077,15 +1162,15 @@ function ArchiveOrderRow({ row, onOpen }: { row: AnyRecord; onOpen: (row: AnyRec
   return (
     <tr className="pool-archive-row">
       <td><button type="button" className="pool-order-link" onClick={() => onOpen(archiveRow, "view")}>{orderNo || "-"}</button></td>
-      <td><div className="pool-device-cell"><b>{String(row.model || "归档订单")}</b><span>IMEI: {maskCode(imei)}</span></div></td>
-      <td><div className="pool-customer-cell"><b>{String(row.customer_name || row.linked_customer_name || "未关联客户")}</b><span>{maskPhone(phone)}</span></div></td>
-      <td className="muted">{String(row.created_at || "--")}</td>
-      <td><span className="pool-text-cell">{String(row.pool_fault_names || row.fault_names || row.fault_detail || row.fault_description || "--")}</span></td>
+      <td className="muted pool-date-cell">{repairPoolDateDisplay(row.created_at)}</td>
+      <td className="pool-device-td"><div className="pool-device-cell"><b>{String(row.model || "归档订单")}</b><span>IMEI: {maskCode(imei)}</span></div></td>
+      <td className="pool-customer-td"><div className="pool-customer-cell"><b>{String(row.customer_name || row.linked_customer_name || "未关联客户")}</b><span>{maskPhone(phone)}</span></div></td>
       <td><span className="pool-text-cell">{String(row.pool_pre_inspection_abnormal || row.pre_inspection_abnormal || "--")}</span></td>
-      <td><span className="pool-status archived">已删除</span></td>
-      <td>{String(row.assigned_to || row.engineer_user || "--")}</td>
-      <td className="muted">{String(archive.archived_at || row.archived_at || row.updated_at || "--")}</td>
+      <td className="pool-fault-td"><span className="pool-text-cell">{String(row.pool_fault_names || row.fault_names || row.fault_detail || row.fault_description || "--")}</span></td>
       <td className="align-right"><b>{poolMoney(row.quoted_amount || row.charge_amount || row.amount || 0)}</b></td>
+      <td><span className="pool-status archived">已删除</span></td>
+      <td className="muted pool-date-cell">{repairPoolDateDisplay(archive.archived_at || row.archived_at || row.updated_at)}</td>
+      <td>{String(row.assigned_to || row.engineer_user || "--")}</td>
       <td className="align-center"><div className="pool-row-actions"><button type="button" onClick={() => onOpen(archiveRow, "view")}>查看归档</button></div></td>
     </tr>
   );
@@ -1481,7 +1566,7 @@ function normalizeRepairStatus(input: unknown) {
   const text = String(input || "");
   if (text.includes("取消") || text.includes("作废")) return "已取消";
   if (text.includes("完") || text.includes("结") || text.includes("交付")) return "已完结";
-  if (text.includes("支付") || text.includes("收款") || text.includes("财务") || text.includes("挂账")) return "待支付";
+  if (text.includes("支付") || text.includes("收款") || text.includes("财务") || text.includes("挂账")) return "待完单/收款";
   return "维修中";
 }
 
@@ -2559,7 +2644,7 @@ function OrderDetailPage({
     <div className={`order-detail-page order-mode-${mode}`}>
       <header className="order-detail-topbar">
         <div className="order-detail-title"><button type="button" className="back-button" onClick={onBack}><ArrowLeft size={24} /></button><h1>{mode === "new" ? "新建工单" : mode === "edit" ? "编辑工单" : mode === "cancel" ? "取消工单" : "工单详情"}</h1></div>
-        <div className="order-detail-icons"><button type="button" className="icon-button" aria-label="查看工单提醒" onClick={() => notify(statusText === "待支付" ? "该工单需要处理收款或财务确认。" : "当前工单暂无新的系统提醒。")}><Bell size={23} /><span /></button><button type="button" className="icon-button" aria-label="查看当前账号" onClick={() => notify(`当前账号：${currentOperator}`)}><UserRound size={23} /></button></div>
+        <div className="order-detail-icons"><button type="button" className="icon-button" aria-label="查看工单提醒" onClick={() => notify(statusText === "待完单/收款" ? "该工单需要处理收款或财务确认。" : "当前工单暂无新的系统提醒。")}><Bell size={23} /><span /></button><button type="button" className="icon-button" aria-label="查看当前账号" onClick={() => notify(`当前账号：${currentOperator}`)}><UserRound size={23} /></button></div>
       </header>
 
       <section className="order-hero">

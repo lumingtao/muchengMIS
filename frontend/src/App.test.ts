@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compactPageItems, firstText, maskCode, maskPhone, repairBillHeaders, repairMonthlySummaryValues, splitHonorificName, toRepairBillExportRow } from "./App";
+import { compactPageItems, firstText, isRepairPoolRowInDateRange, isRepairPoolRowInTodayMode, maskCode, maskPhone, repairBillHeaders, repairMonthlySummaryValues, repairPoolColumnOrder, repairPoolDateDisplay, splitHonorificName, toRepairBillExportRow } from "./App";
 
 describe("repair pool helpers", () => {
   it("builds compact pagination items around the current page", () => {
@@ -32,6 +32,34 @@ describe("repair pool helpers", () => {
   it("uses the dedicated repair monthly summary rather than payment-list totals", () => {
     expect(repairMonthlySummaryValues({ confirmed_revenue: 680, net_profit: 255 })).toEqual({ revenue: 680, netProfit: 255 });
     expect(repairMonthlySummaryValues(undefined)).toEqual({ revenue: 0, netProfit: 0 });
+  });
+
+  it("keeps the repair pool business columns in the requested reading order", () => {
+    expect(repairPoolColumnOrder).toEqual(["订单编号", "下单时间", "设备信息", "客户信息", "维修前检测", "故障名称", "价格", "订单状态", "最后更新", "工程师", "操作"]);
+  });
+
+  it("filters repair pool rows by an inclusive created date range", () => {
+    expect(isRepairPoolRowInDateRange({ created_at: "2026-06-01 09:00:00" }, ["2026-06-01", "2026-06-10"])).toBe(true);
+    expect(isRepairPoolRowInDateRange({ created_at: "2026-06-10 23:59:59" }, ["2026-06-01", "2026-06-10"])).toBe(true);
+    expect(isRepairPoolRowInDateRange({ created_at: "2026-05-31 23:59:59" }, ["2026-06-01", "2026-06-10"])).toBe(false);
+    expect(isRepairPoolRowInDateRange({ created_at: "2026-06-11 00:00:00" }, ["2026-06-01", "2026-06-10"])).toBe(false);
+    expect(isRepairPoolRowInDateRange({ created_at: "2026-01-01 00:00:00" }, ["", ""])).toBe(true);
+  });
+
+  it("shows repair pool table timestamps as date-only values", () => {
+    expect(repairPoolDateDisplay("2026-06-24 08:56:37")).toBe("2026-06-24");
+    expect(repairPoolDateDisplay("")).toBe("--");
+  });
+
+  it("cycles today quick filters between none, created today, and completed today semantics", () => {
+    const today = "2026-06-24";
+    expect(isRepairPoolRowInTodayMode({ created_at: "2026-01-01 09:00:00" }, "none", today)).toBe(true);
+    expect(isRepairPoolRowInTodayMode({ created_at: "2026-06-24 09:00:00" }, "created", today)).toBe(true);
+    expect(isRepairPoolRowInTodayMode({ created_at: "2026-06-23 23:59:59" }, "created", today)).toBe(false);
+    expect(isRepairPoolRowInTodayMode({ updated_at: "2026-06-24 12:00:00", status: "待完单/收款" }, "completed", today)).toBe(true);
+    expect(isRepairPoolRowInTodayMode({ completed_at: "2026-06-24 12:00:00", status: "已完结" }, "completed", today)).toBe(true);
+    expect(isRepairPoolRowInTodayMode({ updated_at: "2026-06-24 12:00:00", status: "维修中" }, "completed", today)).toBe(false);
+    expect(isRepairPoolRowInTodayMode({ updated_at: "2026-06-23 12:00:00", status: "已完结" }, "completed", today)).toBe(false);
   });
 
   it("maps filtered repair pool rows to the repair bill template columns", () => {

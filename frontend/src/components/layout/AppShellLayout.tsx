@@ -1,6 +1,6 @@
-import { ReactNode } from "react";
+import { ReactNode, useState } from "react";
 import { Input } from "antd";
-import { Bell, HelpCircle, LogOut, Mail, Search, UserRound } from "lucide-react";
+import { Bell, ChevronLeft, ChevronRight, HelpCircle, LogOut, Mail, Search, UserRound } from "lucide-react";
 import { AppModal } from "../feedback/AppModal";
 
 type ViewMeta = {
@@ -42,24 +42,37 @@ export function AppShellLayout<TView extends string>({
   logout,
   onCloseModal,
 }: AppShellLayoutProps<TView>) {
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
   const isOrderDetailShell = view === "orderDetail" || view === "repair";
   const isRepairPoolShell = view === "repairPool";
   const showPageTitle = view !== "dashboard" && view !== "orderDetail" && view !== "repairPool" && view !== "repair";
 
   return (
-    <div className={`app-shell ${isOrderDetailShell ? "order-detail-shell" : ""} ${isRepairPoolShell ? "repair-pool-shell" : ""}`}>
+    <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${isOrderDetailShell ? "order-detail-shell" : ""} ${isRepairPoolShell ? "repair-pool-shell" : ""}`}>
       <aside className="sidebar">
-        <div className="brand"><div><strong>沐辰科技</strong><span>专业维修与销售</span></div></div>
+        <div className="brand">
+          <div className="brand-mark">M</div>
+          <div className="brand-copy"><strong>沐辰科技</strong><span>专业维修与销售</span></div>
+          <button
+            type="button"
+            className="sidebar-collapse-button"
+            aria-label={sidebarCollapsed ? "展开左侧导航" : "折叠左侧导航"}
+            title={sidebarCollapsed ? "展开导航" : "折叠导航"}
+            onClick={() => setSidebarCollapsed(value => !value)}
+          >
+            {sidebarCollapsed ? <ChevronRight size={18} /> : <ChevronLeft size={18} />}
+          </button>
+        </div>
         <nav className="primary-nav">
           {primaryNav.map(item => {
             const childActive = item.children?.some(child => child.key === view);
             const active = view === item.key || childActive || (view === "orderDetail" && item.key === "repairPool");
             return (
               <div className="primary-nav-item" key={item.key}>
-                <button className={active ? "active" : ""} onClick={() => setView(item.key)} type="button">
-                  {item.icon}{item.label}
+                <button className={active ? "active" : ""} onClick={() => setView(item.key)} type="button" title={item.label}>
+                  {item.icon}<span>{item.label}</span>
                 </button>
-                {item.children && active && (
+                {item.children && active && !sidebarCollapsed && (
                   <div className="secondary-nav">
                     {item.children.map(child => (
                       <button key={child.key} className={view === child.key || (view === item.key && child.key === item.key) ? "active" : ""} onClick={() => setView(child.key)} type="button">
@@ -73,8 +86,8 @@ export function AppShellLayout<TView extends string>({
           })}
         </nav>
         <div className="sidebar-footer">
-          <button type="button" className="plain-nav-button" onClick={() => notify("帮助中心已接入当前业务说明文档，可先查看 README 和 BUSINESS_FLOW。")}><HelpCircle size={20} />帮助中心</button>
-          <button type="button" className="plain-nav-button" onClick={logout}><LogOut size={20} />退出登录</button>
+          <button type="button" className="plain-nav-button" title="帮助中心" onClick={() => notify("帮助中心已接入当前业务说明文档，可先查看 README 和 BUSINESS_FLOW。")}><HelpCircle size={20} /><span>帮助中心</span></button>
+          <button type="button" className="plain-nav-button" title="退出登录" onClick={logout}><LogOut size={20} /><span>退出登录</span></button>
         </div>
       </aside>
       <main>

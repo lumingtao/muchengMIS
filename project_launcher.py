@@ -11,6 +11,7 @@ from tkinter import filedialog, messagebox, ttk
 
 ROOT_DIR = Path(__file__).resolve().parent
 CONTROL_SCRIPT = ROOT_DIR / "project_ctl.py"
+SKU_PRICE_MAINTENANCE_SCRIPT = ROOT_DIR / "mis_mvp" / "tools" / "maintain_repair_sku_prices.py"
 SETTINGS_PATH = ROOT_DIR / ".launcher_settings.json"
 DEFAULT_DB = ROOT_DIR / "mis_mvp" / "data" / "mis_mvp.sqlite3"
 
@@ -19,8 +20,8 @@ class Launcher(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("沐辰 MIS 项目启动入口")
-        self.geometry("620x360")
-        self.minsize(560, 330)
+        self.geometry("620x420")
+        self.minsize(560, 390)
         self.resizable(True, False)
 
         settings = self.load_settings()
@@ -85,6 +86,16 @@ class Launcher(tk.Tk):
         ttk.Button(buttons, text="重启服务", command=lambda: self.run_action("restart")).pack(side="left", expand=True, fill="x", padx=8)
         ttk.Button(buttons, text="停止服务", command=lambda: self.run_action("stop")).pack(side="left", expand=True, fill="x", padx=(8, 0))
 
+        maintenance = ttk.Frame(outer)
+        maintenance.pack(fill="x", pady=(0, 16))
+        ttk.Label(maintenance, text="故障代码报价维护").pack(side="left", padx=(0, 12))
+        self.maintenance_button = ttk.Button(
+            maintenance,
+            text="按真实订单维护报价",
+            command=self.run_sku_price_maintenance,
+        )
+        self.maintenance_button.pack(side="left", expand=True, fill="x")
+
         status_box = ttk.LabelFrame(outer, text="状态")
         status_box.pack(fill="x")
         ttk.Label(status_box, textvariable=self.status_var, wraplength=540, padding=10).pack(fill="x")
@@ -131,6 +142,59 @@ class Launcher(tk.Tk):
         lan_ip = self.lan_ip_address()
         lan_url = f"http://{lan_ip}:{port}/" if lan_ip else "未检测到可用局域网 IPv4 地址"
         return f"本机访问：{local_url}\n局域网访问：{lan_url}"
+
+    @staticmethod
+    def port_is_in_use(port: int) -> bool:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(0.2)
+            return sock.connect_ex(("127.0.0.1", port)) == 0
+
+    def run_sku_price_maintenance(self) -> None:
+        """Run the audited SQLite maintenance only while the MIS service is stopped."""
+        try:
+            port = self.validated_port()
+            db_path = Path(self.db_var.get().strip()).expanduser()
+            if not db_path.is_file():
+                raise ValueError("请选择存在的 SQLite 数据库文件。")
+            if not SKU_PRICE_MAINTENANCE_SCRIPT.is_file():
+                raise FileNotFoundError(f"维护脚本不存在：{SKU_PRICE_MAINTENANCE_SCRIPT}")
+            if self.port_is_in_use(port):
+                raise ValueError("请先停止 MIS 服务，再执行数据库维护。")
+            confirmed = messagebox.askyesno(
+                "确认维护报价",
+                "将根据真实维修订单更新故障代码的默认报价。\n\n"
+                "系统会先创建数据库备份，且不会修改历史订单。是否继续？",
+            )
+            if not confirmed:
+                return
+            self.save_settings()
+            self.maintenance_button.state(["disabled"])
+            self.status_var.set("正在根据真实订单维护故障代码报价…")
+            self.update_idletasks()
+            result = subprocess.run(
+                [sys.executable, str(SKU_PRICE_MAINTENANCE_SCRIPT), "--db", str(db_path.resolve())],
+                cwd=ROOT_DIR,
+                capture_output=True,
+                text=True,
+                errors="ignore",
+                check=False,
+            )
+            output = (result.stdout or result.stderr or "").strip()
+            if result.returncode != 0:
+                raise RuntimeError(output or "报价维护失败，请查看日志。")
+            summary = json.loads(output)
+            message = (
+                f"报价维护完成：处理 {summary['changes']} 项，"
+                f"排除 {summary['excluded']} 条明细。\n"
+                f"备份：{summary['backup']}\n审计报告：{summary['report']}"
+            )
+            self.status_var.set(message)
+            messagebox.showinfo("报价维护完成", message)
+        except Exception as exc:
+            self.status_var.set(str(exc))
+            messagebox.showerror("报价维护失败", str(exc))
+        finally:
+            self.maintenance_button.state(["!disabled"])
 
     def run_action(self, action: str) -> None:
         try:

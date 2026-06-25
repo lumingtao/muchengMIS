@@ -92,7 +92,6 @@ if (frontend_dir / "assets").exists():
 
 def get_service():
     conn = connect(settings.database_path)
-    migrate(conn)
     try:
         yield MisService(conn)
     finally:
