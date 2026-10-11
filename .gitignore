@@ -25,6 +25,7 @@ mis_mvp/uploads/
 
 # Local environment and secrets
 .env
+*.legacy.key
 .env.*
 !.env.example
 

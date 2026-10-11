@@ -1,6 +1,6 @@
-import { ReactNode, useState } from "react";
+import { ReactNode } from "react";
 import { Input } from "antd";
-import { Bell, ChevronLeft, ChevronRight, HelpCircle, LogOut, Mail, Search, UserRound } from "lucide-react";
+import { Bell, HelpCircle, LogOut, Mail, Search, UserRound } from "lucide-react";
 import { AppModal } from "../feedback/AppModal";
 
 type ViewMeta = {
@@ -42,26 +42,16 @@ export function AppShellLayout<TView extends string>({
   logout,
   onCloseModal,
 }: AppShellLayoutProps<TView>) {
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
   const isOrderDetailShell = view === "orderDetail" || view === "repair";
   const isRepairPoolShell = view === "repairPool";
   const showPageTitle = view !== "dashboard" && view !== "orderDetail" && view !== "repairPool" && view !== "repair";
 
   return (
-    <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${isOrderDetailShell ? "order-detail-shell" : ""} ${isRepairPoolShell ? "repair-pool-shell" : ""}`}>
+    <div className={`app-shell ${isOrderDetailShell ? "order-detail-shell" : ""} ${isRepairPoolShell ? "repair-pool-shell" : ""}`}>
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark">M</div>
           <div className="brand-copy"><strong>沐辰科技</strong><span>专业维修与销售</span></div>
-          <button
-            type="button"
-            className="sidebar-collapse-button"
-            aria-label={sidebarCollapsed ? "展开左侧导航" : "折叠左侧导航"}
-            title={sidebarCollapsed ? "展开导航" : "折叠导航"}
-            onClick={() => setSidebarCollapsed(value => !value)}
-          >
-            {sidebarCollapsed ? <ChevronRight size={18} /> : <ChevronLeft size={18} />}
-          </button>
         </div>
         <nav className="primary-nav">
           {primaryNav.map(item => {
@@ -72,7 +62,7 @@ export function AppShellLayout<TView extends string>({
                 <button className={active ? "active" : ""} onClick={() => setView(item.key)} type="button" title={item.label}>
                   {item.icon}<span>{item.label}</span>
                 </button>
-                {item.children && active && !sidebarCollapsed && (
+                {item.children && active && (
                   <div className="secondary-nav">
                     {item.children.map(child => (
                       <button key={child.key} className={view === child.key || (view === item.key && child.key === item.key) ? "active" : ""} onClick={() => setView(child.key)} type="button">

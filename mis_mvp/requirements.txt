@@ -4,3 +4,5 @@ pydantic
 pytest
 httpx
 eval_type_backport
+cryptography>=44
+openpyxl>=3.1

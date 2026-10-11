@@ -118,6 +118,16 @@ class MisService:
         if permission not in self.repo.permissions_for_role(str(user.role)):
             raise PermissionError(f"角色 {user.role} 无权执行 {permission}")
 
+    def _ensure_legacy_takeover(self, repair_order_id: int) -> None:
+        link = self.conn.execute("SELECT ownership FROM legacy_links WHERE repair_order_id=?", (repair_order_id,)).fetchone()
+        if link and link["ownership"] == "following":
+            raise BusinessError("老系统工单需要先接管")
+
+    def _ensure_legacy_machine_takeover(self, machine_id: int) -> None:
+        link = self.conn.execute("SELECT ownership FROM legacy_links WHERE machine_id=? AND ownership='following'", (machine_id,)).fetchone()
+        if link:
+            raise BusinessError("老系统设备需要先接管")
+
     def _log_success(self, user: User, action: str, target_type: str, target_id: str, **kwargs: Any) -> None:
         self.repo.add_log(user.username, str(user.role), action, target_type, target_id, "success", **kwargs)
 
@@ -134,6 +144,7 @@ class MisService:
 
     def _ensure_machine(self, user: User, machine_id: int | None, machine: MachineInput | None, default_line: BusinessLine) -> dict[str, Any]:
         if machine_id:
+            self._ensure_legacy_machine_takeover(machine_id)
             existing = self.repo.get_machine(machine_id)
             if not existing:
                 raise BusinessError("机器档案不存在")
@@ -200,6 +211,7 @@ class MisService:
 
     def update_machine(self, user: User, machine_id: int, data: MachineUpdateInput) -> dict[str, Any]:
         self._allowed(user, "machine:update")
+        self._ensure_legacy_machine_takeover(machine_id)
         machine = self.repo.get_machine(machine_id)
         if not machine:
             raise BusinessError("机器档案不存在")
@@ -271,6 +283,7 @@ class MisService:
 
     def update_repair_order_machine(self, user: User, repair_order_id: int, data: MachineUpdateInput) -> dict[str, Any]:
         self._allowed(user, "repair_order:update")
+        self._ensure_legacy_takeover(repair_order_id)
         order = self.repo.get_repair_order(repair_order_id)
         if not order:
             raise BusinessError("维修单不存在")
@@ -299,6 +312,7 @@ class MisService:
 
     def add_machine_note(self, user: User, machine_id: int, data: MachineNoteInput) -> dict[str, Any]:
         self._allowed(user, "machine:update")
+        self._ensure_legacy_machine_takeover(machine_id)
         machine = self.repo.get_machine(machine_id)
         if not machine:
             raise BusinessError("机器档案不存在")
@@ -312,6 +326,7 @@ class MisService:
 
     def delete_machine(self, user: User, machine_id: int) -> dict[str, Any]:
         self._allowed(user, "machine:delete")
+        self._ensure_legacy_machine_takeover(machine_id)
         machine = self.repo.get_machine(machine_id)
         if not machine:
             raise BusinessError("机器档案不存在")
@@ -1140,6 +1155,7 @@ class MisService:
                 LIMIT 1
             )
             WHERE ro.archived_at=''{visibility_filter}
+              AND NOT EXISTS (SELECT 1 FROM legacy_links li WHERE li.repair_order_id=ro.repair_order_id AND li.ownership='following')
             ORDER BY ro.updated_at DESC, ro.repair_order_id DESC
             """,
             visibility_params,
@@ -1169,6 +1185,7 @@ class MisService:
                        COALESCE(SUM(quoted_amount), 0) AS quoted_amount
                 FROM repair_orders
                 WHERE archived_at=''{self._repair_visibility_filter(user)[0]}
+                  AND NOT EXISTS (SELECT 1 FROM legacy_links li WHERE li.repair_order_id=repair_orders.repair_order_id AND li.ownership='following')
                 GROUP BY status, payment_status, settlement_status
                 ORDER BY status, payment_status
                 """,
@@ -1241,11 +1258,17 @@ class MisService:
         inspections = self.repo.list_repair_order_inspections(repair_order_id)
         repair_items = self.repo.list_repair_items(repair_order_id)
         modules = self._repair_modules(order, repair_items, payments, inspections)
+        legacy = self._one("SELECT ownership,classification FROM legacy_links WHERE repair_order_id=?", (repair_order_id,))
+        if legacy and legacy['ownership'] == 'following':
+            order['readonly'] = True
+            order['readonly_reason'] = '老系统工单需要先接管'
+            order['status_light']['readonly'] = True
+            order['status_light']['readonly_reason'] = order['readonly_reason']
         return {
             "order": order,
             "modules": modules,
-            "available_actions": self._repair_module_available_actions(order, modules, repair_items),
-            "order_actions": self._repair_order_available_actions_for_user(user, order),
+            "available_actions": [] if legacy and legacy['ownership'] == 'following' else self._repair_module_available_actions(order, modules, repair_items),
+            "order_actions": [] if legacy and legacy['ownership'] == 'following' else self._repair_order_available_actions_for_user(user, order),
             "income_items": self._rows("SELECT * FROM repair_income_items WHERE repair_order_id=? ORDER BY income_item_id", (repair_order_id,)),
             "cost_items": self._rows("SELECT * FROM repair_cost_items WHERE repair_order_id=? ORDER BY cost_item_id", (repair_order_id,)),
             "repair_items": repair_items,
@@ -1269,6 +1292,7 @@ class MisService:
 
     def delete_repair_order(self, user: User, repair_order_id: int, reason: str) -> dict[str, Any]:
         self._allowed(user, "repair_order:delete")
+        self._ensure_legacy_takeover(repair_order_id)
         reason = reason.strip()
         if not reason:
             raise BusinessError("删除订单必须填写原因")
@@ -1437,6 +1461,7 @@ class MisService:
         return actions
 
     def apply_repair_module_action(self, user: User, repair_order_id: int, module: str, action: str, data: RepairWorkflowActionInput) -> dict[str, Any]:
+        self._ensure_legacy_takeover(repair_order_id)
         normalized = f"{module}.{action}"
         order = self.repo.get_repair_order(repair_order_id)
         if not order:
@@ -1526,6 +1551,7 @@ class MisService:
 
     def add_repair_order_photo(self, user: User, repair_order_id: int, stage: str, filename: str, content_type: str, content: bytes) -> dict[str, Any]:
         self._allowed(user, "repair_order:update")
+        self._ensure_legacy_takeover(repair_order_id)
         order = self.repo.get_repair_order(repair_order_id)
         if not order:
             raise BusinessError("维修单不存在")
@@ -1568,6 +1594,7 @@ class MisService:
 
     def save_repair_order_inspection(self, user: User, repair_order_id: int, data: RepairInspectionInput) -> dict[str, Any]:
         self._allowed(user, "repair_order:update")
+        self._ensure_legacy_takeover(repair_order_id)
         order = self.repo.get_repair_order(repair_order_id)
         if not order:
             raise BusinessError("维修单不存在")
@@ -3064,6 +3091,7 @@ class MisService:
 
     def reserve_repair_materials(self, user: User, repair_order_id: int, data: RepairMaterialReserveInput) -> dict[str, Any]:
         self._allowed(user, "repair_order:update")
+        self._ensure_legacy_takeover(repair_order_id)
         order = self.repo.get_repair_order(repair_order_id)
         if not order:
             raise BusinessError("维修单不存在")
@@ -3079,6 +3107,7 @@ class MisService:
 
     def release_repair_materials(self, user: User, repair_order_id: int, data: RepairMaterialReserveInput) -> dict[str, Any]:
         self._allowed(user, "repair_order:update")
+        self._ensure_legacy_takeover(repair_order_id)
         order = self.repo.get_repair_order(repair_order_id)
         if not order:
             raise BusinessError("维修单不存在")
@@ -3196,10 +3225,12 @@ class MisService:
 
     def consume_repair_materials(self, user: User, repair_order_id: int, data: RepairMaterialReserveInput) -> dict[str, Any]:
         self._allowed(user, "repair_order:update")
+        self._ensure_legacy_takeover(repair_order_id)
         return self._consume_repair_materials(user, repair_order_id, data)
 
     def apply_repair_workflow_action(self, user: User, repair_order_id: int, data: RepairWorkflowActionInput) -> dict[str, Any]:
         self._allowed(user, "repair_order:update")
+        self._ensure_legacy_takeover(repair_order_id)
         order = self.repo.get_repair_order(repair_order_id)
         if not order:
             raise BusinessError("维修单不存在")
@@ -3350,6 +3381,7 @@ class MisService:
 
     def assign_repair_order(self, user: User, repair_order_id: int, data: RepairAssignInput) -> dict[str, Any]:
         self._allowed(user, "repair_order:assign")
+        self._ensure_legacy_takeover(repair_order_id)
         self._ensure_frontdesk_or_admin(user)
         order = self.repo.get_repair_order(repair_order_id)
         if not order:
@@ -3382,6 +3414,7 @@ class MisService:
 
     def quote_repair_order(self, user: User, repair_order_id: int, data: RepairQuoteInput) -> dict[str, Any]:
         self._allowed(user, "repair_order:update")
+        self._ensure_legacy_takeover(repair_order_id)
         order = self.repo.get_repair_order(repair_order_id)
         if not order:
             raise BusinessError("维修单不存在")
@@ -3412,6 +3445,7 @@ class MisService:
 
     def confirm_repair_quote(self, user: User, repair_order_id: int, data: RepairQuoteConfirmInput) -> dict[str, Any]:
         self._allowed(user, "repair_order:confirm")
+        self._ensure_legacy_takeover(repair_order_id)
         self._ensure_frontdesk_or_admin(user)
         order = self.repo.get_repair_order(repair_order_id)
         if not order:
@@ -3448,6 +3482,7 @@ class MisService:
 
     def change_repair_order_price(self, user: User, repair_order_id: int, data: PriceChangeInput) -> dict[str, Any]:
         self._allowed(user, "repair_order:update")
+        self._ensure_legacy_takeover(repair_order_id)
         order = self.repo.get_repair_order(repair_order_id)
         if not order:
             raise BusinessError("维修单不存在")
@@ -3464,6 +3499,7 @@ class MisService:
 
     def change_repair_order_discount(self, user: User, repair_order_id: int, data: RepairDiscountInput) -> dict[str, Any]:
         self._allowed(user, "repair_order:update")
+        self._ensure_legacy_takeover(repair_order_id)
         order = self.repo.get_repair_order(repair_order_id)
         if not order:
             raise BusinessError("维修单不存在")
@@ -3488,6 +3524,7 @@ class MisService:
 
     def append_repair_order_remark(self, user: User, repair_order_id: int, data: RepairRemarkInput) -> dict[str, Any]:
         self._allowed(user, "repair_order:update")
+        self._ensure_legacy_takeover(repair_order_id)
         order = self.repo.get_repair_order(repair_order_id)
         if not order:
             raise BusinessError("维修单不存在")
@@ -3512,6 +3549,7 @@ class MisService:
 
     def update_repair_order_note(self, user: User, repair_order_id: int, note_id: int, data: RepairOrderNoteUpdateInput) -> dict[str, Any]:
         self._allowed(user, "repair_order:update")
+        self._ensure_legacy_takeover(repair_order_id)
         order = self.repo.get_repair_order(repair_order_id)
         note = self.repo.get_repair_order_note(note_id)
         if not order or not note or int(note["repair_order_id"]) != repair_order_id or int(note.get("is_deleted") or 0):
@@ -3531,6 +3569,7 @@ class MisService:
 
     def delete_repair_order_note(self, user: User, repair_order_id: int, note_id: int, data: RepairOrderNoteDeleteInput) -> dict[str, Any]:
         self._allowed(user, "repair_order:update")
+        self._ensure_legacy_takeover(repair_order_id)
         order = self.repo.get_repair_order(repair_order_id)
         note = self.repo.get_repair_order_note(note_id)
         if not order or not note or int(note["repair_order_id"]) != repair_order_id or int(note.get("is_deleted") or 0):
@@ -3548,6 +3587,7 @@ class MisService:
 
     def add_repair_item(self, user: User, repair_order_id: int, data: RepairItemInput) -> dict[str, Any]:
         self._allowed(user, "repair_order:update")
+        self._ensure_legacy_takeover(repair_order_id)
         order = self.repo.get_repair_order(repair_order_id)
         if not order:
             raise BusinessError("维修单不存在")
@@ -3582,6 +3622,7 @@ class MisService:
 
     def update_repair_item(self, user: User, repair_order_id: int, repair_item_id: int, data: RepairItemUpdateInput) -> dict[str, Any]:
         self._allowed(user, "repair_order:update")
+        self._ensure_legacy_takeover(repair_order_id)
         order = self.repo.get_repair_order(repair_order_id)
         if not order:
             raise BusinessError("缁翠慨鍗曚笉瀛樺湪")
@@ -3606,6 +3647,7 @@ class MisService:
 
     def delete_repair_item(self, user: User, repair_order_id: int, repair_item_id: int) -> dict[str, Any]:
         self._allowed(user, "repair_order:update")
+        self._ensure_legacy_takeover(repair_order_id)
         order = self.repo.get_repair_order(repair_order_id)
         if not order:
             raise BusinessError("维修单不存在")
@@ -3631,6 +3673,7 @@ class MisService:
 
     def update_repair_order_status(self, user: User, repair_order_id: int, data: RepairOrderStatusInput) -> dict[str, Any]:
         self._allowed(user, "repair_order:update")
+        self._ensure_legacy_takeover(repair_order_id)
         order = self.repo.get_repair_order(repair_order_id)
         if not order:
             raise BusinessError("维修单不存在")
@@ -3695,6 +3738,7 @@ class MisService:
 
     def engineer_close_repair_order(self, user: User, repair_order_id: int, data: RepairEngineerCloseInput) -> dict[str, Any]:
         self._allowed(user, "repair_order:engineer_close")
+        self._ensure_legacy_takeover(repair_order_id)
         order = self.repo.get_repair_order(repair_order_id)
         if not order:
             raise BusinessError("维修单不存在")
@@ -3714,6 +3758,7 @@ class MisService:
 
     def deliver_repair_order(self, user: User, repair_order_id: int, data: RepairDeliverInput) -> dict[str, Any]:
         self._allowed(user, "repair_order:update")
+        self._ensure_legacy_takeover(repair_order_id)
         order = self.repo.get_repair_order(repair_order_id)
         if not order:
             raise BusinessError("维修单不存在")
@@ -3831,6 +3876,7 @@ class MisService:
     def create_payment(self, user: User, data: PaymentInput, commit: bool = True) -> dict[str, Any]:
         self._allowed(user, "payment:create")
         if data.source_type == "repair":
+            self._ensure_legacy_takeover(data.source_id)
             order = self.repo.get_repair_order(data.source_id)
             if not order:
                 raise BusinessError("维修单不存在")
@@ -3841,7 +3887,8 @@ class MisService:
                 raise BusinessError("维修单已结单，不能重复收款")
             if status != OrderStatus.delivered:
                 raise BusinessError("维修单交付后才能收款结单")
-            if order.get("assigned_to") and not order.get("engineer_closed_at"):
+            confirmed_legacy_completion = self._one("SELECT record_id FROM legacy_links WHERE repair_order_id=? AND ownership='taken' AND taken_stage IN ('待交付','已交付')", (data.source_id,))
+            if order.get("assigned_to") and not order.get("engineer_closed_at") and not confirmed_legacy_completion:
                 raise BusinessError("工程师结单后才能由前台收费")
             if data.direction != PaymentDirection.income:
                 raise BusinessError("维修单只能登记收入流水")
@@ -3874,6 +3921,52 @@ class MisService:
         self._allowed(user, "payment:read")
         self._allowed(user, "repair_order:read")
         return self.repo.repair_monthly_financial_summary()
+
+    def analyze_repair_billing_upload(self, user: User, filename: str, content: bytes, policy_json: str) -> dict[str, Any]:
+        self._allowed(user, "report:read")
+        self._allowed(user, "repair_order:read")
+        from .repair_finance import DEFAULT_POLICY, analyze_repair_billing_xlsx, policy_for_storage, policy_from_json
+
+        stored = self.repo.get_repair_finance_settings()
+        raw_policy = policy_from_json(policy_json) if policy_json.strip() else ((stored or {}).get("policy") or DEFAULT_POLICY)
+        policy = policy_for_storage(raw_policy)
+        result = analyze_repair_billing_xlsx(content, filename, policy)
+        batch_id = self.repo.create_repair_finance_batch(result, policy, user.username)
+        self._log_success(user, "repair_finance:upload", "repair_finance_batch", str(batch_id), request_summary=filename)
+        self.conn.commit()
+        return {**result, "batch_id": batch_id, "persisted": True}
+
+    def get_repair_finance_settings(self, user: User) -> dict[str, Any]:
+        self._allowed(user, "report:read")
+        from .repair_finance import DEFAULT_POLICY, policy_for_storage
+
+        stored = self.repo.get_repair_finance_settings()
+        if stored:
+            return stored
+        return {"settings_id": 1, "policy": policy_for_storage(DEFAULT_POLICY), "updated_by": "", "updated_at": ""}
+
+    def save_repair_finance_settings(self, user: User, raw_policy: dict[str, Any]) -> dict[str, Any]:
+        self._allowed(user, "report:read")
+        from .repair_finance import policy_for_storage
+
+        policy = policy_for_storage(raw_policy)
+        saved = self.repo.save_repair_finance_settings(policy, user.username)
+        self._log_success(user, "repair_finance:settings", "repair_finance_settings", "1", request_summary="更新维修结算规则")
+        self.conn.commit()
+        return saved
+
+    def list_repair_finance_batches(self, user: User) -> list[dict[str, Any]]:
+        self._allowed(user, "report:read")
+        self._allowed(user, "repair_order:read")
+        return self.repo.list_repair_finance_batches()
+
+    def get_repair_finance_batch(self, user: User, batch_id: int) -> dict[str, Any]:
+        self._allowed(user, "report:read")
+        self._allowed(user, "repair_order:read")
+        item = self.repo.get_repair_finance_batch(batch_id)
+        if not item:
+            raise BusinessError("结算批次不存在")
+        return item
 
     def machine_reports(self, user: User) -> dict[str, Any]:
         self._allowed(user, "report:read")

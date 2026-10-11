@@ -56,8 +56,11 @@ import { AppFormSection } from "./components/forms/AppFormSection";
 import { AppShellLayout } from "./components/layout/AppShellLayout";
 import { AppPanel } from "./components/layout/AppPanel";
 import { WarehousePage as WarehouseManagementPage } from "./pages/warehouse/WarehousePage";
+import { LegacyImportPage, LegacyOrderPanel } from "./pages/LegacyImportPage";
+import { LegacyView, isLegacyView, legacyNavItems, legacyViews } from "./pages/legacy/navigation";
+import { RepairBillingDataPage, RepairBillingSettingsPage, RepairBillingUploadPage } from "./pages/finance/RepairBillingPage";
 
-type ViewKey = "dashboard" | "repairPool" | "orderDetail" | "recyclePool" | "repair" | "recycle" | "warehouse" | "warehouseMaterials" | "warehouseBatches" | "warehouseUnits" | "warehouseRequests" | "warehouseReturns" | "warehouseCounts" | "warehouseMovements" | "warehouseBasics" | "inventory" | "sales" | "customers" | "payments" | "reports" | "audit" | "settingsEmployees" | "settingsRoles" | "settingsDeviceModels" | "settingsRepairSkus";
+type ViewKey = LegacyView | "dashboard" | "repairPool" | "orderDetail" | "recyclePool" | "repair" | "recycle" | "warehouse" | "warehouseMaterials" | "warehouseBatches" | "warehouseUnits" | "warehouseRequests" | "warehouseReturns" | "warehouseCounts" | "warehouseMovements" | "warehouseBasics" | "inventory" | "sales" | "customers" | "payments" | "reports" | "repairBilling" | "repairBillingSettings" | "repairBillingData" | "repairBillingUpload" | "audit" | "settingsEmployees" | "settingsRoles" | "settingsDeviceModels" | "settingsRepairSkus";
 type OrderMode = "new" | "view" | "edit" | "cancel";
 type SortState = { key: string; direction: "asc" | "desc" };
 type RepairPoolDateMode = "created" | "completed";
@@ -96,6 +99,7 @@ function displayRoleName(roleName: unknown, role: unknown, fallback: string) {
 }
 
 const viewMeta: Record<ViewKey, { label: string; subtitle: string }> = {
+  ...legacyViews,
   dashboard: { label: "工作台首页", subtitle: "欢迎回来，沐辰科技 MIS 正在平稳运行中。" },
   repairPool: { label: "订单中心", subtitle: "集中查看维修工单、待补资料、挂账和财务确认。" },
   orderDetail: { label: "工单详情", subtitle: "查看维修工单的设备、客户、检测、报价和进度。" },
@@ -116,6 +120,10 @@ const viewMeta: Record<ViewKey, { label: string; subtitle: string }> = {
   customers: { label: "会员管理", subtitle: "维护客户档案、业务记录、欠款结算和回访备注。" },
   payments: { label: "财务流水", subtitle: "登记维修、销售收入和回收支出。" },
   reports: { label: "财务报表", subtitle: "查看库存成本、收入支出和经营概览。" },
+  repairBilling: { label: "上传与数据校准", subtitle: "上传订单明细，校验数据并保存结算批次。" },
+  repairBillingSettings: { label: "结算基础设置", subtitle: "维护工资、提成、分润和结算状态规则。" },
+  repairBillingData: { label: "结算数据展示", subtitle: "查看已保存的历史批次、财务结果和校准问题。" },
+  repairBillingUpload: { label: "上传与数据校准", subtitle: "上传订单明细，校验数据并保存结算批次。" },
   audit: { label: "操作日志", subtitle: "查看关键写操作的审计记录。" },
   settingsEmployees: { label: "员工管理", subtitle: "维护工程师档案、挂单数量、部门、能力标签和接单状态。" },
   settingsRoles: { label: "权限管理", subtitle: "维护角色模板及其业务操作权限。" },
@@ -143,7 +151,8 @@ const primaryNav: Array<{ key: ViewKey; label: string; icon: ReactNode; children
       { key: "warehouseBasics", label: "基础资料" },
     ],
   },
-  { key: "reports", label: "财务报表", icon: <BarChart3 size={22} /> },
+  { key: "reports", label: "财务管理", icon: <BarChart3 size={22} />, children: [{ key: "reports", label: "财务报表" }, { key: "repairBillingSettings", label: "结算基础设置" }, { key: "repairBillingData", label: "结算数据展示" }, { key: "repairBillingUpload", label: "上传与数据校准" }] },
+  { key: "legacyImport", label: "老系统导入", icon: <Download size={22} />, children: legacyNavItems(true) },
   {
     key: "audit",
     label: "系统设置",
@@ -611,7 +620,8 @@ function App() {
     <AppShellLayout
       view={view}
       current={current}
-      primaryNav={primaryNav}
+      primaryNav={primaryNav.map(item => item.key === "legacyImport" && !["admin", "boss"].includes(String(profile.data?.role))
+        ? { ...item, key: "legacyRecords" as const, children: legacyNavItems(false) } : item)}
       userLabel={String(profile.data?.username || user) === "admin" ? "管理员" : String(profile.data?.username || user)}
       roleLabel={displayRoleName(profile.data?.role_name, profile.data?.role, "高级维修顾问")}
       modal={modal}
@@ -681,6 +691,7 @@ function ViewRouter({
   onLeaveOrderDetail: () => void;
 }) {
   if (view === "dashboard") return <DashboardHome notify={notify} setView={setView} openOrderDetail={(row) => openOrderDetail(row, "dashboard")} />;
+  if (isLegacyView(view)) return <LegacyImportPage section={view} onNavigate={setView} notify={notify} openOrderDetail={(row) => openOrderDetail(row, "legacyRecords")} />;
   if (view === "orderDetail") return <OrderDetailPage orderId={selectedRepairOrderId} mode={orderMode} notify={notify} onBack={onLeaveOrderDetail} onCreated={(id) => { setSelectedRepairOrderId(id); setOrderMode("view"); }} onModeChange={setOrderMode} />;
   if (view === "repairPool") return <RepairPool notify={notify} openNewOrder={() => openNewOrder("repairPool")} openOrderDetail={(row, mode) => openOrderDetail(row, "repairPool", mode)} />;
   if (view === "recyclePool") return <RecyclePool openModal={openModal} />;
@@ -689,6 +700,9 @@ function ViewRouter({
   if (view === "customers") return <CustomersPage />;
   if (view === "payments") return <PaymentsPage notify={notify} />;
   if (view === "reports") return <ReportsPage />;
+  if (view === "repairBillingSettings") return <RepairBillingSettingsPage notify={notify} />;
+  if (view === "repairBillingData") return <RepairBillingDataPage />;
+  if (view === "repairBilling" || view === "repairBillingUpload") return <RepairBillingUploadPage notify={notify} />;
   if (view === "audit" || view === "settingsEmployees" || view === "settingsRoles" || view === "settingsDeviceModels" || view === "settingsRepairSkus") return <AuditPage notify={notify} section={view} />;
   if (view === "repair") return <OrderDetailPage orderId={null} mode="new" notify={notify} onBack={() => setView("repairPool")} onCreated={(id) => { setSelectedRepairOrderId(id); setOrderMode("view"); setView("orderDetail"); }} onModeChange={setOrderMode} />;
   if (view === "recycle") return <RecycleOpenPage notify={notify} />;
@@ -2704,6 +2718,7 @@ function OrderDetailPage({
 
   return (
     <div className={`order-detail-page order-mode-${mode}`}>
+      {mode !== "new" && orderId && !isArchiveDetail && <LegacyOrderPanel key={orderId} orderId={orderId} notify={notify} />}
       <header className="order-detail-topbar">
         <div className="order-detail-title"><button type="button" className="back-button" onClick={onBack}><ArrowLeft size={24} /></button><h1>{mode === "new" ? "新建工单" : mode === "edit" ? "编辑工单" : mode === "cancel" ? "取消工单" : "工单详情"}</h1></div>
         <div className="order-detail-icons"><button type="button" className="icon-button" aria-label="查看工单提醒" onClick={() => notify(statusText === "待完单/收款" ? "该工单需要处理收款或财务确认。" : "当前工单暂无新的系统提醒。")}><Bell size={23} /><span /></button><button type="button" className="icon-button" aria-label="查看当前账号" onClick={() => notify(`当前账号：${currentOperator}`)}><UserRound size={23} /></button></div>

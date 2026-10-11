@@ -39,8 +39,7 @@ class Repository:
         for row in rows:
             suffix = str(row["order_no"] or "").rsplit("-", 1)[-1]
             if suffix.isdigit():
-                next_seq = int(suffix) + 1
-                break
+                next_seq = max(next_seq, int(suffix) + 1)
         return f"{prefix}{day}-{next_seq:04d}"
 
     def get_user(self, username: str) -> dict[str, Any] | None:
@@ -249,6 +248,7 @@ class Repository:
                 SELECT customer_id, COUNT(*) AS repair_count, SUM(quoted_amount) AS repair_total
                 FROM repair_orders
                 WHERE customer_id IS NOT NULL AND archived_at=''
+                  AND NOT EXISTS (SELECT 1 FROM legacy_links li WHERE li.repair_order_id=repair_orders.repair_order_id AND li.ownership='following')
                 GROUP BY customer_id
             ) rs ON rs.customer_id = c.customer_id
             LEFT JOIN (
@@ -306,6 +306,7 @@ class Repository:
             FROM repair_orders ro
             JOIN machines m ON m.machine_id = ro.machine_id
             WHERE ro.customer_id=? AND ro.archived_at=''
+              AND NOT EXISTS (SELECT 1 FROM legacy_links li WHERE li.repair_order_id=ro.repair_order_id AND li.ownership='following')
             ORDER BY ro.updated_at DESC, ro.repair_order_id DESC
             """,
             (customer_id,),
@@ -521,6 +522,7 @@ class Repository:
             FROM repair_orders ro
             JOIN machines m ON m.machine_id = ro.machine_id
             WHERE ro.customer_id=? AND ro.archived_at='' AND ro.status NOT IN ('已结单', '已作废')
+              AND NOT EXISTS (SELECT 1 FROM legacy_links li WHERE li.repair_order_id=ro.repair_order_id AND li.ownership='following')
               AND ro.quoted_amount > 0
             ORDER BY ro.repair_order_id DESC
             """,
@@ -586,6 +588,7 @@ class Repository:
                 """
                 SELECT * FROM machines
                 WHERE serial = ? AND serial <> ''
+                  AND NOT EXISTS (SELECT 1 FROM legacy_links li WHERE li.machine_id=machines.machine_id AND li.ownership='following')
                 ORDER BY updated_at DESC, machine_id DESC
                 LIMIT 1
                 """,
@@ -928,6 +931,7 @@ class Repository:
             WHERE (? = '' OR m.machine_no LIKE ? OR m.imei LIKE ? OR m.serial LIKE ?
                OR m.model LIKE ? OR m.model_number LIKE ? OR c.name LIKE ? OR c.phone LIKE ?)
             {assigned_filter}
+            AND NOT EXISTS (SELECT 1 FROM legacy_links li WHERE li.machine_id=m.machine_id AND li.ownership='following')
             ORDER BY m.updated_at DESC, m.machine_id DESC
             LIMIT 100
             """,
@@ -948,6 +952,8 @@ class Repository:
         order_prefix: str = "WX",
         service_type: str = "维修",
     ) -> int:
+        if not self.conn.in_transaction:
+            self.conn.execute("BEGIN IMMEDIATE")
         order_no = self.next_order_no("repair_orders", order_prefix)
         cur = self.conn.execute(
             """
@@ -1680,7 +1686,7 @@ class Repository:
 
     def machine_reports(self) -> dict[str, Any]:
         status_rows = self.conn.execute(
-            "SELECT current_status, COUNT(*) AS count FROM machines GROUP BY current_status ORDER BY current_status"
+            "SELECT current_status, COUNT(*) AS count FROM machines WHERE NOT EXISTS (SELECT 1 FROM legacy_links li WHERE li.machine_id=machines.machine_id AND li.ownership='following') GROUP BY current_status ORDER BY current_status"
         ).fetchall()
         payment_rows = self.conn.execute(
             "SELECT direction, COALESCE(SUM(amount), 0) AS amount FROM payments GROUP BY direction"
@@ -1693,3 +1699,102 @@ class Repository:
             "inventory_cost": sum(float(item["cost_amount"]) for item in inventory if item["status"] != "已售出"),
             "inventory": inventory,
         }
+
+    def get_repair_finance_settings(self) -> dict[str, Any] | None:
+        row = self.conn.execute("SELECT * FROM repair_finance_settings WHERE settings_id=1").fetchone()
+        if not row:
+            return None
+        item = dict(row)
+        item["policy"] = json.loads(str(item.pop("policy_json") or "{}"))
+        return item
+
+    def save_repair_finance_settings(self, policy: dict[str, Any], username: str) -> dict[str, Any]:
+        payload = json.dumps(policy, ensure_ascii=False)
+        self.conn.execute(
+            """
+            INSERT INTO repair_finance_settings(settings_id, policy_json, updated_by, updated_at)
+            VALUES(1, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(settings_id) DO UPDATE SET
+                policy_json=excluded.policy_json,
+                updated_by=excluded.updated_by,
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            (payload, username),
+        )
+        return self.get_repair_finance_settings() or {}
+
+    def create_repair_finance_batch(self, result: dict[str, Any], policy: dict[str, Any], username: str) -> int:
+        source = result.get("source") or {}
+        cursor = self.conn.execute(
+            """
+            INSERT INTO repair_finance_batches(
+                filename, sheet_name, status, total_rows, accepted_orders, excluded_orders,
+                error_count, warning_count, policy_json, result_json, created_by
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                str(source.get("filename") or ""),
+                str(source.get("sheet") or ""),
+                "ready" if result.get("can_finalize") else "blocked",
+                int(source.get("total_rows") or 0),
+                int(source.get("accepted_orders") or 0),
+                int(source.get("excluded_orders") or 0),
+                int(result.get("error_count") or 0),
+                int(result.get("warning_count") or 0),
+                json.dumps(policy, ensure_ascii=False),
+                json.dumps(result, ensure_ascii=False),
+                username,
+            ),
+        )
+        batch_id = int(cursor.lastrowid)
+        self.conn.executemany(
+            """
+            INSERT INTO repair_finance_issues(batch_id, severity, code, row_number, order_id, message)
+            VALUES(?,?,?,?,?,?)
+            """,
+            [
+                (
+                    batch_id,
+                    str(item.get("severity") or ""),
+                    str(item.get("code") or ""),
+                    int(item.get("row") or 0),
+                    str(item.get("order_id") or ""),
+                    str(item.get("message") or ""),
+                )
+                for item in result.get("issues") or []
+            ],
+        )
+        return batch_id
+
+    def list_repair_finance_batches(self) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT batch_id, filename, sheet_name, status, total_rows, accepted_orders,
+                   excluded_orders, error_count, warning_count, result_json, created_by,
+                   created_at, updated_at
+            FROM repair_finance_batches ORDER BY batch_id DESC
+            """
+        ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            payload = json.loads(str(item.pop("result_json") or "{}"))
+            item["summary"] = payload.get("summary") or {}
+            result.append(item)
+        return result
+
+    def get_repair_finance_batch(self, batch_id: int) -> dict[str, Any] | None:
+        row = self.conn.execute("SELECT * FROM repair_finance_batches WHERE batch_id=?", (batch_id,)).fetchone()
+        if not row:
+            return None
+        item = dict(row)
+        item["policy"] = json.loads(str(item.pop("policy_json") or "{}"))
+        item["result"] = json.loads(str(item.pop("result_json") or "{}"))
+        item["issues"] = [
+            dict(issue)
+            for issue in self.conn.execute(
+                "SELECT issue_id, severity, code, row_number AS row, order_id, message FROM repair_finance_issues WHERE batch_id=? ORDER BY issue_id",
+                (batch_id,),
+            ).fetchall()
+        ]
+        return item

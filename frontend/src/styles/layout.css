@@ -34,24 +34,6 @@
 .brand-mark { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 10px; color: #003d9b; background: #dae6ff; font-weight: 900; }
 .brand strong { display: block; font-size: 16px; }
 .brand span { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; }
-.sidebar-collapse-button {
-  position: absolute;
-  top: 14px;
-  right: 12px;
-  width: 32px;
-  min-height: 32px;
-  padding: 0;
-  display: grid;
-  place-items: center;
-  border-color: var(--line);
-  border-radius: 999px;
-  color: #64748b;
-  background: #fff;
-}
-.sidebar-collapse-button:hover {
-  color: var(--accent);
-  background: #f1f5fb;
-}
 .primary-nav { display: grid; gap: 13px; padding: 0 0 0; }
 .primary-nav-item { display: grid; gap: 6px; }
 .secondary-nav {
@@ -132,13 +114,6 @@ nav button.active svg { color: var(--accent); }
 .sidebar-collapsed .brand-mark {
   width: 42px;
   height: 42px;
-}
-
-.sidebar-collapsed .sidebar-collapse-button {
-  right: -4px;
-  top: 16px;
-  z-index: 2;
-  box-shadow: 0 6px 18px rgba(15, 23, 42, .12);
 }
 
 .sidebar-collapsed nav button,

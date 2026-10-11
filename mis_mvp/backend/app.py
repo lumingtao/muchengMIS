@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 import re
+import sqlite3
 from typing import Callable
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, Cookie
@@ -76,6 +77,8 @@ async def lifespan(_: FastAPI):
     conn = connect(settings.database_path)
     try:
         migrate(conn)
+        from .legacy_import import recover_jobs
+        recover_jobs(conn)
     finally:
         conn.close()
     yield
@@ -125,6 +128,18 @@ def endpoint(call: Callable):
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except BusinessError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except sqlite3.IntegrityError as exc:
+        if '老系统工单需要先接管' in str(exc):
+            raise HTTPException(status_code=409, detail='老系统工单需要先接管') from exc
+        raise
+
+
+def _decode_multipart_filename(value: str) -> str:
+    """Recover UTF-8 filenames that browsers place directly in multipart headers."""
+    try:
+        return value.encode("latin1").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return value
 
 
 def parse_photo_upload(content_type: str, body: bytes) -> tuple[str, str, str, bytes]:
@@ -154,12 +169,43 @@ def parse_photo_upload(content_type: str, body: bytes) -> tuple[str, str, str, b
         elif field_name == "file":
             filename_match = re.search(r'filename="([^"]*)"', headers)
             type_match = re.search(r"Content-Type:\s*([^\r\n]+)", headers, re.IGNORECASE)
-            filename = filename_match.group(1) if filename_match else ""
+            filename = _decode_multipart_filename(filename_match.group(1)) if filename_match else ""
             file_content_type = type_match.group(1).strip() if type_match else ""
             file_content = content
     if not stage or not file_content:
         raise HTTPException(status_code=400, detail="缺少 stage 或 file")
     return stage, filename, file_content_type, file_content
+
+
+def parse_multipart_form(content_type: str, body: bytes) -> tuple[dict[str, str], dict[str, tuple[str, str, bytes]]]:
+    match = re.search(r"boundary=(?P<boundary>[^;]+)", content_type)
+    if not match:
+        raise HTTPException(status_code=400, detail="缺少 multipart boundary")
+    boundary = match.group("boundary").strip().strip('"')
+    delimiter = b"--" + boundary.encode("utf-8")
+    fields: dict[str, str] = {}
+    files: dict[str, tuple[str, str, bytes]] = {}
+    for raw_part in body.split(delimiter):
+        part = raw_part.strip(b"\r\n")
+        if not part or part == b"--":
+            continue
+        if part.endswith(b"--"):
+            part = part[:-2].rstrip(b"\r\n")
+        header_blob, marker, content = part.partition(b"\r\n\r\n")
+        if not marker:
+            continue
+        headers = header_blob.decode("latin1", errors="ignore")
+        name_match = re.search(r'name="([^"]+)"', headers)
+        if not name_match:
+            continue
+        field_name = name_match.group(1)
+        filename_match = re.search(r'filename="([^"]*)"', headers)
+        if filename_match:
+            type_match = re.search(r"Content-Type:\s*([^\r\n]+)", headers, re.IGNORECASE)
+            files[field_name] = (_decode_multipart_filename(filename_match.group(1)), type_match.group(1).strip() if type_match else "", content)
+        else:
+            fields[field_name] = content.decode("utf-8", errors="strict").strip()
+    return fields, files
 
 
 @app.get("/")
@@ -777,6 +823,54 @@ def repair_monthly_summary(user: User = Depends(current_user), service: MisServi
     return endpoint(lambda: service.repair_monthly_financial_summary(user))
 
 
+@app.get("/api/finance/repair-billing/settings")
+def repair_billing_settings(user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.get_repair_finance_settings(user))
+
+
+@app.put("/api/finance/repair-billing/settings")
+def update_repair_billing_settings(data: dict, user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    from .repair_finance import RepairFinanceError
+
+    try:
+        return endpoint(lambda: service.save_repair_finance_settings(user, data))
+    except RepairFinanceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/finance/repair-billing/batches")
+def repair_billing_batches(user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.list_repair_finance_batches(user))
+
+
+@app.get("/api/finance/repair-billing/batches/{batch_id}")
+def repair_billing_batch(batch_id: int, user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    return endpoint(lambda: service.get_repair_finance_batch(user, batch_id))
+
+
+@app.post("/api/finance/repair-billing/analyze")
+async def analyze_repair_billing(request: Request, user: User = Depends(current_user), service: MisService = Depends(get_service)):
+    body = await request.body()
+    if len(body) > 12 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="上传内容超过12MB")
+    try:
+        fields, files = parse_multipart_form(request.headers.get("content-type", ""), body)
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=400, detail="结算规则编码无效") from exc
+    uploaded = files.get("file")
+    if not uploaded:
+        raise HTTPException(status_code=400, detail="缺少订单明细文件")
+    filename, _, content = uploaded
+    if not filename.lower().endswith(".xlsx"):
+        raise HTTPException(status_code=400, detail="请上传 .xlsx 文件")
+    from .repair_finance import RepairFinanceError
+
+    try:
+        return endpoint(lambda: service.analyze_repair_billing_upload(user, filename, content, fields.get("policy", "")))
+    except RepairFinanceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/api/machine-reports")
 def machine_reports(user: User = Depends(current_user), service: MisService = Depends(get_service)):
     return endpoint(lambda: service.machine_reports(user))
@@ -868,3 +962,7 @@ def reports(user: User = Depends(current_user), service: MisService = Depends(ge
 @app.get("/api/audit-logs")
 def audit_logs(user: User = Depends(current_user), service: MisService = Depends(get_service)):
     return endpoint(lambda: service.audit_logs(user))
+
+
+from .legacy_routes import legacy_router
+app.include_router(legacy_router(current_user, get_service))

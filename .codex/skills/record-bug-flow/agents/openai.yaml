@@ -1,0 +1,3 @@
+display_name: BUG 记录流程
+short_description: 将用户提交的 BUG、BGU 和浏览器评论登记到项目 BUG 台账。
+default_prompt: 按项目 BUG 记录流程登记问题，维护 BUG_TIMELINE.md，并给出编号、优先级和状态。

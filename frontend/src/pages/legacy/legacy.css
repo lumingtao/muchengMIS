@@ -1,0 +1,28 @@
+.legacy-workspace { display: grid; gap: 20px; min-width: 0; }
+.legacy-workspace > *, .legacy-workspace .ant-space-item { min-width: 0; }
+.legacy-heading-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
+.legacy-heading-row h2 { margin: 10px 0 8px; font-size: 22px; }
+.legacy-heading-row p { margin: 0; color: var(--muted); }
+.legacy-intro { background: linear-gradient(110deg, #f4f8ff, #fff 70%); }
+.legacy-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 20px; margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--line); }
+.legacy-metrics > div { display: grid; gap: 8px; }
+.legacy-metrics span { color: var(--muted); font-size: 13px; }
+.legacy-metrics strong { font-size: 23px; color: var(--ink); }
+.legacy-metrics small { font-size: 13px; font-weight: 400; }
+.legacy-flow-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.legacy-flow-card { display: grid; gap: 12px; padding: 20px; text-align: left; white-space: normal; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; color: var(--ink); }
+.legacy-flow-card:hover { border-color: var(--accent); background: #f6f9ff; }
+.legacy-flow-card > span:not(.legacy-step-number) { color: var(--muted); line-height: 1.7; font-weight: 400; }
+.legacy-flow-card > strong { font-size: 17px; }
+.legacy-step-number, .legacy-flow-card > b { color: var(--accent); }
+.legacy-step-number { font-size: 22px; font-weight: 800; }
+.legacy-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.legacy-batch-select { width: min(100%, 420px); }
+.legacy-filter-form { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
+.legacy-filter-form .ant-form-item { margin-bottom: 0; flex: 1 1 180px; }
+.legacy-selection-bar { position: sticky; bottom: 12px; z-index: 5; padding: 16px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 4px 20px #0f172a12; }
+.legacy-page-actions { margin-top: 16px; }
+.legacy-source-form { max-width: 680px; }
+.legacy-workspace pre { overflow-wrap: anywhere; }
+@media (max-width: 1100px) { .legacy-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 700px) { .legacy-flow-grid { grid-template-columns: 1fr; } .legacy-selection-bar { position: static; } }

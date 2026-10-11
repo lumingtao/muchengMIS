@@ -705,6 +705,45 @@ CREATE TABLE IF NOT EXISTS repair_order_notes (
     is_deleted INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (repair_order_id) REFERENCES repair_orders(repair_order_id)
 );
+
+CREATE TABLE IF NOT EXISTS repair_finance_settings (
+    settings_id INTEGER PRIMARY KEY CHECK (settings_id = 1),
+    policy_json TEXT NOT NULL DEFAULT '{}',
+    updated_by TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS repair_finance_batches (
+    batch_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    filename TEXT NOT NULL,
+    sheet_name TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'blocked',
+    total_rows INTEGER NOT NULL DEFAULT 0,
+    accepted_orders INTEGER NOT NULL DEFAULT 0,
+    excluded_orders INTEGER NOT NULL DEFAULT 0,
+    error_count INTEGER NOT NULL DEFAULT 0,
+    warning_count INTEGER NOT NULL DEFAULT 0,
+    policy_json TEXT NOT NULL DEFAULT '{}',
+    result_json TEXT NOT NULL DEFAULT '{}',
+    created_by TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS repair_finance_issues (
+    issue_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_id INTEGER NOT NULL,
+    severity TEXT NOT NULL,
+    code TEXT NOT NULL,
+    row_number INTEGER NOT NULL DEFAULT 0,
+    order_id TEXT NOT NULL DEFAULT '',
+    message TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (batch_id) REFERENCES repair_finance_batches(batch_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_repair_finance_batches_created ON repair_finance_batches(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_repair_finance_issues_batch ON repair_finance_issues(batch_id, severity);
 """
 
 
@@ -713,6 +752,8 @@ def connect(database_path: Path | str) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    conn.create_function("legacy_import_write", 0, lambda: 0)
+    conn.execute("PRAGMA busy_timeout = 10000")
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
@@ -747,6 +788,8 @@ def purge_expired_repair_order_archives(conn: sqlite3.Connection) -> None:
 def migrate(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     ensure_columns(conn)
+    from .legacy_schema import migrate_legacy
+    migrate_legacy(conn)
     purge_expired_repair_order_archives(conn)
     backfill_customer_member_no(conn)
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_member_no ON customers(member_no)")
